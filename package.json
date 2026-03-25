@@ -4,14 +4,15 @@
     "description": "Solana bot",
     "main": "./src/bot.ts",
     "scripts": {
-        "build": "npx tsc",
-        "start": "node ./dist/bot.js",
+        "build": "bun build ./src/bot.ts --outdir ./dist --target bun",
+        "start": "bun run ./src/bot.ts",
         "prune": "ts-prune",
         "format": "prettier --config .prettierrc 'src/**/*.ts' --write"
     },
     "author": "deezzir@gmail.com",
     "license": "ISC",
     "devDependencies": {
+        "@types/bun": "latest",
         "@types/figlet": "^1.7.0",
         "@types/inquirer": "^9.0.7",
         "@types/node": "^22.8.7",
