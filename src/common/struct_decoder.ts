@@ -107,11 +107,9 @@ export function define_decoder_struct<T extends Record<string, DecoderField<any>
     const total_size = current_offset;
 
     type Result = {
-        [K in keyof T as T[K] extends DecoderField<infer R>
-            ? R extends void
-                ? never
-                : K
-            : never]: T[K] extends DecoderField<infer R> ? R : never;
+        [
+            K in keyof T as T[K] extends DecoderField<infer R> ? (R extends void ? never : K) : never
+        ]: T[K] extends DecoderField<infer R> ? R : never;
     };
 
     return {

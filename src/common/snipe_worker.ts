@@ -14,6 +14,7 @@ import {
     SNIPE_RETRY_INTERVAL_MS
 } from '../constants';
 import { get_trader } from './get_trader';
+import { configure_helius_rate_limiter, helius_connection_config } from './rate_limit';
 
 type State =
     | { mode: 'idle'; spendings?: number; buys: number; sells: number }
@@ -24,7 +25,8 @@ type State =
 const CONFIG: snipe.WorkerConfig = workerData as snipe.WorkerConfig;
 const KEYPAIR: Keypair = Keypair.fromSecretKey(new Uint8Array(CONFIG.secret));
 const TRADER: trade.IProgramTrader = get_trader(CONFIG.program);
-global.CONNECTION = new Connection(HELIUS_RPC, COMMITMENT);
+configure_helius_rate_limiter(CONFIG.helius_rate_limit_state);
+global.CONNECTION = new Connection(HELIUS_RPC, helius_connection_config({ commitment: COMMITMENT }));
 global.HELIUS_CONNECTION = new Helius(HELIUS_API_KEY);
 
 var MINT_METADATA: trade.IMintMeta;

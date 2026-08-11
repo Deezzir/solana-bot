@@ -54,6 +54,7 @@ import {
 import * as common from './common';
 import bs58 from 'bs58';
 import { SendSmartTransactionOptions } from 'helius-sdk';
+import { helius_request } from './rate_limit';
 
 export type SerializedMintMeta = {
     token_usd_mc: number;
@@ -470,7 +471,7 @@ export async function get_token_balance(
 
 export async function get_token_meta(mint: PublicKey): Promise<MintAsset> {
     try {
-        const result = await global.HELIUS_CONNECTION.rpc.getAsset({ id: mint.toString() });
+        const result = await helius_request(() => global.HELIUS_CONNECTION.rpc.getAsset({ id: mint.toString() }));
         if (result.token_info && result.content && result.creators) {
             const creator = result.creators.at(0);
             return {
@@ -593,23 +594,25 @@ async function send_jito_tx(serialized_tx: string): Promise<string[]> {
 
 async function send_sender_tx(serialized_tx: string): Promise<string[]> {
     const requests = SENDER_ENDPOINTS.map((endpoint) =>
-        fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                jsonrpc: '2.0',
-                id: Date.now().toString(),
-                method: 'sendTransaction',
-                params: [
-                    serialized_tx,
-                    {
-                        encoding: 'base64',
-                        skipPreflight: true, // Required for Sender
-                        maxRetries: 0
-                    }
-                ]
+        helius_request(() =>
+            fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    jsonrpc: '2.0',
+                    id: Date.now().toString(),
+                    method: 'sendTransaction',
+                    params: [
+                        serialized_tx,
+                        {
+                            encoding: 'base64',
+                            skipPreflight: true, // Required for Sender
+                            maxRetries: 0
+                        }
+                    ]
+                })
             })
-        })
+        )
     );
     const responses = await Promise.all(
         requests.map((resp) =>
@@ -793,14 +796,16 @@ async function get_priority_fee(priority_opts: PriorityOptions): Promise<number>
             encoded_tx = bs58.encode(tx.serialize({ verifySignatures: false, requireAllSignatures: false }));
         }
 
-        const response = await global.HELIUS_CONNECTION.rpc.getPriorityFeeEstimate({
-            transaction: encoded_tx,
-            accountKeys: priority_opts.accounts,
-            options: {
-                priorityLevel: priority_opts.priority_level,
-                recommended: priority_opts.priority_level === undefined ? true : undefined
-            }
-        });
+        const response = await helius_request(() =>
+            global.HELIUS_CONNECTION.rpc.getPriorityFeeEstimate({
+                transaction: encoded_tx,
+                accountKeys: priority_opts.accounts,
+                options: {
+                    priorityLevel: priority_opts.priority_level,
+                    recommended: priority_opts.priority_level === undefined ? true : undefined
+                }
+            })
+        );
 
         const fee = Math.floor(response.priorityFeeEstimate || 0);
         priority_cache.set(cache_key, { value: fee, expires_at: Date.now() + PRIORITY_FEE_TTL_MS });
@@ -830,15 +835,19 @@ async function send_smart_tx(
     };
 
     if (protection_tip)
-        return await global.HELIUS_CONNECTION.rpc.sendSmartTransactionWithTip(
-            instructions,
-            signers,
-            alts,
-            protection_tip,
-            'Default',
-            options
+        return await helius_request(() =>
+            global.HELIUS_CONNECTION.rpc.sendSmartTransactionWithTip(
+                instructions,
+                signers,
+                alts,
+                protection_tip,
+                'Default',
+                options
+            )
         );
-    return await global.HELIUS_CONNECTION.rpc.sendSmartTransaction(instructions, signers, alts, options);
+    return await helius_request(() =>
+        global.HELIUS_CONNECTION.rpc.sendSmartTransaction(instructions, signers, alts, options)
+    );
 }
 
 export async function send_tx(

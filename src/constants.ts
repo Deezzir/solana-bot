@@ -1,6 +1,6 @@
 import dotenv from 'dotenv';
 import { LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js';
-dotenv.config({ path: './.env' });
+dotenv.config({ path: './.env', quiet: true });
 
 function get_env_variable(var_name: string, default_value: string = ''): any {
     const variable = process.env[var_name] || default_value;
@@ -14,6 +14,7 @@ function get_env_variable(var_name: string, default_value: string = ''): any {
 // NETWORK CONSTANTS
 export const HELIUS_API_KEY = get_env_variable('HELIUS_API_KEY');
 export const HELIUS_RPC = `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`;
+export const HELIUS_REQUESTS_PER_SECOND = Number(process.env.HELIUS_REQUESTS_PER_SECOND || 50);
 export const COMMITMENT = 'confirmed';
 
 // COMMANDS CONSTANTS

@@ -19,6 +19,15 @@ import {
     WALLETS_FILE
 } from './constants';
 import base58 from 'bs58';
+import { helius_connection_config } from './common/rate_limit';
+
+const MULTI_CHARACTER_OPTION_ALIASES: Record<string, string> = {
+    '-pr': '--pr',
+    '-ap': '--ap',
+    '-pp': '--pp',
+    '-af': '--af',
+    '-pf': '--pf'
+};
 
 function reserve_wallet_check(wallets: common.Wallet[]) {
     if (!common.check_reserve_exists(wallets)) {
@@ -39,7 +48,7 @@ function get_wallets_from_file(file: string): common.Wallet[] {
 }
 
 function get_priority_option(): Option {
-    return new Option('-pr, --priority <level>', 'specify priority level')
+    return new Option('--pr, --priority <level>', 'specify priority level')
         .choices(Object.values(PriorityLevel) as string[])
         .default(PriorityLevel.DEFAULT, PriorityLevel.DEFAULT);
 }
@@ -136,7 +145,10 @@ async function main() {
     let wallets = get_wallets_from_file(WALLETS_FILE);
     let wallet_cnt = wallets.length;
 
-    global.CONNECTION = new Connection(HELIUS_RPC, { disableRetryOnRateLimit: true, commitment: COMMITMENT });
+    global.CONNECTION = new Connection(
+        HELIUS_RPC,
+        helius_connection_config({ disableRetryOnRateLimit: true, commitment: COMMITMENT })
+    );
     global.HELIUS_CONNECTION = new Helius(HELIUS_API_KEY);
 
     const program = new Command();
@@ -230,7 +242,12 @@ async function main() {
         .command('balance')
         .alias('b')
         .description('Get the balance of the wallets')
-        .action(async () => await commands.balance(wallets));
+        .option('--format <type>', 'Format of the balance output (e.g., csv, table)', 'table')
+        .action(async (options) => {
+            let { format } = options;
+            if (!['csv', 'table'].includes(format)) throw new InvalidOptionArgumentError('Invalid format. Must be either "csv" or "table".');
+            await commands.balance(wallets, format);
+        });
 
     program
         .command('token-balance')
@@ -823,13 +840,13 @@ async function main() {
             if (!drop_wallet) throw new InvalidArgumentError('Invalid index.');
             return drop_wallet.keypair;
         })
-        .option('-ap, --airdrop <percent>', 'Percent of tokens to be airdroped', (value) => {
+        .option('--ap, --airdrop <percent>', 'Percent of tokens to be airdroped', (value) => {
             const parsed_value = parseFloat(value);
             if (isNaN(parsed_value)) throw new InvalidArgumentError('Not a number.');
             if (parsed_value < 0 || parsed_value > 1.0) throw new InvalidArgumentError('Invalid range (0.0 - 1.0).');
             return parsed_value;
         })
-        .option('-pp, --presale <percent>', 'Turn on the presale', (value) => {
+        .option('--pp, --presale <percent>', 'Turn on the presale', (value) => {
             const parsed_value = parseFloat(value);
             if (isNaN(parsed_value)) throw new InvalidOptionArgumentError('Not a number.');
             if (parsed_value < 0 || parsed_value > 1.0)
@@ -837,7 +854,7 @@ async function main() {
             return parsed_value;
         })
         .option(
-            '-af, --airdrop-file <path>',
+            '--af, --airdrop-file <path>',
             'Path to the CSV file with the airdrop list',
             (value) => {
                 if (!existsSync(value)) throw new InvalidOptionArgumentError('Airdrop file does not exist.');
@@ -846,7 +863,7 @@ async function main() {
             DROP_AIRDROP_CSV
         )
         .option(
-            '-pf, --presale-file <path>',
+            '--pf, --presale-file <path>',
             'Path to the CSV file with the presale list',
             (value) => {
                 if (!existsSync(value)) throw new InvalidOptionArgumentError('Presale file does not exist.');
@@ -901,7 +918,7 @@ async function main() {
         .action((json) => console.log(base58.encode(Keypair.fromSecretKey(json).secretKey)));
 
     try {
-        await program.parseAsync(process.argv);
+        await program.parseAsync(process.argv.map((arg) => MULTI_CHARACTER_OPTION_ALIASES[arg] ?? arg));
         if (!process.argv.slice(2).length) {
             program.outputHelp();
         }
