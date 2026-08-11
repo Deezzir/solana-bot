@@ -48,25 +48,30 @@ export enum Program {
 }
 
 export function bold(message: string): string {
+    if (global.NO_COLORS) return message;
     const boldStart = '\x1b[1m';
     const boldEnd = '\x1b[0m';
     return `${boldStart}${message}${boldEnd}`;
 }
 
-export function red(str: string) {
-    return `\x1b[31m${str}\x1b[0m`;
+export function red(message: string) {
+    if (global.NO_COLORS) return message;
+    return `\x1b[31m${message}\x1b[0m`;
 }
 
-export function green(str: string) {
-    return `\x1b[32m${str}\x1b[0m`;
+export function green(message: string) {
+    if (global.NO_COLORS) return message;
+    return `\x1b[32m${message}\x1b[0m`;
 }
 
-export function yellow(str: string) {
-    return `\x1b[33m${str}\x1b[0m`;
+export function yellow(message: string) {
+    if (global.NO_COLORS) return message;
+    return `\x1b[33m${message}\x1b[0m`;
 }
 
-export function blue(str: string) {
-    return `\x1b[34m${str}\x1b[0m`;
+export function blue(message: string) {
+    if (global.NO_COLORS) return message;
+    return `\x1b[34m${message}\x1b[0m`;
 }
 
 export function format_currency(value: number): string {
@@ -151,6 +156,7 @@ export function save_rescue_key(keypair: Keypair, target_file_path: string, pref
 export function get_wallets(keys_csv_path: string): Wallet[] {
     const rows: Wallet[] = [];
     let index = 1;
+    let reserve_found = false;
     try {
         const content = readFileSync(keys_csv_path);
         const records = parse(content, {
@@ -166,10 +172,11 @@ export function get_wallets(keys_csv_path: string): Wallet[] {
             const is_reserve = record.is_reserve === 'true';
             const entry = {
                 name: record.name,
-                id: is_reserve ? 0 : index++,
+                id: is_reserve && !reserve_found ? 0 : index++,
                 keypair: Keypair.fromSecretKey(base58.decode(record.private_key)),
                 is_reserve: is_reserve
             };
+            if (is_reserve) reserve_found = true;
             if (is_reserve) rows.unshift(entry);
             else rows.push(entry);
         });

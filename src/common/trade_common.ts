@@ -155,6 +155,11 @@ export interface IProgramTrader {
     subscribe_mint_meta(mint_meta: IMintMeta, callback: (mint_meta: IMintMeta) => void): Promise<() => void>;
     update_mint_meta_reserves(mint_meta: IMintMeta, amount: number | TokenAmount): IMintMeta;
     default_mint_meta(mint: PublicKey, sol_price?: number, data?: object): Promise<IMintMeta>;
+    claim_dev_fees(
+        trader: Signer,
+        dry_run: boolean,
+        priority?: PriorityLevel
+    ): Promise<{ signature: String | null; fees: number }>;
 }
 
 type PriorityOptions = {

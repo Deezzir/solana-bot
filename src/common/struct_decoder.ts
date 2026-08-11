@@ -52,6 +52,17 @@ export function u64(name?: string): DecoderField<bigint> {
     };
 }
 
+export function i128(name?: string): DecoderField<bigint> {
+    return {
+        name,
+        size: 16,
+        decode: (data, offset) => {
+            const value = data.readBigUInt64LE(offset) + (data.readBigUInt64LE(offset + 8) << 64n);
+            return value >= 1n << 127n ? value - (1n << 128n) : value;
+        }
+    };
+}
+
 export function bool(name?: string): DecoderField<boolean> {
     return {
         name,

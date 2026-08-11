@@ -73,12 +73,14 @@ import {
     PUMP_AMM_POOL_SEED,
     PUMP_POOL_AUTHORITY_SEED,
     MAYHEM_STATE_SEED,
-    ACCOUNT_SUBSCRIPTION_FLUSH_MS
+    ACCOUNT_SUBSCRIPTION_FLUSH_MS,
+    PUMP_COLLECT_CREATOR_FEE_DISCRIMINATOR,
+    PUMP_AMM_COLLECT_CREATOR_FEE_DISCRIMINATOR
 } from '../constants';
 import { readFileSync } from 'fs';
 import { basename } from 'path';
 import base58 from 'bs58';
-import { define_decoder_struct, skip, u8, u64, discriminator, pubkey, u16, bool } from '../common/struct_decoder';
+import { define_decoder_struct, skip, u8, u64, i128, discriminator, pubkey, u16, bool } from '../common/struct_decoder';
 
 export class PumpMintMeta implements trade.IMintMeta {
     mint!: string;
@@ -221,7 +223,8 @@ const AMMStateStruct = define_decoder_struct({
     lp_supply: skip(u64().size),
     creator: pubkey(),
     is_mayhem: bool(),
-    is_cashback: bool()
+    is_cashback: bool(),
+    virtual_quote_reserves: i128()
 });
 
 type AMMState = ReturnType<typeof AMMStateStruct.decode> & {
@@ -241,6 +244,65 @@ export class Trader implements trade.IProgramTrader {
 
     public deserialize_mint_meta(data: trade.SerializedMintMeta): PumpMintMeta {
         return PumpMintMeta.deserialize(data);
+    }
+
+    public async claim_dev_fees(
+        trader: Signer,
+        dry_run: boolean,
+        priority?: PriorityLevel
+    ): Promise<{ signature: String | null; fees: number }> {
+        const [creator_vault] = this.calc_creator_vault(trader.publicKey);
+        const [amm_creator_vault, amm_creator_vault_ata] = this.calc_amm_creator_vault(trader.publicKey);
+        const [pump_fees, amm_fees] = await Promise.all([
+            trade.get_balance(creator_vault, COMMITMENT),
+            trade.get_vault_balance(amm_creator_vault_ata).catch(() => ({ balance: 0n, decimals: 9 }))
+        ]);
+        const fees = (pump_fees + Number(amm_fees.balance)) / LAMPORTS_PER_SOL;
+        if (fees === 0 || dry_run) return { signature: null, fees };
+
+        const creator_ata = trade.calc_ata(trader.publicKey, SOL_MINT);
+        const instructions: TransactionInstruction[] = [];
+        if (pump_fees > 0) {
+            instructions.push(
+                new TransactionInstruction({
+                    keys: [
+                        { pubkey: trader.publicKey, isSigner: false, isWritable: true },
+                        { pubkey: creator_vault, isSigner: false, isWritable: true },
+                        { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
+                        { pubkey: PUMP_EVENT_AUTHORITUY_ACCOUNT, isSigner: false, isWritable: false },
+                        { pubkey: PUMP_PROGRAM_ID, isSigner: false, isWritable: false }
+                    ],
+                    programId: PUMP_PROGRAM_ID,
+                    data: Buffer.from(PUMP_COLLECT_CREATOR_FEE_DISCRIMINATOR)
+                })
+            );
+        }
+        if (amm_fees.balance > 0) {
+            instructions.push(
+                createAssociatedTokenAccountIdempotentInstruction(
+                    trader.publicKey,
+                    creator_ata,
+                    trader.publicKey,
+                    SOL_MINT
+                ),
+                new TransactionInstruction({
+                    keys: [
+                        { pubkey: SOL_MINT, isSigner: false, isWritable: false },
+                        { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+                        { pubkey: trader.publicKey, isSigner: false, isWritable: false },
+                        { pubkey: amm_creator_vault, isSigner: false, isWritable: false },
+                        { pubkey: amm_creator_vault_ata, isSigner: false, isWritable: true },
+                        { pubkey: creator_ata, isSigner: false, isWritable: true },
+                        { pubkey: PUMP_AMM_EVENT_AUTHORITY_ACCOUNT, isSigner: false, isWritable: false },
+                        { pubkey: PUMP_AMM_PROGRAM_ID, isSigner: false, isWritable: false }
+                    ],
+                    programId: PUMP_AMM_PROGRAM_ID,
+                    data: Buffer.from(PUMP_AMM_COLLECT_CREATOR_FEE_DISCRIMINATOR)
+                }),
+                createCloseAccountInstruction(creator_ata, trader.publicKey, trader.publicKey)
+            );
+        }
+        return { signature: await trade.send_tx(instructions, [trader], priority), fees };
     }
 
     public async buy_token(
@@ -617,7 +679,7 @@ export class Trader implements trade.IProgramTrader {
             if (pump_amm) {
                 const state = await this.get_amm_state(pump_amm);
                 const metrics = this.get_token_metrics(
-                    state.quote_vault_balance,
+                    state.quote_vault_balance + state.virtual_quote_reserves,
                     state.base_vault_balance,
                     state.supply
                 );
@@ -629,7 +691,7 @@ export class Trader implements trade.IProgramTrader {
                     total_supply: state.supply,
                     base_vault: state.base_vault.toString(),
                     quote_vault: state.quote_vault.toString(),
-                    sol_reserves: state.quote_vault_balance,
+                    sol_reserves: state.quote_vault_balance + state.virtual_quote_reserves,
                     token_reserves: state.base_vault_balance,
                     complete: true,
                     fee: PUMP_SWAP_PERCENTAGE,
@@ -703,7 +765,7 @@ export class Trader implements trade.IProgramTrader {
             ]);
 
             const metrics = this.get_token_metrics(
-                quote_vault_balance.balance,
+                quote_vault_balance.balance + state.virtual_quote_reserves,
                 base_vault_balance.balance,
                 supply.supply
             );
@@ -717,7 +779,7 @@ export class Trader implements trade.IProgramTrader {
                     total_supply: supply.supply,
                     base_vault: state.base_vault.toString(),
                     quote_vault: state.quote_vault.toString(),
-                    sol_reserves: quote_vault_balance.balance,
+                    sol_reserves: quote_vault_balance.balance + state.virtual_quote_reserves,
                     token_reserves: base_vault_balance.balance,
                     complete: true,
                     fee: PUMP_SWAP_PERCENTAGE,
@@ -825,7 +887,7 @@ export class Trader implements trade.IProgramTrader {
         token_amount_buf.writeBigUInt64LE(token_amount_raw, 0);
         const slippage_buf = Buffer.alloc(8);
         slippage_buf.writeBigUInt64LE(this.calc_slippage_up(sol_amount_raw, slippage), 0);
-        return Buffer.concat([instruction_buf, token_amount_buf, slippage_buf]);
+        return Buffer.concat([instruction_buf, token_amount_buf, slippage_buf, Buffer.from([0])]);
     }
 
     private sell_data(sol_amount_raw: bigint, token_amount_raw: bigint, slippage: number): Buffer {
@@ -976,17 +1038,20 @@ export class Trader implements trade.IProgramTrader {
             version === 'v1' ? PUMP_CREATE_V1_DISCRIMINATOR : PUMP_CREATE_V2_DISCRIMINATOR
         );
 
-        const token_name_buf = Buffer.alloc(4 + token_name.length);
-        token_name_buf.writeUInt32LE(token_name.length, 0);
-        token_name_buf.write(token_name, 4);
+        const token_name_bytes = Buffer.from(token_name);
+        const token_name_buf = Buffer.alloc(4 + token_name_bytes.length);
+        token_name_buf.writeUInt32LE(token_name_bytes.length, 0);
+        token_name_bytes.copy(token_name_buf, 4);
 
-        const token_ticker_buf = Buffer.alloc(4 + token_ticker.length);
-        token_ticker_buf.writeUInt32LE(token_ticker.length, 0);
-        token_ticker_buf.write(token_ticker, 4);
+        const token_ticker_bytes = Buffer.from(token_ticker);
+        const token_ticker_buf = Buffer.alloc(4 + token_ticker_bytes.length);
+        token_ticker_buf.writeUInt32LE(token_ticker_bytes.length, 0);
+        token_ticker_bytes.copy(token_ticker_buf, 4);
 
-        const meta_link_buf = Buffer.alloc(4 + meta_link.length);
-        meta_link_buf.writeUInt32LE(meta_link.length, 0);
-        meta_link_buf.write(meta_link, 4);
+        const meta_link_bytes = Buffer.from(meta_link);
+        const meta_link_buf = Buffer.alloc(4 + meta_link_bytes.length);
+        meta_link_buf.writeUInt32LE(meta_link_bytes.length, 0);
+        meta_link_bytes.copy(meta_link_buf, 4);
 
         const creator_buf = creator.toBuffer();
 

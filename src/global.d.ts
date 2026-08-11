@@ -7,6 +7,7 @@ declare global {
     var RL: Interface;
     var CONNECTION: Connection;
     var HELIUS_CONNECTION: Helius;
+    var NO_COLORS: boolean;
 }
 
 export {};

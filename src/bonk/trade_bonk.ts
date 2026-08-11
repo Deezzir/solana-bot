@@ -267,6 +267,10 @@ export class Trader implements trade.IProgramTrader {
         return BonkMintMeta.deserialize(data);
     }
 
+    public async claim_dev_fees(): Promise<{ signature: String | null; fees: number }> {
+        throw new Error('Claiming dev fees is not implemented for Bonk.');
+    }
+
     public async buy_token(
         sol_amount: number,
         buyer: Signer,

@@ -72,6 +72,32 @@ export async function clean(wallets: common.Wallet[]): Promise<void> {
     }
 }
 
+export async function claim_dev_fees(
+    wallets: common.Wallet[],
+    program: common.Program,
+    dry_run: boolean,
+    priority?: PriorityLevel
+): Promise<void> {
+    if (wallets.length === 0) throw new Error('No wallets available.');
+    const trader = get_trader(program);
+    let total_fees = 0;
+    for (const wallet of wallets) {
+        try {
+            const result = await trader.claim_dev_fees(wallet.keypair, dry_run, priority);
+            total_fees += result.fees;
+            if (result.fees === 0) continue;
+
+            const prefix = `${wallet.id} ${wallet.keypair.publicKey.toString()} (${wallet.name})`;
+            if (dry_run) common.log(`${prefix}: ${result.fees} SOL available`);
+            else common.log(common.green(`${prefix}: claimed ${result.fees} SOL, signature: ${result.signature}`));
+        } catch (error) {
+            common.error(common.red(`Failed to claim dev fees for ${wallet.name}: ${error}`));
+        }
+        await common.sleep(COMMANDS_INTERVAL_MS);
+    }
+    common.log(common.bold(`${dry_run ? 'Available' : 'Claimed'} dev fees: ${total_fees} SOL`));
+}
+
 export async function create_token_metadata(
     json: common.IPFSMetadata,
     image_path: string,
@@ -271,10 +297,10 @@ export async function token_balance(wallets: common.Wallet[], mint: PublicKey): 
     const allocation_cur = (total_tokens_cur / (supply / 10 ** decimals)) * 100;
     const average_entry_mcap_all =
         (((((total_spendings_all - total_fees_all) / total_tokens_all) * supply) / 10 ** decimals) * sol_price) /
-        1000 || 0;
+            1000 || 0;
     const average_entry_mcap_cur =
         (((((total_spendings_cur - total_fees_cur) / total_tokens_cur) * supply) / 10 ** decimals) * sol_price) /
-        1000 || 0;
+            1000 || 0;
 
     common.log('\nALL:');
     common.log(`    Average Entry MC: ${common.bold(average_entry_mcap_all.toFixed(1) + 'K$')}`);
@@ -329,7 +355,7 @@ export async function transfer_token(
         .catch((error) => common.error(common.red(`Transaction failed: ${error.message}`)));
 }
 
-export async function balance(wallets: common.Wallet[], format: "csv" | "table"): Promise<void> {
+export async function balance(wallets: common.Wallet[], format: 'csv' | 'table'): Promise<void> {
     if (wallets.length === 0) throw new Error('No wallets available.');
 
     let total = 0;
@@ -340,16 +366,18 @@ export async function balance(wallets: common.Wallet[], format: "csv" | "table")
         wallets.map((wallet) => trade.get_balance(wallet.keypair.publicKey, COMMITMENT))
     );
 
-    if (format === "csv") {
+    if (format === 'csv') {
         common.log(common.yellow('Wallet Id,Name,Public Key,SOL Balance'));
         for (let i = 0; i < wallets.length; i++) {
             const wallet = wallets[i];
             const balance = balances[i] / LAMPORTS_PER_SOL;
             total += balance;
-            common.log(`${wallet.id.toString().concat(wallet.is_reserve ? '*' : '')},${common.format_name(wallet.name)},${wallet.keypair.publicKey.toString()},${balance.toFixed(9)}`);
+            common.log(
+                `${wallet.id.toString().concat(wallet.is_reserve ? '*' : '')},${common.format_name(wallet.name)},${wallet.keypair.publicKey.toString()},${balance.toFixed(9)}`
+            );
         }
         common.log(`\nTotal balance: ${common.bold(common.format_currency(total) + ' SOL')}\n`);
-    } else if (format === "table") {
+    } else if (format === 'table') {
         common.print_header([
             { title: 'Id', width: common.COLUMN_WIDTHS.id },
             { title: 'Name', width: common.COLUMN_WIDTHS.name },
@@ -1030,11 +1058,11 @@ export async function benchmark(
 
                 process.stdout.write(
                     `\r[${i + 1}/${NUM_REQUESTS}] | ` +
-                    `Errors: ${errors} | ` +
-                    `Avg Time: ${avgTime.toFixed(2)} ms | ` +
-                    `Min Time: ${min_time.toFixed(2)} ms | ` +
-                    `Max Time: ${max_time.toFixed(2)} ms | ` +
-                    `TPS: ${tps.toFixed(2)}`
+                        `Errors: ${errors} | ` +
+                        `Avg Time: ${avgTime.toFixed(2)} ms | ` +
+                        `Min Time: ${min_time.toFixed(2)} ms | ` +
+                        `Max Time: ${max_time.toFixed(2)} ms | ` +
+                        `TPS: ${tps.toFixed(2)}`
                 );
             }
         }

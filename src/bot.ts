@@ -179,6 +179,14 @@ async function main() {
             .choices(Object.values(common.Program) as string[])
             .default(common.Program.Pump, common.Program.Pump)
     );
+    program.addOption(
+        new Option('--no-colors', 'Disable colored output')
+            .argParser((value) => {
+                global.NO_COLORS = value !== 'false';
+                return global.NO_COLORS;
+            })
+            .default(false, 'false')
+    );
 
     program
         .command('snipe')
@@ -245,7 +253,8 @@ async function main() {
         .option('--format <type>', 'Format of the balance output (e.g., csv, table)', 'table')
         .action(async (options) => {
             let { format } = options;
-            if (!['csv', 'table'].includes(format)) throw new InvalidOptionArgumentError('Invalid format. Must be either "csv" or "table".');
+            if (!['csv', 'table'].includes(format))
+                throw new InvalidOptionArgumentError('Invalid format. Must be either "csv" or "table".');
             await commands.balance(wallets, format);
         });
 
@@ -313,6 +322,20 @@ async function main() {
         .alias('cl')
         .description('Clean the wallets by closing zero balance token accounts')
         .action(async () => await commands.clean(wallets));
+
+    program
+        .command('claim-dev-fees')
+        .description('Claim Pump creator fees for the wallets')
+        .option('--dry-run', 'Print available fees without claiming them', false)
+        .addOption(get_from_option(wallet_cnt))
+        .addOption(get_to_option(wallet_cnt))
+        .addOption(get_list_option(wallet_cnt))
+        .addOption(get_priority_option())
+        .action(async (options) => {
+            const { dryRun, from, to, list, priority } = options;
+            const pg = program.opts().program;
+            await commands.claim_dev_fees(common.filter_wallets(wallets, from, to, list), pg, dryRun, priority);
+        });
 
     program
         .command('token-burn')
