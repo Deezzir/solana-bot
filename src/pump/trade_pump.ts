@@ -24,7 +24,6 @@ import {
     IPFS,
     METAPLEX_PROGRAM_ID,
     PUMP_AMM_EVENT_AUTHORITY_ACCOUNT,
-    PUMP_AMM_FEE_ACCOUNT,
     PUMP_AMM_GLOBAL_ACCOUNT,
     PUMP_AMM_PROGRAM_ID,
     PUMP_BONDING_SEED,
@@ -32,7 +31,6 @@ import {
     PUMP_TOKEN_DECIMALS,
     PUMP_EVENT_AUTHORITY_ACCOUNT,
     PUMP_FEE_PERCENTAGE,
-    PUMP_FEE_ACCOUNT,
     PUMP_API_URL,
     PUMP_GLOBAL_ACCOUNT,
     METAPLEX_META_SEED,
@@ -40,8 +38,9 @@ import {
     PUMP_PROGRAM_ID,
     SOL_MINT,
     SYSTEM_PROGRAM_ID,
-    PUMP_AMM_FEE_TOKEN_ACCOUNT,
-    PUMP_BUY_DISCRIMINATOR,
+    PUMP_BUY_V2_DISCRIMINATOR,
+    PUMP_SELL_V2_DISCRIMINATOR,
+    PUMP_AMM_BUY_EXACT_QUOTE_IN_DISCRIMINATOR,
     PUMP_SELL_DISCRIMINATOR,
     PUMP_SWAP_PERCENTAGE,
     PriorityLevel,
@@ -62,16 +61,17 @@ import {
     PUMP_FEE_CONFIG,
     PUMP_FEE_PROGRAM_ID,
     PUMP_AMM_FEE_CONFIG,
+    PUMP_BUYBACK_FEE_RECIPIENTS,
+    PUMP_FEE_RECIPIENTS,
+    MAYHEM_FEE_RECIPIENTS,
     MAYHEM_PROGRAM_ID,
     MAYHEM_GLOBAL_ACCOUNT,
     MAYHEM_SOL_VAULT,
     PUMP_CREATE_V2_DISCRIMINATOR,
-    MAYHEM_FEE_ACCOUNT,
-    MAYHEM_FEE_TOKEN_ACCOUNT,
-    PUMP_BONDING_SEED_2,
     PUMP_AMM_POOL_SEED_2,
     PUMP_AMM_POOL_SEED,
     PUMP_POOL_AUTHORITY_SEED,
+    PUMP_SHARING_CONFIG_SEED,
     MAYHEM_STATE_SEED,
     ACCOUNT_SUBSCRIPTION_FLUSH_MS,
     PUMP_COLLECT_CREATOR_FEE_DISCRIMINATOR,
@@ -883,16 +883,34 @@ export class Trader implements trade.IProgramTrader {
         return sol_amount - (sol_amount * BigInt(Math.floor(slippage * 10000))) / BigInt(10000);
     }
 
-    private buy_data(sol_amount_raw: bigint, token_amount_raw: bigint, slippage: number): Buffer {
-        const instruction_buf = Buffer.from(PUMP_BUY_DISCRIMINATOR);
+    private buy_v2_data(sol_amount_raw: bigint, token_amount_raw: bigint, slippage: number): Buffer {
+        const instruction_buf = Buffer.from(PUMP_BUY_V2_DISCRIMINATOR);
         const token_amount_buf = Buffer.alloc(8);
         token_amount_buf.writeBigUInt64LE(token_amount_raw, 0);
         const slippage_buf = Buffer.alloc(8);
         slippage_buf.writeBigUInt64LE(this.calc_slippage_up(sol_amount_raw, slippage), 0);
-        return Buffer.concat([instruction_buf, token_amount_buf, slippage_buf, Buffer.from([0])]);
+        return Buffer.concat([instruction_buf, token_amount_buf, slippage_buf]);
     }
 
-    private sell_data(sol_amount_raw: bigint, token_amount_raw: bigint, slippage: number): Buffer {
+    private sell_v2_data(sol_amount_raw: bigint, token_amount_raw: bigint, slippage: number): Buffer {
+        const instruction_buf = Buffer.from(PUMP_SELL_V2_DISCRIMINATOR);
+        const token_amount_buf = Buffer.alloc(8);
+        token_amount_buf.writeBigUInt64LE(token_amount_raw, 0);
+        const slippage_buf = Buffer.alloc(8);
+        slippage_buf.writeBigUInt64LE(this.calc_slippage_down(sol_amount_raw, slippage), 0);
+        return Buffer.concat([instruction_buf, token_amount_buf, slippage_buf]);
+    }
+
+    private amm_buy_exact_quote_in_data(sol_amount_raw: bigint, token_amount_raw: bigint, slippage: number): Buffer {
+        const instruction_buf = Buffer.from(PUMP_AMM_BUY_EXACT_QUOTE_IN_DISCRIMINATOR);
+        const sol_amount_buf = Buffer.alloc(8);
+        sol_amount_buf.writeBigUInt64LE(sol_amount_raw, 0);
+        const token_amount_buf = Buffer.alloc(8);
+        token_amount_buf.writeBigUInt64LE(this.calc_slippage_down(token_amount_raw, slippage), 0);
+        return Buffer.concat([instruction_buf, sol_amount_buf, token_amount_buf, Buffer.from([0])]);
+    }
+
+    private amm_sell_data(sol_amount_raw: bigint, token_amount_raw: bigint, slippage: number): Buffer {
         const instruction_buf = Buffer.from(PUMP_SELL_DISCRIMINATOR);
         const token_amount_buf = Buffer.alloc(8);
         token_amount_buf.writeBigUInt64LE(token_amount_raw, 0);
@@ -925,9 +943,23 @@ export class Trader implements trade.IProgramTrader {
         const sol_amount_raw = BigInt(Math.floor(sol_amount * LAMPORTS_PER_SOL));
 
         const token_amount_raw = this.calc_token_amount_raw(sol_amount_raw, mint_meta);
-        const instruction_data = this.buy_data(sol_amount_raw, token_amount_raw, slippage);
+        const instruction_data = this.buy_v2_data(sol_amount_raw, token_amount_raw, slippage);
         const token_ata = trade.calc_ata(buyer.publicKey, mint, token_program);
-        const bonding_v2 = this.calc_bonding_curve_v2(mint);
+        const quote_token_program = TOKEN_PROGRAM_ID;
+        const quote_ata = trade.calc_ata(buyer.publicKey, SOL_MINT, quote_token_program);
+        const fee_recipients = mint_meta.is_mayhem ? MAYHEM_FEE_RECIPIENTS : PUMP_FEE_RECIPIENTS;
+        const fee_recipient = fee_recipients[Math.floor(Math.random() * fee_recipients.length)];
+        const buyback_fee_recipient =
+            PUMP_BUYBACK_FEE_RECIPIENTS[Math.floor(Math.random() * PUMP_BUYBACK_FEE_RECIPIENTS.length)];
+        const fee_recipient_ata = trade.calc_ata(fee_recipient, SOL_MINT, quote_token_program);
+        const buyback_fee_recipient_ata = trade.calc_ata(buyback_fee_recipient, SOL_MINT, quote_token_program);
+        const quote_bonding_curve_ata = trade.calc_ata(bonding_curve, SOL_MINT, quote_token_program);
+        const creator_vault_ata = trade.calc_ata(creator_vault, SOL_MINT, quote_token_program);
+        const user_volume_accumulator_ata = trade.calc_ata(user_volume_accumulator, SOL_MINT, quote_token_program);
+        const [sharing_config] = PublicKey.findProgramAddressSync(
+            [PUMP_SHARING_CONFIG_SEED, mint.toBuffer()],
+            PUMP_FEE_PROGRAM_ID
+        );
 
         return [
             createAssociatedTokenAccountIdempotentInstruction(
@@ -940,26 +972,32 @@ export class Trader implements trade.IProgramTrader {
             new TransactionInstruction({
                 keys: [
                     { pubkey: PUMP_GLOBAL_ACCOUNT, isSigner: false, isWritable: false },
-                    {
-                        pubkey: mint_meta.is_mayhem ? MAYHEM_FEE_ACCOUNT : PUMP_FEE_ACCOUNT,
-                        isSigner: false,
-                        isWritable: true
-                    },
                     { pubkey: mint, isSigner: false, isWritable: false },
+                    { pubkey: SOL_MINT, isSigner: false, isWritable: false },
+                    { pubkey: token_program, isSigner: false, isWritable: false },
+                    { pubkey: quote_token_program, isSigner: false, isWritable: false },
+                    { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+                    { pubkey: fee_recipient, isSigner: false, isWritable: true },
+                    { pubkey: fee_recipient_ata, isSigner: false, isWritable: true },
+                    { pubkey: buyback_fee_recipient, isSigner: false, isWritable: true },
+                    { pubkey: buyback_fee_recipient_ata, isSigner: false, isWritable: true },
                     { pubkey: bonding_curve, isSigner: false, isWritable: true },
                     { pubkey: assoc_bonding_curve, isSigner: false, isWritable: true },
-                    { pubkey: token_ata, isSigner: false, isWritable: true },
+                    { pubkey: quote_bonding_curve_ata, isSigner: false, isWritable: true },
                     { pubkey: buyer.publicKey, isSigner: true, isWritable: true },
-                    { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
-                    { pubkey: token_program, isSigner: false, isWritable: false },
+                    { pubkey: token_ata, isSigner: false, isWritable: true },
+                    { pubkey: quote_ata, isSigner: false, isWritable: true },
                     { pubkey: creator_vault, isSigner: false, isWritable: true },
-                    { pubkey: PUMP_EVENT_AUTHORITY_ACCOUNT, isSigner: false, isWritable: false },
-                    { pubkey: PUMP_PROGRAM_ID, isSigner: false, isWritable: false },
-                    { pubkey: PUMP_GLOBAL_VOLUME_ACCUMULATOR, isSigner: false, isWritable: true },
+                    { pubkey: creator_vault_ata, isSigner: false, isWritable: true },
+                    { pubkey: sharing_config, isSigner: false, isWritable: false },
+                    { pubkey: PUMP_GLOBAL_VOLUME_ACCUMULATOR, isSigner: false, isWritable: false },
                     { pubkey: user_volume_accumulator, isSigner: false, isWritable: true },
+                    { pubkey: user_volume_accumulator_ata, isSigner: false, isWritable: true },
                     { pubkey: PUMP_FEE_CONFIG, isSigner: false, isWritable: false },
                     { pubkey: PUMP_FEE_PROGRAM_ID, isSigner: false, isWritable: false },
-                    { pubkey: bonding_v2, isSigner: false, isWritable: false }
+                    { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
+                    { pubkey: PUMP_EVENT_AUTHORITY_ACCOUNT, isSigner: false, isWritable: false },
+                    { pubkey: PUMP_PROGRAM_ID, isSigner: false, isWritable: false }
                 ],
                 programId: PUMP_PROGRAM_ID,
                 data: instruction_data
@@ -991,35 +1029,53 @@ export class Trader implements trade.IProgramTrader {
         const assoc_bonding_curve = new PublicKey(mint_meta.quote_vault);
         const token_amount_raw = BigInt(token_amount.amount);
         const sol_amount_raw = this.calc_sol_amount_raw(token_amount_raw, mint_meta);
-        const instruction_data = this.sell_data(sol_amount_raw, token_amount_raw, slippage);
+        const instruction_data = this.sell_v2_data(sol_amount_raw, token_amount_raw, slippage);
         const token_ata = trade.calc_ata(seller.publicKey, mint, token_program);
-        const bonding_v2 = this.calc_bonding_curve_v2(mint);
+        const quote_token_program = TOKEN_PROGRAM_ID;
+        const quote_ata = trade.calc_ata(seller.publicKey, SOL_MINT, quote_token_program);
+        const fee_recipients = mint_meta.is_mayhem ? MAYHEM_FEE_RECIPIENTS : PUMP_FEE_RECIPIENTS;
+        const fee_recipient = fee_recipients[Math.floor(Math.random() * fee_recipients.length)];
+        const buyback_fee_recipient =
+            PUMP_BUYBACK_FEE_RECIPIENTS[Math.floor(Math.random() * PUMP_BUYBACK_FEE_RECIPIENTS.length)];
+        const fee_recipient_ata = trade.calc_ata(fee_recipient, SOL_MINT, quote_token_program);
+        const buyback_fee_recipient_ata = trade.calc_ata(buyback_fee_recipient, SOL_MINT, quote_token_program);
+        const quote_bonding_curve_ata = trade.calc_ata(bonding_curve, SOL_MINT, quote_token_program);
+        const creator_vault_ata = trade.calc_ata(creator_vault, SOL_MINT, quote_token_program);
+        const user_volume_accumulator_ata = trade.calc_ata(user_volume_accumulator, SOL_MINT, quote_token_program);
+        const [sharing_config] = PublicKey.findProgramAddressSync(
+            [PUMP_SHARING_CONFIG_SEED, mint.toBuffer()],
+            PUMP_FEE_PROGRAM_ID
+        );
 
         return [
             new TransactionInstruction({
                 keys: [
                     { pubkey: PUMP_GLOBAL_ACCOUNT, isSigner: false, isWritable: false },
-                    {
-                        pubkey: mint_meta.is_mayhem ? MAYHEM_FEE_ACCOUNT : PUMP_FEE_ACCOUNT,
-                        isSigner: false,
-                        isWritable: true
-                    },
                     { pubkey: mint, isSigner: false, isWritable: false },
+                    { pubkey: SOL_MINT, isSigner: false, isWritable: false },
+                    { pubkey: token_program, isSigner: false, isWritable: false },
+                    { pubkey: quote_token_program, isSigner: false, isWritable: false },
+                    { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+                    { pubkey: fee_recipient, isSigner: false, isWritable: true },
+                    { pubkey: fee_recipient_ata, isSigner: false, isWritable: true },
+                    { pubkey: buyback_fee_recipient, isSigner: false, isWritable: true },
+                    { pubkey: buyback_fee_recipient_ata, isSigner: false, isWritable: true },
                     { pubkey: bonding_curve, isSigner: false, isWritable: true },
                     { pubkey: assoc_bonding_curve, isSigner: false, isWritable: true },
-                    { pubkey: token_ata, isSigner: false, isWritable: true },
+                    { pubkey: quote_bonding_curve_ata, isSigner: false, isWritable: true },
                     { pubkey: seller.publicKey, isSigner: true, isWritable: true },
-                    { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
+                    { pubkey: token_ata, isSigner: false, isWritable: true },
+                    { pubkey: quote_ata, isSigner: false, isWritable: true },
                     { pubkey: creator_vault, isSigner: false, isWritable: true },
-                    { pubkey: token_program, isSigner: false, isWritable: false },
-                    { pubkey: PUMP_EVENT_AUTHORITY_ACCOUNT, isSigner: false, isWritable: false },
-                    { pubkey: PUMP_PROGRAM_ID, isSigner: false, isWritable: false },
+                    { pubkey: creator_vault_ata, isSigner: false, isWritable: true },
+                    { pubkey: sharing_config, isSigner: false, isWritable: false },
+                    { pubkey: user_volume_accumulator, isSigner: false, isWritable: true },
+                    { pubkey: user_volume_accumulator_ata, isSigner: false, isWritable: true },
                     { pubkey: PUMP_FEE_CONFIG, isSigner: false, isWritable: false },
                     { pubkey: PUMP_FEE_PROGRAM_ID, isSigner: false, isWritable: false },
-                    ...(mint_meta.is_cashback
-                        ? [{ pubkey: user_volume_accumulator, isSigner: false, isWritable: true }]
-                        : []),
-                    { pubkey: bonding_v2, isSigner: false, isWritable: false }
+                    { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
+                    { pubkey: PUMP_EVENT_AUTHORITY_ACCOUNT, isSigner: false, isWritable: false },
+                    { pubkey: PUMP_PROGRAM_ID, isSigner: false, isWritable: false }
                 ],
                 programId: PUMP_PROGRAM_ID,
                 data: instruction_data
@@ -1180,14 +1236,6 @@ export class Trader implements trade.IProgramTrader {
         return [bonding_curve, bonding_curve_ata];
     }
 
-    private calc_bonding_curve_v2(mint: PublicKey): PublicKey {
-        const [bonding_curve] = PublicKey.findProgramAddressSync(
-            [PUMP_BONDING_SEED_2, mint.toBuffer()],
-            PUMP_PROGRAM_ID
-        );
-        return bonding_curve;
-    }
-
     private calc_mayhem_state(mint: PublicKey): [PublicKey, PublicKey] {
         const [state] = PublicKey.findProgramAddressSync([MAYHEM_STATE_SEED, mint.toBuffer()], MAYHEM_PROGRAM_ID);
         const [token_vault] = PublicKey.findProgramAddressSync(
@@ -1318,11 +1366,17 @@ export class Trader implements trade.IProgramTrader {
         const sol_amount_raw = BigInt(Math.floor(sol_amount * LAMPORTS_PER_SOL));
 
         const token_amount_raw = this.calc_token_amount_raw(sol_amount_raw, mint_meta);
-        const instruction_data = this.buy_data(sol_amount_raw, token_amount_raw, slippage);
+        const instruction_data = this.amm_buy_exact_quote_in_data(sol_amount_raw, token_amount_raw, slippage);
         const token_ata = trade.calc_ata(buyer.publicKey, mint, token_program);
         const wsol_ata = trade.calc_ata(buyer.publicKey, SOL_MINT);
         const wsol_user_accumulator_ata = trade.calc_ata(user_volume_accumulator, SOL_MINT);
         const pool_v2 = this.calc_pool_v2(mint);
+        const fee_recipients = mint_meta.is_mayhem ? MAYHEM_FEE_RECIPIENTS : PUMP_FEE_RECIPIENTS;
+        const fee_recipient = fee_recipients[Math.floor(Math.random() * fee_recipients.length)];
+        const fee_recipient_ata = trade.calc_ata(fee_recipient, SOL_MINT);
+        const buyback_fee_recipient =
+            PUMP_BUYBACK_FEE_RECIPIENTS[Math.floor(Math.random() * PUMP_BUYBACK_FEE_RECIPIENTS.length)];
+        const buyback_fee_recipient_ata = trade.calc_ata(buyback_fee_recipient, SOL_MINT);
 
         return [
             createAssociatedTokenAccountIdempotentInstruction(
@@ -1350,16 +1404,8 @@ export class Trader implements trade.IProgramTrader {
                     { pubkey: wsol_ata, isSigner: false, isWritable: true },
                     { pubkey: bonding_curve, isSigner: false, isWritable: true },
                     { pubkey: assoc_bonding_curve, isSigner: false, isWritable: true },
-                    {
-                        pubkey: mint_meta.is_mayhem ? MAYHEM_FEE_ACCOUNT : PUMP_AMM_FEE_ACCOUNT,
-                        isSigner: false,
-                        isWritable: false
-                    },
-                    {
-                        pubkey: mint_meta.is_mayhem ? MAYHEM_FEE_TOKEN_ACCOUNT : PUMP_AMM_FEE_TOKEN_ACCOUNT,
-                        isSigner: false,
-                        isWritable: true
-                    },
+                    { pubkey: fee_recipient, isSigner: false, isWritable: false },
+                    { pubkey: fee_recipient_ata, isSigner: false, isWritable: true },
                     { pubkey: token_program, isSigner: false, isWritable: false },
                     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
                     { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
@@ -1375,7 +1421,9 @@ export class Trader implements trade.IProgramTrader {
                     ...(mint_meta.is_cashback
                         ? [{ pubkey: wsol_user_accumulator_ata, isSigner: false, isWritable: true }]
                         : []),
-                    { pubkey: pool_v2, isSigner: false, isWritable: false }
+                    { pubkey: pool_v2, isSigner: false, isWritable: false },
+                    { pubkey: buyback_fee_recipient, isSigner: false, isWritable: true },
+                    { pubkey: buyback_fee_recipient_ata, isSigner: false, isWritable: true }
                 ],
                 programId: PUMP_AMM_PROGRAM_ID,
                 data: instruction_data
@@ -1413,11 +1461,17 @@ export class Trader implements trade.IProgramTrader {
         const token_amount_raw = BigInt(token_amount.amount);
 
         const sol_amount_raw = this.calc_sol_amount_raw(token_amount_raw, mint_meta);
-        const instruction_data = this.sell_data(sol_amount_raw, token_amount_raw, slippage);
+        const instruction_data = this.amm_sell_data(sol_amount_raw, token_amount_raw, slippage);
         const token_ata = trade.calc_ata(seller.publicKey, mint, token_program);
         const wsol_ata = trade.calc_ata(seller.publicKey, SOL_MINT);
         const wsol_user_accumulator_ata = trade.calc_ata(user_volume_accumulator, SOL_MINT);
         const pool_v2 = this.calc_pool_v2(mint);
+        const fee_recipients = mint_meta.is_mayhem ? MAYHEM_FEE_RECIPIENTS : PUMP_FEE_RECIPIENTS;
+        const fee_recipient = fee_recipients[Math.floor(Math.random() * fee_recipients.length)];
+        const fee_recipient_ata = trade.calc_ata(fee_recipient, SOL_MINT);
+        const buyback_fee_recipient =
+            PUMP_BUYBACK_FEE_RECIPIENTS[Math.floor(Math.random() * PUMP_BUYBACK_FEE_RECIPIENTS.length)];
+        const buyback_fee_recipient_ata = trade.calc_ata(buyback_fee_recipient, SOL_MINT);
 
         return [
             createAssociatedTokenAccountIdempotentInstruction(seller.publicKey, wsol_ata, seller.publicKey, SOL_MINT),
@@ -1432,16 +1486,8 @@ export class Trader implements trade.IProgramTrader {
                     { pubkey: wsol_ata, isSigner: false, isWritable: true },
                     { pubkey: bonding_curve, isSigner: false, isWritable: true },
                     { pubkey: assoc_bonding_curve, isSigner: false, isWritable: true },
-                    {
-                        pubkey: mint_meta.is_mayhem ? MAYHEM_FEE_ACCOUNT : PUMP_AMM_FEE_ACCOUNT,
-                        isSigner: false,
-                        isWritable: false
-                    },
-                    {
-                        pubkey: mint_meta.is_mayhem ? MAYHEM_FEE_TOKEN_ACCOUNT : PUMP_AMM_FEE_TOKEN_ACCOUNT,
-                        isSigner: false,
-                        isWritable: true
-                    },
+                    { pubkey: fee_recipient, isSigner: false, isWritable: false },
+                    { pubkey: fee_recipient_ata, isSigner: false, isWritable: true },
                     { pubkey: token_program, isSigner: false, isWritable: false },
                     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
                     { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
@@ -1458,7 +1504,9 @@ export class Trader implements trade.IProgramTrader {
                               { pubkey: user_volume_accumulator, isSigner: false, isWritable: true }
                           ]
                         : []),
-                    { pubkey: pool_v2, isSigner: false, isWritable: false }
+                    { pubkey: pool_v2, isSigner: false, isWritable: false },
+                    { pubkey: buyback_fee_recipient, isSigner: false, isWritable: true },
+                    { pubkey: buyback_fee_recipient_ata, isSigner: false, isWritable: true }
                 ],
                 programId: PUMP_AMM_PROGRAM_ID,
                 data: instruction_data
@@ -1528,21 +1576,14 @@ export class Trader implements trade.IProgramTrader {
         if (!this.graduated_mints_cache) {
             this.graduated_mints_cache = [];
             try {
-                const amms = await global.CONNECTION.getProgramAccounts(PUMP_AMM_PROGRAM_ID, {
-                    filters: [
-                        {
-                            memcmp: {
-                                offset: 0,
-                                bytes: base58.encode(PUMP_AMM_STATE_HEADER)
-                            }
-                        }
-                    ],
-                    dataSlice: {
+                const amms = await trade.get_program_accounts_v2(
+                    PUMP_AMM_PROGRAM_ID,
+                    [{ memcmp: { offset: 0, bytes: base58.encode(PUMP_AMM_STATE_HEADER) } }],
+                    {
                         offset: AMMStateStruct.get_offset('base_mint'),
                         length: AMMStateStruct.get_size() - AMMStateStruct.get_offset('base_mint')
-                    },
-                    commitment: COMMITMENT
-                });
+                    }
+                );
                 if (amms) {
                     for (const chunk of common.chunks(amms, 100)) {
                         for (const acc of chunk) {
