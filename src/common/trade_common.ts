@@ -142,21 +142,12 @@ export interface IMintMeta {
     serialize(): SerializedMintMeta;
 }
 
-export type ClaimedAsset = {
+export interface ClaimableAsset {
     mint: PublicKey;
     raw_amount: bigint;
     decimals: number;
-    source: 'creator_fee' | 'position_fee' | 'position_reward';
-};
-
-export type ClaimSkippedAsset = { id: PublicKey; mint?: PublicKey; raw_amount?: bigint; reason: string };
-
-export type ClaimDevFeesResult = {
-    signatures: String[];
-    assets: ClaimedAsset[];
-    skipped: ClaimSkippedAsset[];
-};
-
+    source: 'creator_reward' | 'position_reward';
+}
 export interface IProgramTrader {
     get_name(): string;
     get_lta_addresses(): PublicKey[];
@@ -231,7 +222,8 @@ export interface IProgramTrader {
     subscribe_mint_meta(mint_meta: IMintMeta, callback: (mint_meta: IMintMeta) => void): Promise<() => void>;
     update_mint_meta_reserves(mint_meta: IMintMeta, amount: number | TokenAmount): IMintMeta;
     default_mint_meta(mint: PublicKey, sol_price?: number, data?: object): Promise<IMintMeta>;
-    claim_dev_fees(trader: Signer, dry_run: boolean, priority?: PriorityLevel): Promise<ClaimDevFeesResult>;
+    get_trader_fees(trader: Signer): Promise<ClaimableAsset[]>;
+    claim_trader_fees(trader: Signer, assets: ClaimableAsset[], priority?: PriorityLevel): Promise<String>;
 }
 
 type PriorityOptions = {

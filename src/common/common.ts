@@ -44,7 +44,7 @@ export enum Program {
     Meteora = 'meteora',
     Raydium = 'raydium',
     Bonk = 'bonk',
-    Generic = 'generic'
+    Jupiter = 'jupiter'
 }
 
 export function bold(message: string): string {
@@ -89,6 +89,13 @@ export function error(message: string): void {
     clearLine(process.stdout, 0);
     cursorTo(process.stdout, 0);
     console.error(message);
+    if (global.RL !== undefined) global.RL.prompt(true);
+}
+
+export function warn(message: string): void {
+    clearLine(process.stdout, 0);
+    cursorTo(process.stdout, 0);
+    console.warn(message);
     if (global.RL !== undefined) global.RL.prompt(true);
 }
 

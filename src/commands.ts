@@ -68,7 +68,8 @@ export async function clean(wallets: common.Wallet[], burn: boolean = false): Pr
             batch.map(async (wallet) => {
                 try {
                     const closer = wallet.keypair;
-                    common.log(`Cleaning ${closer.publicKey.toString().padEnd(44, ' ')} (${wallet.name})...`);
+                    const prefix = `${wallet.keypair.publicKey.toString().padEnd(44, ' ')} ${wallet.name} (${wallet.id})`;
+                    common.log(`Cleaning ${prefix}...`);
                     const {
                         unsold_mints: unsold,
                         failed_cnt,
@@ -81,14 +82,12 @@ export async function clean(wallets: common.Wallet[], burn: boolean = false): Pr
                     if (failed_cnt > 0) unclosed_wallets.push(wallet);
                     if (unsold.length > 0) unsold_wallets.push(wallet);
                     for (const result of closed) {
-                        common.log(
-                            `${closer.publicKey.toString().padEnd(44, ' ')} (${wallet.name}) | ${result.count} accounts closed after ${result.attempts} attempts | Signature ${result.signature}`
-                        );
+                        common.log(`${prefix} | ${result.count} accounts closed | Signature ${result.signature}`);
                     }
                     for (const failure of failures) {
                         common.error(
                             common.red(
-                                `${closer.publicKey.toString().padEnd(44, ' ')} (${wallet.name}) | Failed to close ${failure.count} accounts after ${failure.attempts} attempts: ${failure.error}`
+                                `${prefix} | Failed to close ${failure.count} accounts after ${failure.attempts} attempts: ${failure.error}`
                             )
                         );
                     }
@@ -100,9 +99,7 @@ export async function clean(wallets: common.Wallet[], burn: boolean = false): Pr
                         });
                     }
                     if (closed_cnt === 0 && failed_cnt === 0 && unsold.length === 0)
-                        common.log(
-                            `${closer.publicKey.toString().padEnd(44, ' ')} (${wallet.name}) | No accounts to close`
-                        );
+                        common.log(`${prefix} | No accounts to close`);
                 } catch (error) {
                     unclosed_wallets.push(wallet);
                     common.error(
@@ -141,10 +138,10 @@ export async function clean(wallets: common.Wallet[], burn: boolean = false): Pr
     }
 }
 
-export async function claim_dev_fees(
+export async function claim_fees(
     wallets: common.Wallet[],
     program: common.Program,
-    dry_run: boolean,
+    print_only: boolean,
     priority?: PriorityLevel
 ): Promise<void> {
     if (wallets.length === 0) throw new Error('No wallets available.');
@@ -152,26 +149,23 @@ export async function claim_dev_fees(
     let total_sol_raw = 0n;
     for (const wallet of wallets) {
         try {
-            const result = await trader.claim_dev_fees(wallet.keypair, dry_run, priority);
-            const prefix = `${wallet.id} ${wallet.keypair.publicKey.toString()} (${wallet.name})`;
-            for (const asset of result.assets) {
-                if (asset.mint.equals(SOL_MINT)) total_sol_raw += asset.raw_amount;
+            const prefix = `${wallet.keypair.publicKey.toString().padEnd(44, ' ')} ${wallet.name} (${wallet.id})`;
+            const assets = await trader.get_trader_fees(wallet.keypair);
+            for (const asset of assets) {
+                const is_sol = asset.mint.equals(SOL_MINT);
+                if (is_sol) total_sol_raw += asset.raw_amount;
+
+                const token_label = is_sol ? 'SOL' : asset.mint.toString();
+                const amount = (Number(asset.raw_amount) / 10 ** asset.decimals).toFixed(asset.decimals);
+
                 common.log(
-                    `${prefix}: ${dry_run ? 'available' : 'claimed'} ${asset.raw_amount} raw units (${asset.decimals} decimals) ${asset.source} ${asset.mint}`
+                    `${prefix}: ${print_only ? 'available' : 'claimed'} ${amount} ${token_label} (${asset.source})`
                 );
             }
-            for (const skipped of result.skipped)
-                common.log(
-                    common.yellow(
-                        `${prefix}: skipped ${skipped.id}${skipped.mint ? ` ${skipped.mint}` : ''}: ${skipped.reason}`
-                    )
-                );
-            if (!dry_run && result.signatures.length > 0)
-                common.log(
-                    common.green(
-                        `${prefix}: signature${result.signatures.length === 1 ? '' : 's'} ${result.signatures.join(', ')}`
-                    )
-                );
+            if (print_only || assets.length === 0) continue;
+
+            const signature = await trader.claim_trader_fees(wallet.keypair, assets, priority);
+            common.log(common.green(`${prefix}: signature ${signature}`));
         } catch (error) {
             common.error(common.red(`Failed to claim dev fees for ${wallet.name}: ${error}`));
         }
@@ -179,7 +173,7 @@ export async function claim_dev_fees(
     }
     common.log(
         common.bold(
-            `${dry_run ? 'Available' : 'Claimed'} SOL dev fees: ${Number(total_sol_raw) / LAMPORTS_PER_SOL} SOL`
+            `${print_only ? 'Available' : 'Claimed'} SOL dev fees: ${Number(total_sol_raw) / LAMPORTS_PER_SOL} SOL`
         )
     );
 }
@@ -605,7 +599,7 @@ export async function warmup(
         const mints = await get_random_mints(trader, token_cnts[i]);
         common.log(
             common.yellow(
-                `\nWarming up ${buyer.publicKey.toString().padEnd(44, ' ')} with ${token_cnts[i]} tokens ${wallet.name} (${wallet.id})...`
+                `\nWarming up ${buyer.publicKey.toString().padEnd(44, ' ')} ${wallet.name} (${wallet.id}) with ${token_cnts[i]} tokens...`
             )
         );
         for (const mint of mints) {

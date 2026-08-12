@@ -278,6 +278,12 @@ type DBCData = {
     quote_vault: string;
 };
 
+type MeteoraClaimableAsset = trade.ClaimableAsset & {
+    pool: PublicKey;
+    state: ReturnType<typeof DBCStateStruct.decode>;
+    config: ReturnType<typeof DBCConfigStruct.decode>;
+};
+
 export class Trader implements trade.IProgramTrader {
     public get_name(): string {
         return common.Program.Meteora;
@@ -291,14 +297,66 @@ export class Trader implements trade.IProgramTrader {
         return MeteoraMintMeta.deserialize(data);
     }
 
-    public async claim_dev_fees(
+    public async get_trader_fees(trader: Signer): Promise<MeteoraClaimableAsset[]> {
+        const pools = await trade.get_program_accounts_v2(METEORA_DBC_PROGRAM_ID, [
+            { memcmp: { offset: DBCStateStruct.get_offset('creator'), bytes: trader.publicKey.toBase58() } },
+            { memcmp: { offset: 0, bytes: base58.encode(METEORA_DBC_STATE_HEADER) } }
+        ]);
+
+        const assets = await Promise.all(
+            pools.map(async ({ pubkey, account }) => {
+                const state = DBCStateStruct.decode(account.data);
+                if (state.creator_base_fee === 0n && state.creator_quote_fee === 0n) return null;
+
+                const config_info = await global.CONNECTION.getAccountInfo(state.config, COMMITMENT);
+                if (!config_info) {
+                    common.warn('DBC configuration account is missing.');
+                    return null;
+                }
+
+                const config = DBCConfigStruct.decode(config_info.data);
+                if (config.token_type !== 0 || config.quote_token_flag !== 0) {
+                    common.warn('DBC Token-2022 or transfer-hook creator-fee claims are not supported.');
+                    return null;
+                }
+                if (state.creator_base_fee > 0n) {
+                    const supply = await trade.get_token_supply(state.base_mint);
+                    return {
+                        mint: state.base_mint,
+                        raw_amount: state.creator_base_fee,
+                        decimals: supply.decimals,
+                        source: 'creator_reward' as const,
+                        state,
+                        config,
+                        pool: pubkey
+                    };
+                }
+                if (state.creator_quote_fee > 0n) {
+                    const supply = await trade.get_token_supply(config.quote_mint);
+                    return {
+                        mint: config.quote_mint,
+                        raw_amount: state.creator_quote_fee,
+                        decimals: config.quote_mint.equals(SOL_MINT) ? 9 : supply.decimals,
+                        source: 'creator_reward' as const,
+                        state,
+                        config,
+                        pool: pubkey
+                    };
+                }
+                return null;
+            })
+        );
+
+        return assets.filter((a) => a !== null);
+    }
+
+    public async claim_trader_fees(
         trader: Signer,
-        dry_run: boolean,
+        assets: MeteoraClaimableAsset[],
         priority?: PriorityLevel
-    ): Promise<trade.ClaimDevFeesResult> {
-        const assets: trade.ClaimedAsset[] = [];
-        const skipped: trade.ClaimSkippedAsset[] = [];
-        const instructions: TransactionInstruction[] = [];
+    ): Promise<String> {
+        if (assets.length === 0) throw new Error(`No assets were provided`);
+
         const created_atas = new Set<string>();
         const add_ata = (mint: PublicKey) => {
             const ata = trade.calc_ata(trader.publicKey, mint);
@@ -310,27 +368,13 @@ export class Trader implements trade.IProgramTrader {
             }
             return ata;
         };
-        const pools = await trade.get_program_accounts_v2(METEORA_DBC_PROGRAM_ID, [
-            { memcmp: { offset: DBCStateStruct.get_offset('creator'), bytes: trader.publicKey.toBase58() } },
-            { memcmp: { offset: 0, bytes: base58.encode(METEORA_DBC_STATE_HEADER) } }
-        ]);
 
-        for (const { pubkey: pool, account } of pools) {
-            const state = DBCStateStruct.decode(account.data);
-            if (state.creator_base_fee === 0n && state.creator_quote_fee === 0n) continue;
-            const config_info = await global.CONNECTION.getAccountInfo(state.config, COMMITMENT);
-            if (!config_info) {
-                skipped.push({ id: pool, reason: 'DBC configuration account is missing.' });
-                continue;
-            }
-            const config = DBCConfigStruct.decode(config_info.data);
-            if (config.token_type !== 0 || config.quote_token_flag !== 0) {
-                skipped.push({
-                    id: pool,
-                    reason: 'DBC Token-2022 or transfer-hook creator-fee claims are not supported.'
-                });
-                continue;
-            }
+        const instructions: TransactionInstruction[] = [];
+
+        for (const asset of assets) {
+            const state = asset.state;
+            const config = asset.config;
+
             const base_ata = add_ata(state.base_mint);
             const quote_ata = add_ata(config.quote_mint);
             const data = Buffer.alloc(24);
@@ -343,7 +387,7 @@ export class Trader implements trade.IProgramTrader {
                     data,
                     keys: [
                         { pubkey: METEORA_DBC_POOL_AUTHORITY, isSigner: false, isWritable: false },
-                        { pubkey: pool, isSigner: false, isWritable: true },
+                        { pubkey: asset.pool, isSigner: false, isWritable: true },
                         { pubkey: base_ata, isSigner: false, isWritable: true },
                         { pubkey: quote_ata, isSigner: false, isWritable: true },
                         { pubkey: state.base_vault, isSigner: false, isWritable: true },
@@ -358,27 +402,12 @@ export class Trader implements trade.IProgramTrader {
                     ]
                 })
             );
-            if (state.creator_base_fee > 0n)
-                assets.push({
-                    mint: state.base_mint,
-                    raw_amount: state.creator_base_fee,
-                    decimals: (await trade.get_token_supply(state.base_mint)).decimals,
-                    source: 'creator_fee'
-                });
-            if (state.creator_quote_fee > 0n)
-                assets.push({
-                    mint: config.quote_mint,
-                    raw_amount: state.creator_quote_fee,
-                    decimals: config.quote_mint.equals(SOL_MINT)
-                        ? 9
-                        : (await trade.get_token_supply(config.quote_mint)).decimals,
-                    source: 'creator_fee'
-                });
             if (config.quote_mint.equals(SOL_MINT))
                 instructions.push(createCloseAccountInstruction(quote_ata, trader.publicKey, trader.publicKey));
         }
-        if (dry_run || instructions.length === 0) return { signatures: [], assets, skipped };
-        return { signatures: [await trade.send_tx(instructions, [trader], priority)], assets, skipped };
+
+        if (instructions.length === 0) throw new Error('Invalid assets were provided, no tx was derived');
+        return await trade.send_tx(instructions, [trader], priority);
     }
 
     public async buy_token(

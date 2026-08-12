@@ -99,11 +99,11 @@ export async function execute_fast(
 }
 
 export async function execute_natural(_volume_config: VolumeConfig, _trader: trade.IProgramTrader) {
-    throw new Error('[ERROR] Not implemented.');
+    throw new Error('Not implemented.');
 }
 
 export async function execute_bump(_volume_config: VolumeConfig, _trader: trade.IProgramTrader) {
-    throw new Error('[ERROR] Not implemented.');
+    throw new Error('Not implemented.');
 }
 
 export async function simulate(sol_price: number, volume_config: VolumeConfig, trader: trade.IProgramTrader) {
@@ -145,7 +145,7 @@ export async function simulate(sol_price: number, volume_config: VolumeConfig, t
             };
         }
         default:
-            throw new Error('[ERROR] Not implemented.');
+            throw new Error('Not implemented.');
     }
 }
 

@@ -322,18 +322,18 @@ async function main() {
         .action(async (options) => await commands.clean(wallets, options.burn));
 
     program
-        .command('claim-dev-fees')
-        .alias('cdf')
-        .description('Claim Pump creator fees for the wallets')
-        .option('--dry-run', 'Print available fees without claiming them', false)
+        .command('claim-fees')
+        .alias('cf')
+        .description('Claim trader/dev fees for the wallets')
+        .option('-p, --print', 'Print available fees without claiming them', false)
         .addOption(get_from_option(wallet_cnt))
         .addOption(get_to_option(wallet_cnt))
         .addOption(get_list_option(wallet_cnt))
         .addOption(get_priority_option())
         .action(async (options) => {
-            const { dryRun, from, to, list, priority } = options;
+            const { print, from, to, list, priority } = options;
             const pg = program.opts().program;
-            await commands.claim_dev_fees(common.filter_wallets(wallets, from, to, list), pg, dryRun, priority);
+            await commands.claim_fees(common.filter_wallets(wallets, from, to, list), pg, print, priority);
         });
 
     program

@@ -14,6 +14,7 @@ import {
     COMMITMENT,
     PriorityLevel,
     RAYDIUM_CPMM_AUTHORITY,
+    RAYDIUM_CPMM_CREATOR_FEE_CLAIM_DISCRIMINATOR,
     RAYDIUM_CPMM_POOL_STATE_HEADER,
     RAYDIUM_CPMM_PROGRAM_ID,
     RAYDIUM_CPMM_SWAP_DISCRIMINATOR,
@@ -33,6 +34,7 @@ import {
     TRADE_MAX_SLIPPAGE
 } from '../constants';
 import {
+    ASSOCIATED_TOKEN_PROGRAM_ID,
     createAssociatedTokenAccountIdempotentInstruction,
     createCloseAccountInstruction,
     createSyncNativeInstruction,
@@ -108,6 +110,11 @@ type CPMMState = ReturnType<typeof CPMMStateStruct.decode> & {
     token_0_reserves: bigint;
     token_1_reserves: bigint;
     supply: bigint;
+};
+
+type RaydiumClaimableAsset = trade.ClaimableAsset & {
+    state: ReturnType<typeof CPMMStateStruct.decode>;
+    pool: PublicKey;
 };
 
 export class RaydiumMintMeta implements trade.IMintMeta {
@@ -232,45 +239,46 @@ export class RaydiumTrader implements trade.IProgramTrader {
         return RaydiumMintMeta.deserialize(data);
     }
 
-    public async claim_dev_fees(
-        trader: Signer,
-        dry_run: boolean,
-        priority?: PriorityLevel
-    ): Promise<trade.ClaimDevFeesResult> {
+    public async get_trader_fees(trader: Signer): Promise<RaydiumClaimableAsset[]> {
         const pools = await trade.get_program_accounts_v2(RAYDIUM_CPMM_PROGRAM_ID, [
             { memcmp: { offset: CPMMStateStruct.get_offset('pool_creator'), bytes: trader.publicKey.toBase58() } },
             { memcmp: { offset: 0, bytes: base58.encode(RAYDIUM_CPMM_POOL_STATE_HEADER) } }
         ]);
-        const states = pools.map(({ pubkey, account }) => ({
-            pool: pubkey,
-            state: CPMMStateStruct.decode(account.data)
-        }));
-        const assets = states.flatMap(({ state }) => [
-            ...(state.creator_fees_token_0 === 0n
-                ? []
-                : [
-                      {
-                          mint: state.token_0_mint,
-                          raw_amount: state.creator_fees_token_0,
-                          decimals: 9,
-                          source: 'creator_fee' as const
-                      }
-                  ]),
-            ...(state.creator_fees_token_1 === 0n
-                ? []
-                : [
-                      {
-                          mint: state.token_1_mint,
-                          raw_amount: state.creator_fees_token_1,
-                          decimals: 9,
-                          source: 'creator_fee' as const
-                      }
-                  ])
-        ]);
-        if (assets.length === 0 || dry_run) return { signatures: [], assets, skipped: [] };
+        const assets = pools.map(({ pubkey, account }) => {
+            const state = CPMMStateStruct.decode(account.data);
+            if (state.creator_fees_token_0 === 0n)
+                return {
+                    mint: state.token_0_mint,
+                    raw_amount: state.creator_fees_token_0,
+                    decimals: 9,
+                    source: 'creator_reward' as const,
+                    state,
+                    pool: pubkey
+                };
+            if (state.creator_fees_token_1 === 0n)
+                return {
+                    mint: state.token_1_mint,
+                    raw_amount: state.creator_fees_token_1,
+                    decimals: 9,
+                    source: 'creator_reward' as const,
+                    state,
+                    pool: pubkey
+                };
+            return null;
+        });
+        return assets.filter((a) => a !== null);
+    }
+
+    public async claim_trader_fees(
+        trader: Signer,
+        assets: RaydiumClaimableAsset[],
+        priority?: PriorityLevel
+    ): Promise<String> {
+        if (assets.length === 0) throw new Error(`No assets were provided`);
 
         const instructions: TransactionInstruction[] = [];
-        for (const { pool, state } of states) {
+        for (const asset of assets) {
+            const state = asset.state;
             if (state.creator_fees_token_0 === 0n && state.creator_fees_token_1 === 0n) continue;
             const creator_token_0 = trade.calc_ata(trader.publicKey, state.token_0_mint, state.token_0_program);
             const creator_token_1 = trade.calc_ata(trader.publicKey, state.token_1_mint, state.token_1_program);
@@ -291,11 +299,11 @@ export class RaydiumTrader implements trade.IProgramTrader {
                 ),
                 new TransactionInstruction({
                     programId: RAYDIUM_CPMM_PROGRAM_ID,
-                    data: Buffer.from([20, 22, 86, 123, 198, 28, 219, 132]),
+                    data: Buffer.from(RAYDIUM_CPMM_CREATOR_FEE_CLAIM_DISCRIMINATOR),
                     keys: [
                         { pubkey: trader.publicKey, isSigner: true, isWritable: true },
                         { pubkey: RAYDIUM_CPMM_AUTHORITY, isSigner: false, isWritable: false },
-                        { pubkey: pool, isSigner: false, isWritable: true },
+                        { pubkey: asset.pool, isSigner: false, isWritable: true },
                         { pubkey: state.amm_config, isSigner: false, isWritable: false },
                         { pubkey: state.token_0_vault, isSigner: false, isWritable: true },
                         { pubkey: state.token_1_vault, isSigner: false, isWritable: true },
@@ -306,7 +314,7 @@ export class RaydiumTrader implements trade.IProgramTrader {
                         { pubkey: state.token_0_program, isSigner: false, isWritable: false },
                         { pubkey: state.token_1_program, isSigner: false, isWritable: false },
                         {
-                            pubkey: new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL'),
+                            pubkey: ASSOCIATED_TOKEN_PROGRAM_ID,
                             isSigner: false,
                             isWritable: false
                         },
@@ -315,7 +323,9 @@ export class RaydiumTrader implements trade.IProgramTrader {
                 })
             );
         }
-        return { signatures: [await trade.send_tx(instructions, [trader], priority)], assets, skipped: [] };
+
+        if (instructions.length === 0) throw new Error('Invalid assets were provided, no tx was derived');
+        return await trade.send_tx(instructions, [trader], priority);
     }
 
     public async buy_token(
@@ -467,7 +477,7 @@ export class RaydiumTrader implements trade.IProgramTrader {
     }
 
     public async get_random_mints(_count: number): Promise<RaydiumMintMeta[]> {
-        throw new Error('Random mint discovery is not implemented for Raydium.');
+        throw new Error('Not implemented');
     }
 
     public async create_token(
@@ -481,11 +491,11 @@ export class RaydiumTrader implements trade.IProgramTrader {
         _bundle_tip?: number,
         _priority?: PriorityLevel
     ): Promise<String> {
-        throw new Error('Token creation is not implemented for Raydium.');
+        throw new Error('Not implemented');
     }
 
     public async create_token_metadata(_meta: common.IPFSMetadata, _image_path: string): Promise<string> {
-        throw new Error('Token metadata upload is not implemented for Raydium.');
+        throw new Error('Not implemented');
     }
 
     public update_mint_meta_reserves(mint_meta: RaydiumMintMeta, amount: number | TokenAmount): RaydiumMintMeta {

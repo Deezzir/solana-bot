@@ -36,7 +36,7 @@
     Options:
       -V, --version                                                  output the version number
       -k, --keys <path>                                              Path to the CSV file with the wallets (default: keys.csv)
-      -g, --program <type>                                           specify program (choices: "pump", "meteora", "raydium", "bonk", "generic", default: pump)
+      -g, --program <type>                                           specify program (choices: "pump", "meteora", "raydium", "bonk", "jupiter", default: pump)
       --no-colors                                                    Disable colored output
       -h, --help                                                     display help for command
 
@@ -48,7 +48,7 @@
       token-balance|tb <mint>                                        Get the token balance of the wallets
       warmup|w [options]                                             Warmup the wallets with the tokens
       clean|cl                                                       Clean the wallets by closing zero balance token accounts
-      claim-dev-fees [options]                                       Claim Pump creator fees for the wallets
+      claim-fees [options]                                           Claim trader/dev fees for the wallets
       token-burn|tburn [options] <mint> <burner_index>               Burn the tokens by mint from a wallet
       collect|c [options] <receiver>                                 Collect all the SOL from the wallets to the provided address
       token-collect|tc [options] <mint> <receiver>                   Collect all tokens by mint from the wallets to the provided address

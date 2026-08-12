@@ -233,6 +233,12 @@ type AMMState = ReturnType<typeof AMMStateStruct.decode> & {
     supply: bigint;
 };
 
+type PumpClaimableAsset = trade.ClaimableAsset & {
+    vault: PublicKey;
+    vault_ata: PublicKey;
+    curve: 'v1' | 'v2';
+};
+
 export class Trader implements trade.IProgramTrader {
     public get_name(): string {
         return common.Program.Pump;
@@ -246,76 +252,95 @@ export class Trader implements trade.IProgramTrader {
         return PumpMintMeta.deserialize(data);
     }
 
-    public async claim_dev_fees(
-        trader: Signer,
-        dry_run: boolean,
-        priority?: PriorityLevel
-    ): Promise<trade.ClaimDevFeesResult> {
-        const [creator_vault] = this.calc_creator_vault(trader.publicKey);
+    public async get_trader_fees(trader: Signer): Promise<PumpClaimableAsset[]> {
         const [amm_creator_vault, amm_creator_vault_ata] = this.calc_amm_creator_vault(trader.publicKey);
+        const [creator_vault, creator_vault_ata] = this.calc_creator_vault(trader.publicKey);
         const [creator_vault_info, creator_vault_rent, amm_fees] = await Promise.all([
             global.CONNECTION.getAccountInfo(creator_vault, COMMITMENT),
             global.CONNECTION.getMinimumBalanceForRentExemption(0, COMMITMENT),
             trade.get_vault_balance(amm_creator_vault_ata).catch(() => ({ balance: 0n, decimals: 9 }))
         ]);
         const pump_fees = Math.max(0, (creator_vault_info?.lamports ?? 0) - creator_vault_rent);
-        const fees = (pump_fees + Number(amm_fees.balance)) / LAMPORTS_PER_SOL;
-        const assets =
-            fees === 0
-                ? []
-                : [
-                      {
-                          mint: SOL_MINT,
-                          raw_amount: BigInt(pump_fees) + amm_fees.balance,
-                          decimals: 9,
-                          source: 'creator_fee' as const
-                      }
-                  ];
-        if (fees === 0 || dry_run) return { signatures: [], assets, skipped: [] };
+        const assets = [];
+        if (pump_fees > 0) {
+            assets.push({
+                mint: SOL_MINT,
+                raw_amount: BigInt(pump_fees),
+                decimals: 9,
+                source: 'creator_reward' as const,
+                vault: creator_vault,
+                vault_ata: creator_vault_ata,
+                curve: 'v1' as const
+            });
+        }
+        if (amm_fees.balance > 0) {
+            assets.push({
+                mint: SOL_MINT,
+                raw_amount: BigInt(amm_fees.balance),
+                decimals: 9,
+                source: 'creator_reward' as const,
+                vault: amm_creator_vault,
+                vault_ata: amm_creator_vault_ata,
+                curve: 'v2' as const
+            });
+        }
+        return assets;
+    }
+
+    public async claim_trader_fees(
+        trader: Signer,
+        assets: PumpClaimableAsset[],
+        priority?: PriorityLevel
+    ): Promise<String> {
+        if (assets.length === 0) throw new Error(`No assets were provided`);
 
         const creator_ata = trade.calc_ata(trader.publicKey, SOL_MINT);
         const instructions: TransactionInstruction[] = [];
-        if (pump_fees > 0) {
-            instructions.push(
-                new TransactionInstruction({
-                    keys: [
-                        { pubkey: trader.publicKey, isSigner: false, isWritable: true },
-                        { pubkey: creator_vault, isSigner: false, isWritable: true },
-                        { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
-                        { pubkey: PUMP_EVENT_AUTHORITY_ACCOUNT, isSigner: false, isWritable: false },
-                        { pubkey: PUMP_PROGRAM_ID, isSigner: false, isWritable: false }
-                    ],
-                    programId: PUMP_PROGRAM_ID,
-                    data: Buffer.from(PUMP_COLLECT_CREATOR_FEE_DISCRIMINATOR)
-                })
-            );
+
+        for (const asset of assets) {
+            if (asset.curve === 'v1') {
+                instructions.push(
+                    new TransactionInstruction({
+                        keys: [
+                            { pubkey: trader.publicKey, isSigner: false, isWritable: true },
+                            { pubkey: asset.vault, isSigner: false, isWritable: true },
+                            { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
+                            { pubkey: PUMP_EVENT_AUTHORITY_ACCOUNT, isSigner: false, isWritable: false },
+                            { pubkey: PUMP_PROGRAM_ID, isSigner: false, isWritable: false }
+                        ],
+                        programId: PUMP_PROGRAM_ID,
+                        data: Buffer.from(PUMP_COLLECT_CREATOR_FEE_DISCRIMINATOR)
+                    })
+                );
+            } else if (asset.curve === 'v2') {
+                instructions.push(
+                    createAssociatedTokenAccountIdempotentInstruction(
+                        trader.publicKey,
+                        creator_ata,
+                        trader.publicKey,
+                        SOL_MINT
+                    ),
+                    new TransactionInstruction({
+                        keys: [
+                            { pubkey: SOL_MINT, isSigner: false, isWritable: false },
+                            { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+                            { pubkey: trader.publicKey, isSigner: false, isWritable: false },
+                            { pubkey: asset.vault, isSigner: false, isWritable: false },
+                            { pubkey: asset.vault_ata, isSigner: false, isWritable: true },
+                            { pubkey: creator_ata, isSigner: false, isWritable: true },
+                            { pubkey: PUMP_AMM_EVENT_AUTHORITY_ACCOUNT, isSigner: false, isWritable: false },
+                            { pubkey: PUMP_AMM_PROGRAM_ID, isSigner: false, isWritable: false }
+                        ],
+                        programId: PUMP_AMM_PROGRAM_ID,
+                        data: Buffer.from(PUMP_AMM_COLLECT_CREATOR_FEE_DISCRIMINATOR)
+                    }),
+                    createCloseAccountInstruction(creator_ata, trader.publicKey, trader.publicKey)
+                );
+            }
         }
-        if (amm_fees.balance > 0) {
-            instructions.push(
-                createAssociatedTokenAccountIdempotentInstruction(
-                    trader.publicKey,
-                    creator_ata,
-                    trader.publicKey,
-                    SOL_MINT
-                ),
-                new TransactionInstruction({
-                    keys: [
-                        { pubkey: SOL_MINT, isSigner: false, isWritable: false },
-                        { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-                        { pubkey: trader.publicKey, isSigner: false, isWritable: false },
-                        { pubkey: amm_creator_vault, isSigner: false, isWritable: false },
-                        { pubkey: amm_creator_vault_ata, isSigner: false, isWritable: true },
-                        { pubkey: creator_ata, isSigner: false, isWritable: true },
-                        { pubkey: PUMP_AMM_EVENT_AUTHORITY_ACCOUNT, isSigner: false, isWritable: false },
-                        { pubkey: PUMP_AMM_PROGRAM_ID, isSigner: false, isWritable: false }
-                    ],
-                    programId: PUMP_AMM_PROGRAM_ID,
-                    data: Buffer.from(PUMP_AMM_COLLECT_CREATOR_FEE_DISCRIMINATOR)
-                }),
-                createCloseAccountInstruction(creator_ata, trader.publicKey, trader.publicKey)
-            );
-        }
-        return { signatures: [await trade.send_tx(instructions, [trader], priority)], assets, skipped: [] };
+
+        if (instructions.length === 0) throw new Error('Invalid assets were provided, no tx was derived');
+        return await trade.send_tx(instructions, [trader], priority);
     }
 
     public async buy_token(
