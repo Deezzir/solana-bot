@@ -360,13 +360,19 @@ export function calc_ata(owner: PublicKey, mint: PublicKey, token_program: Publi
     return getAssociatedTokenAddressSync(mint, owner, true, token_program);
 }
 
-export function calc_token_balance_changes(tx: ParsedTransactionWithMeta, account: PublicKey): TxBalanceChanges | null {
+export function calc_token_balance_changes(
+    tx: ParsedTransactionWithMeta,
+    account: PublicKey,
+    mint?: string
+): TxBalanceChanges | null {
     if (!tx.meta || tx.meta.err || !tx.meta.postTokenBalances || !tx.meta.preTokenBalances) return null;
 
     const change_sol_index = tx.transaction.message.accountKeys.findIndex((acc) => acc.pubkey.equals(account));
-    const pre_token_balance_index = tx.meta.preTokenBalances.findIndex((change) => change.owner === account.toString());
+    const pre_token_balance_index = tx.meta.preTokenBalances.findIndex(
+        (change) => change.owner === account.toString() && (!mint || change.mint === mint)
+    );
     const post_token_balance_index = tx.meta.postTokenBalances.findIndex(
-        (change) => change.owner === account.toString()
+        (change) => change.owner === account.toString() && (!mint || change.mint === mint)
     );
 
     const pre_sol_balance = tx.meta.preBalances[change_sol_index] / LAMPORTS_PER_SOL;

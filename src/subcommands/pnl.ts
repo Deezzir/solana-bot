@@ -79,59 +79,18 @@ async function fetch_transaction_batch(signatures: string[]): Promise<(ParsedTra
     });
 }
 
-function extract_transaction_data(tx: ParsedTransactionWithMeta): {
-    mint?: string;
-    signature: string;
-} {
-    let mint;
-    // First check token balances for mint
-    if (tx.meta) {
-        if (tx.meta.preTokenBalances && tx.meta.preTokenBalances.length > 0) {
-            for (const token_balance of tx.meta.preTokenBalances) {
-                if (token_balance.mint && token_balance.mint !== SOL_MINT.toString()) {
-                    mint = token_balance.mint;
-                    break;
-                }
-            }
-        }
+function extract_transaction_data(
+    tx: ParsedTransactionWithMeta,
+    public_key: PublicKey
+): { mint: string; signature: string }[] {
+    const mints = new Set<string>();
+    const wallet = public_key.toString();
 
-        // If not found in pre balances, check post balances
-        if (!mint && tx.meta.postTokenBalances && tx.meta.postTokenBalances.length > 0) {
-            for (const token_balance of tx.meta.postTokenBalances) {
-                if (token_balance.mint && token_balance.mint !== SOL_MINT.toString()) {
-                    mint = token_balance.mint;
-                    break;
-                }
-            }
-        }
+    for (const token_balance of [...(tx.meta?.preTokenBalances || []), ...(tx.meta?.postTokenBalances || [])]) {
+        if (token_balance.owner === wallet && token_balance.mint !== SOL_MINT.toString()) mints.add(token_balance.mint);
     }
 
-    // If still no mint found, check instructions
-    if (!mint && tx.transaction?.message?.instructions) {
-        for (const instruction of tx.transaction.message.instructions) {
-            if ('parsed' in instruction && instruction.parsed?.info?.mint) {
-                mint = instruction.parsed.info.mint;
-                break;
-            }
-        }
-
-        if (!mint && tx.meta?.innerInstructions) {
-            for (const inner_instruction_set of tx.meta.innerInstructions) {
-                for (const instruction of inner_instruction_set.instructions) {
-                    if ('parsed' in instruction && instruction.parsed?.info?.mint) {
-                        mint = instruction.parsed.info.mint;
-                        break;
-                    }
-                }
-                if (mint) break;
-            }
-        }
-    }
-
-    return {
-        signature: tx.transaction.signatures[0],
-        mint
-    };
+    return Array.from(mints, (mint) => ({ signature: tx.transaction.signatures[0], mint }));
 }
 
 async function calculate_profit_loss(
@@ -225,17 +184,16 @@ export async function get_wallet_pnl(public_key: PublicKey, sol_price: number): 
         const processed_transactions: TransactionWithBalances[] = all_transactions
             .map((tx) => {
                 if (!tx) return;
-                const tx_data = extract_transaction_data(tx);
-                if (!tx_data.mint) return;
-                const balance_changes = calc_token_balance_changes(tx, public_key);
-                if (!balance_changes) return;
+                return extract_transaction_data(tx, public_key)
+                    .map((transaction_data) => {
+                        const balance_changes = calc_token_balance_changes(tx, public_key, transaction_data.mint);
+                        if (!balance_changes) return;
 
-                return {
-                    balance_changes: balance_changes,
-                    transaction_data: tx_data,
-                    ...tx
-                };
+                        return { balance_changes, transaction_data, ...tx };
+                    })
+                    .filter((transaction) => transaction !== undefined);
             })
+            .flat()
             .filter((tx) => tx !== undefined);
 
         const profit_loss = await calculate_profit_loss(processed_transactions, sol_price);
