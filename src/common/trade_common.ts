@@ -84,6 +84,12 @@ type HeliusAsset = {
     creators?: { address: string }[];
 };
 
+export type ProgramAccount = { pubkey: PublicKey; account: { data: Buffer } };
+type HeliusProgramAccountsPage = {
+    accounts: { pubkey: string; account: { data: [string, string] } }[];
+    paginationKey: string | null;
+};
+
 async function helius_rpc<T>(method: string, params: unknown[]): Promise<T> {
     const response = await rate_limit_request(() =>
         fetch(HELIUS_RPC, {
@@ -96,6 +102,31 @@ async function helius_rpc<T>(method: string, params: unknown[]): Promise<T> {
     if (!response.ok || payload.error) throw new Error(payload.error?.message || `Helius ${method} request failed.`);
     if (payload.result === undefined) throw new Error(`Helius ${method} returned no result.`);
     return payload.result;
+}
+
+export async function get_program_accounts_v2(
+    program_id: PublicKey,
+    filters: { memcmp: { offset: number; bytes: string } }[],
+    data_slice?: { offset: number; length: number }
+): Promise<ProgramAccount[]> {
+    const accounts: ProgramAccount[] = [];
+    let pagination_key: string | null = null;
+    do {
+        const options = { encoding: 'base64', commitment: COMMITMENT, limit: 1000, filters, dataSlice: data_slice };
+        if (pagination_key !== null) Object.assign(options, { paginationKey: pagination_key });
+        const page: HeliusProgramAccountsPage = await helius_rpc<HeliusProgramAccountsPage>('getProgramAccountsV2', [
+            program_id.toBase58(),
+            options
+        ]);
+        accounts.push(
+            ...page.accounts.map(({ pubkey, account }) => ({
+                pubkey: new PublicKey(pubkey),
+                account: { data: Buffer.from(account.data[0], 'base64') }
+            }))
+        );
+        pagination_key = page.paginationKey;
+    } while (pagination_key);
+    return accounts;
 }
 
 export interface IMintMeta {
@@ -506,8 +537,11 @@ export async function get_token_balance(
 }
 
 export async function get_token_meta(mint: PublicKey): Promise<MintAsset> {
+    const mint_info = await global.CONNECTION.getAccountInfo(mint, COMMITMENT);
+    if (!mint_info || (!mint_info.owner.equals(TOKEN_PROGRAM_ID) && !mint_info.owner.equals(TOKEN_2022_PROGRAM_ID)))
+        throw new Error(`Invalid token program for mint ${mint}`);
     try {
-        const result = await helius_rpc<HeliusAsset>('getAsset', [{ id: mint.toString() }]);
+        const result = await helius_rpc<HeliusAsset>('getAsset', [mint.toString()]);
         if (result.token_info && result.content && result.creators) {
             const creator = result.creators.at(0);
             return {
@@ -517,15 +551,22 @@ export async function get_token_meta(mint: PublicKey): Promise<MintAsset> {
                 token_supply: result.token_info.supply || 10 ** 16,
                 price_per_token: result.token_info.price_info?.price_per_token || 0.0,
                 creator: creator ? new PublicKey(creator.address) : undefined,
-                token_program: result.token_info.token_program
-                    ? new PublicKey(result.token_info.token_program)
-                    : TOKEN_PROGRAM_ID,
+                token_program: mint_info.owner,
                 mint: mint
             };
         }
         throw new Error(`Failed to get the token metadata`);
-    } catch (err) {
-        throw new Error(`Failed to get the token metadata: ${err} `);
+    } catch {
+        const token = await getMint(global.CONNECTION, mint, COMMITMENT, mint_info.owner);
+        return {
+            token_name: 'Unknown',
+            token_symbol: 'Unknown',
+            token_decimal: token.decimals,
+            token_supply: Number(token.supply),
+            price_per_token: 0,
+            token_program: mint_info.owner,
+            mint
+        };
     }
 }
 
@@ -1310,16 +1351,9 @@ export async function get_ltas_by_authority(
     is_active?: boolean
 ): Promise<AddressLookupTableAccount[]> {
     try {
-        const result = await global.CONNECTION.getProgramAccounts(AddressLookupTableProgram.programId, {
-            filters: [
-                {
-                    memcmp: {
-                        offset: 22,
-                        bytes: authority.toBase58()
-                    }
-                }
-            ]
-        });
+        const result = await get_program_accounts_v2(AddressLookupTableProgram.programId, [
+            { memcmp: { offset: 22, bytes: authority.toBase58() } }
+        ]);
         if (!result) throw new Error(`No Address Lookup Table accounts found for authority ${authority}`);
         const ltas = result.map(
             (account) =>

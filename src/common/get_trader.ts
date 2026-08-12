@@ -5,6 +5,7 @@ import { Program } from './common';
 import { IProgramTrader } from './trade_common';
 import { ISniper } from './snipe_common';
 import { BonkRunner, BonkTrader } from '../bonk/bonk';
+import { RaydiumRunner, RaydiumTraderInstance } from '../raydium/raydium';
 
 export function get_trader(program: Program): IProgramTrader {
     switch (program) {
@@ -19,6 +20,9 @@ export function get_trader(program: Program): IProgramTrader {
         }
         case Program.Bonk: {
             return BonkTrader;
+        }
+        case Program.Raydium: {
+            return RaydiumTraderInstance;
         }
         default: {
             throw new Error(`Invalid program received: ${program}`);
@@ -40,6 +44,9 @@ export function get_sniper(program: Program): ISniper {
         }
         case Program.Generic: {
             throw new Error('Generic program is not supported for sniping.');
+        }
+        case Program.Raydium: {
+            return new RaydiumRunner(trader);
         }
         default: {
             throw new Error(`Invalid program received: ${program}`);

@@ -22,6 +22,14 @@ export function bytes(size: number, name?: string): DecoderField<Buffer> {
     };
 }
 
+export function read_borsh_string(data: Uint8Array, offset: number): [string, number] | null {
+    if (offset + 4 > data.length) return null;
+    const length = Buffer.from(data.subarray(offset, offset + 4)).readUInt32LE();
+    const end = offset + 4 + length;
+    if (end > data.length) return null;
+    return [Buffer.from(data.subarray(offset + 4, end)).toString('utf-8'), end];
+}
+
 export function discriminator(data: Buffer): DecoderField<void> {
     return {
         name: undefined,

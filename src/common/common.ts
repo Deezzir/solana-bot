@@ -42,6 +42,7 @@ export type IPFSMetadata = {
 export enum Program {
     Pump = 'pump',
     Meteora = 'meteora',
+    Raydium = 'raydium',
     Bonk = 'bonk',
     Generic = 'generic'
 }
