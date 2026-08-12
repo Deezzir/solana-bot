@@ -161,4 +161,4 @@ configs
 src/test*
 
 .github
-scripts
+src/scripts

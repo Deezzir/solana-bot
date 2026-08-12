@@ -8,12 +8,12 @@
     git clone https://github.com/Deezzir/SolanaBot.git
     ```
 
-2. Install Node.js and npm if you haven't already, and install the dependencies
+2. Install Bun if you haven't already, and install the dependencies
 
-    A good way to install Node.js and NPM is to use [npm DOCS](https://docs.npmjs.com/downloading-and-installing-node-js-and-npm)
+    See the [Bun installation guide](https://bun.sh/docs/installation).
 
     ```shell
-    cd SolanaBot && npm install
+    cd SolanaBot && bun install
     ```
 
 3. Create a `.env` file in the root directory and add the following
@@ -25,13 +25,13 @@
 4. Build the project
 
     ```shell
-    npm run build
+    bun run build
     ```
 
 5. Run the project
 
     ```shell
-    > alias bot="node dist/bot.js"
+    > alias bot="bun dist/bot.js"
     > bot -h
       ____            _                             ____            _
      / ___|    ___   | |   __ _   _ __     __ _    | __ )    ___   | |_
@@ -46,7 +46,7 @@
     Options:
       -V, --version                                                  output the version number
       -k, --keys <path>                                              Path to the CSV file with the wallets (default: keys.csv)
-      -g, --program <type>                                           specify program (choices: "pump", "meteora", "bonk", "generic", default: pump)
+      -g, --program <type>                                           specify program (choices: "pump", "meteora", "raydium", "bonk", "generic", default: pump)
       -h, --help                                                     display help for command
 
     Commands:
@@ -93,8 +93,8 @@ The `snipe` subcommand optionally accepts a JSON config with the following field
 - `thread_cnt` (`number`) – Number of threads (≤ `keys_cnt`)
 - `min_buy` (`number`) – Minimum buy amount in SOL (e.g., 0.1)
 - Token must be identified via:
-    - `mint` (`string`, valid pubkey) **OR**
-    - `token_name` (`string`) **AND** `token_ticker` (`string`)
+  - `mint` (`string`, valid pubkey) **OR**
+  - `token_name` (`string`) **AND** `token_ticker` (`string`)
 
 > ⚠️ `mint` and `token_name/token_ticker` are **mutually exclusive**
 
