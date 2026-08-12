@@ -146,7 +146,7 @@ export interface ClaimableAsset {
     mint: PublicKey;
     raw_amount: bigint;
     decimals: number;
-    source: 'creator_reward' | 'position_reward';
+    source: 'creator_reward' | 'position_reward' | 'cashback_reward' | 'token_incentive_reward';
 }
 export interface IProgramTrader {
     get_name(): string;
@@ -446,9 +446,11 @@ export async function get_cost_basis(
         .filter((change) => change !== null);
     // .filter((change) => change.change_tokens > 0);
 
-    const total_tokens = changes.reduce((sum: number, cur: TxBalanceChanges) => sum + Math.abs(cur.change_tokens), 0);
-    const total_fees = changes.reduce((sum: number, cur: TxBalanceChanges) => sum + Math.abs(cur.fees), 0);
-    const total_spendings = changes.reduce((sum: number, cur: TxBalanceChanges) => sum + Math.abs(cur.change_sol), 0);
+    const purchases = changes.filter((change) => change.change_tokens > 0 && change.change_sol < 0);
+    const total_tokens = purchases.reduce((sum: number, cur: TxBalanceChanges) => sum + cur.change_tokens, 0);
+    if (total_tokens === 0) return null;
+    const total_fees = purchases.reduce((sum: number, cur: TxBalanceChanges) => sum + cur.fees, 0);
+    const total_spendings = purchases.reduce((sum: number, cur: TxBalanceChanges) => sum - cur.change_sol, 0);
 
     return {
         average_cost_basis: (total_spendings - total_fees) / total_tokens,

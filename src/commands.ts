@@ -314,7 +314,7 @@ export async function token_balance(wallets: common.Wallet[], mint: PublicKey): 
         )
     ]);
 
-    const wallet_count = cost_basiss.filter((cb) => cb).length;
+    const wallet_count = token_balances.filter((balance) => (balance.uiAmount || 0) > 0).length;
     common.log(common.yellow(`Token: ${token_name} | Symbol: $${token_symbol}`));
     common.log(common.green(`Wallet Count: ${wallet_count}\n`));
 
@@ -338,7 +338,22 @@ export async function token_balance(wallets: common.Wallet[], mint: PublicKey): 
         const wallet = wallets[i];
         const cost_basis = cost_basiss[i];
         const ui_balance = token_balances[i].uiAmount || 0;
-        if (!cost_basis) continue;
+        if (!cost_basis) {
+            common.print_row([
+                { content: wallet.id.toString(), width: common.COLUMN_WIDTHS.id },
+                { content: common.format_name(wallet.name), width: common.COLUMN_WIDTHS.name },
+                { content: wallet.keypair.publicKey.toString(), width: common.COLUMN_WIDTHS.publicKey },
+                {
+                    content: `${((ui_balance / (supply / 10 ** decimals)) * 100).toFixed(2)}%`,
+                    width: common.COLUMN_WIDTHS.allocation,
+                    align: 'right'
+                },
+                { content: ui_balance.toFixed(2), width: common.COLUMN_WIDTHS.tokenBalance, align: 'right' },
+                { content: 'N/A', width: common.COLUMN_WIDTHS.entryMcap, align: 'right' }
+            ]);
+            total_tokens_cur += ui_balance;
+            continue;
+        }
 
         const entry_mcap = (((cost_basis.average_cost_basis * supply) / 10 ** decimals) * sol_price) / 1000;
         const alloc = (ui_balance / (supply / 10 ** decimals)) * 100;

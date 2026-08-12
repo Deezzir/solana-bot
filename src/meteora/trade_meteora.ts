@@ -15,6 +15,8 @@ import {
     METEORA_CONFIG_HEADER,
     METEORA_DBC_CLAIM_CREATOR_FEE_DISCRIMINATOR,
     METEORA_DAMM_V2_PROGRAM_ID,
+    METEORA_DAMM_V2_CLAIM_POSITION_FEE_DISCRIMINATOR,
+    METEORA_DAMM_V2_CLAIM_REWARD_DISCRIMINATOR,
     METEORA_DAMM_V2_STATE_HEADER,
     METEORA_DBC_EVENT_AUTHORITY,
     METEORA_DBC_POOL_AUTHORITY,
@@ -31,8 +33,13 @@ import {
     createAssociatedTokenAccountIdempotentInstruction,
     createCloseAccountInstruction,
     createSyncNativeInstruction,
+    AccountLayout,
+    calculateFee,
     ExtensionType,
+    getEpochFee,
     getExtensionTypes,
+    getMint,
+    getTransferFeeConfig,
     TOKEN_2022_PROGRAM_ID,
     TOKEN_PROGRAM_ID
 } from '@solana/spl-token';
@@ -197,8 +204,8 @@ const DAMMV2StateStruct = define_decoder_struct({
     pool_type: skip(1),
     fee_version: u8(),
     pool_padding_3: skip(1),
-    fee_a_per_liquidity: skip(32),
-    fee_b_per_liquidity: skip(32),
+    fee_a_per_liquidity: bytes(32),
+    fee_b_per_liquidity: bytes(32),
     permanent_lock_liquidity: skip(16),
     metrics: skip(80),
     creator: skip(32),
@@ -207,7 +214,23 @@ const DAMMV2StateStruct = define_decoder_struct({
     layout_version: u8(),
     pool_padding_4: skip(7),
     pool_padding_5: skip(24),
-    reward_infos: skip(384)
+    reward_infos: bytes(384)
+});
+
+const DAMMV2PositionStruct = define_decoder_struct({
+    discriminator: discriminator(Buffer.from([170, 188, 143, 228, 122, 64, 247, 208])),
+    pool: pubkey(),
+    nft_mint: pubkey(),
+    fee_a_checkpoint: bytes(32),
+    fee_b_checkpoint: bytes(32),
+    fee_a_pending: u64(),
+    fee_b_pending: u64(),
+    unlocked_liquidity: u128(),
+    vested_liquidity: u128(),
+    permanent_locked_liquidity: u128(),
+    metrics: skip(16),
+    reward_infos: bytes(96),
+    padding: skip(96)
 });
 const DBCConfigStruct = define_decoder_struct({
     discriminator: discriminator(Buffer.from(METEORA_CONFIG_HEADER)),
@@ -299,8 +322,14 @@ type DBCData = {
 
 type MeteoraClaimableAsset = trade.ClaimableAsset & {
     pool: PublicKey;
-    state: ReturnType<typeof DBCStateStruct.decode>;
-    config: ReturnType<typeof DBCConfigStruct.decode>;
+    kind?: 'damm_fee' | 'damm_reward';
+    state?: ReturnType<typeof DBCStateStruct.decode>;
+    config?: ReturnType<typeof DBCConfigStruct.decode>;
+    damm_state?: ReturnType<typeof DAMMV2StateStruct.decode>;
+    position?: PublicKey;
+    position_nft_account?: PublicKey;
+    reward_index?: number;
+    token_program?: PublicKey;
 };
 
 export class Trader implements trade.IProgramTrader {
@@ -325,22 +354,23 @@ export class Trader implements trade.IProgramTrader {
         const assets = await Promise.all(
             pools.map(async ({ pubkey, account }) => {
                 const state = DBCStateStruct.decode(account.data);
-                if (state.creator_base_fee === 0n && state.creator_quote_fee === 0n) return null;
+                if (state.creator_base_fee === 0n && state.creator_quote_fee === 0n) return [];
 
                 const config_info = await global.CONNECTION.getAccountInfo(state.config, COMMITMENT);
                 if (!config_info) {
                     common.warn('DBC configuration account is missing.');
-                    return null;
+                    return [];
                 }
 
                 const config = DBCConfigStruct.decode(config_info.data);
                 if (config.token_type !== 0 || config.quote_token_flag !== 0) {
                     common.warn('DBC Token-2022 or transfer-hook creator-fee claims are not supported.');
-                    return null;
+                    return [];
                 }
+                const claimable: MeteoraClaimableAsset[] = [];
                 if (state.creator_base_fee > 0n) {
                     const supply = await trade.get_token_supply(state.base_mint);
-                    return {
+                    claimable.push({
                         mint: state.base_mint,
                         raw_amount: state.creator_base_fee,
                         decimals: supply.decimals,
@@ -348,11 +378,11 @@ export class Trader implements trade.IProgramTrader {
                         state,
                         config,
                         pool: pubkey
-                    };
+                    });
                 }
                 if (state.creator_quote_fee > 0n) {
                     const supply = await trade.get_token_supply(config.quote_mint);
-                    return {
+                    claimable.push({
                         mint: config.quote_mint,
                         raw_amount: state.creator_quote_fee,
                         decimals: config.quote_mint.equals(SOL_MINT) ? 9 : supply.decimals,
@@ -360,13 +390,12 @@ export class Trader implements trade.IProgramTrader {
                         state,
                         config,
                         pool: pubkey
-                    };
+                    });
                 }
-                return null;
+                return claimable;
             })
         );
-
-        return assets.filter((a) => a !== null);
+        return [...assets.flat(), ...(await this.get_damm_v2_position_rewards(trader))];
     }
 
     public async claim_trader_fees(
@@ -390,9 +419,111 @@ export class Trader implements trade.IProgramTrader {
 
         const instructions: TransactionInstruction[] = [];
 
+        const claimed_pools = new Set<string>();
+        const claimed_positions = new Set<string>();
         for (const asset of assets) {
-            const state = asset.state;
-            const config = asset.config;
+            if (asset.kind) {
+                if (!asset.damm_state || !asset.position || !asset.position_nft_account) continue;
+                if (asset.kind === 'damm_fee') {
+                    if (claimed_positions.has(asset.position.toBase58())) continue;
+                    claimed_positions.add(asset.position.toBase58());
+                }
+                const state = asset.damm_state;
+                const token_a_program = await this.get_token_program(state.token_a_mint);
+                const token_b_program = await this.get_token_program(state.token_b_mint);
+                const token_a_ata = trade.calc_ata(trader.publicKey, state.token_a_mint, token_a_program);
+                const token_b_ata = trade.calc_ata(trader.publicKey, state.token_b_mint, token_b_program);
+                for (const [mint, ata, program] of [
+                    [state.token_a_mint, token_a_ata, token_a_program],
+                    [state.token_b_mint, token_b_ata, token_b_program]
+                ] as const) {
+                    if (!created_atas.has(ata.toBase58())) {
+                        instructions.push(
+                            createAssociatedTokenAccountIdempotentInstruction(
+                                trader.publicKey,
+                                ata,
+                                trader.publicKey,
+                                mint,
+                                program
+                            )
+                        );
+                        created_atas.add(ata.toBase58());
+                    }
+                }
+                const [pool_authority] = PublicKey.findProgramAddressSync(
+                    [Buffer.from('pool_authority')],
+                    METEORA_DAMM_V2_PROGRAM_ID
+                );
+                const [event_authority] = PublicKey.findProgramAddressSync(
+                    [Buffer.from('__event_authority')],
+                    METEORA_DAMM_V2_PROGRAM_ID
+                );
+                if (asset.kind === 'damm_fee') {
+                    instructions.push(
+                        new TransactionInstruction({
+                            programId: METEORA_DAMM_V2_PROGRAM_ID,
+                            data: Buffer.from(METEORA_DAMM_V2_CLAIM_POSITION_FEE_DISCRIMINATOR),
+                            keys: [
+                                { pubkey: pool_authority, isSigner: false, isWritable: false },
+                                { pubkey: asset.pool, isSigner: false, isWritable: false },
+                                { pubkey: asset.position, isSigner: false, isWritable: true },
+                                { pubkey: token_a_ata, isSigner: false, isWritable: true },
+                                { pubkey: token_b_ata, isSigner: false, isWritable: true },
+                                { pubkey: state.token_a_vault, isSigner: false, isWritable: true },
+                                { pubkey: state.token_b_vault, isSigner: false, isWritable: true },
+                                { pubkey: state.token_a_mint, isSigner: false, isWritable: false },
+                                { pubkey: state.token_b_mint, isSigner: false, isWritable: false },
+                                { pubkey: asset.position_nft_account, isSigner: false, isWritable: false },
+                                { pubkey: trader.publicKey, isSigner: true, isWritable: false },
+                                { pubkey: token_a_program, isSigner: false, isWritable: false },
+                                { pubkey: token_b_program, isSigner: false, isWritable: false },
+                                { pubkey: event_authority, isSigner: false, isWritable: false },
+                                { pubkey: METEORA_DAMM_V2_PROGRAM_ID, isSigner: false, isWritable: false }
+                            ]
+                        })
+                    );
+                } else if (asset.reward_index !== undefined && asset.token_program) {
+                    const reward_ata = trade.calc_ata(trader.publicKey, asset.mint, asset.token_program);
+                    if (!created_atas.has(reward_ata.toBase58())) {
+                        instructions.push(
+                            createAssociatedTokenAccountIdempotentInstruction(
+                                trader.publicKey,
+                                reward_ata,
+                                trader.publicKey,
+                                asset.mint,
+                                asset.token_program
+                            )
+                        );
+                        created_atas.add(reward_ata.toBase58());
+                    }
+                    const data = Buffer.from([...METEORA_DAMM_V2_CLAIM_REWARD_DISCRIMINATOR, asset.reward_index, 0]);
+                    const reward = this.damm_reward_info(state.reward_infos, asset.reward_index);
+                    instructions.push(
+                        new TransactionInstruction({
+                            programId: METEORA_DAMM_V2_PROGRAM_ID,
+                            data,
+                            keys: [
+                                { pubkey: pool_authority, isSigner: false, isWritable: false },
+                                { pubkey: asset.pool, isSigner: false, isWritable: true },
+                                { pubkey: asset.position, isSigner: false, isWritable: true },
+                                { pubkey: reward.vault, isSigner: false, isWritable: true },
+                                { pubkey: asset.mint, isSigner: false, isWritable: false },
+                                { pubkey: reward_ata, isSigner: false, isWritable: true },
+                                { pubkey: asset.position_nft_account, isSigner: false, isWritable: false },
+                                { pubkey: trader.publicKey, isSigner: true, isWritable: false },
+                                { pubkey: asset.token_program, isSigner: false, isWritable: false },
+                                { pubkey: event_authority, isSigner: false, isWritable: false },
+                                { pubkey: METEORA_DAMM_V2_PROGRAM_ID, isSigner: false, isWritable: false }
+                            ]
+                        })
+                    );
+                }
+                continue;
+            }
+            if (claimed_pools.has(asset.pool.toBase58())) continue;
+            claimed_pools.add(asset.pool.toBase58());
+            const state = asset.state!;
+            const config = asset.config!;
 
             const base_ata = add_ata(state.base_mint);
             const quote_ata = add_ata(config.quote_mint);
@@ -427,6 +558,163 @@ export class Trader implements trade.IProgramTrader {
 
         if (instructions.length === 0) throw new Error('Invalid assets were provided, no tx was derived');
         return await trade.send_tx(instructions, [trader], priority);
+    }
+
+    private damm_u256_le(data: Buffer): bigint {
+        let value = 0n;
+        for (let i = 31; i >= 0; i--) value = (value << 8n) + BigInt(data[i]);
+        return value;
+    }
+
+    private damm_reward_info(
+        data: Buffer,
+        index: number
+    ): {
+        initialized: boolean;
+        mint: PublicKey;
+        vault: PublicKey;
+        end: bigint;
+        rate: bigint;
+        stored: bigint;
+        last_update: bigint;
+    } {
+        const offset = index * 192;
+        return {
+            initialized: data.readUInt8(offset) !== 0,
+            mint: new PublicKey(data.subarray(offset + 16, offset + 48)),
+            vault: new PublicKey(data.subarray(offset + 48, offset + 80)),
+            end: data.readBigUInt64LE(offset + 120),
+            rate: data.readBigUInt64LE(offset + 128) + (data.readBigUInt64LE(offset + 136) << 64n),
+            stored: this.damm_u256_le(data.subarray(offset + 144, offset + 176)),
+            last_update: data.readBigUInt64LE(offset + 176)
+        };
+    }
+
+    private async get_damm_v2_position_rewards(trader: Signer): Promise<MeteoraClaimableAsset[]> {
+        const nft_accounts = await global.CONNECTION.getTokenAccountsByOwner(
+            trader.publicKey,
+            { programId: TOKEN_2022_PROGRAM_ID },
+            COMMITMENT
+        );
+        const positions = nft_accounts.value
+            .filter(({ account }) => AccountLayout.decode(account.data).amount === 1n)
+            .map(({ pubkey, account }) => {
+                const nft_mint = AccountLayout.decode(account.data).mint;
+                const [position] = PublicKey.findProgramAddressSync(
+                    [Buffer.from('position'), nft_mint.toBuffer()],
+                    METEORA_DAMM_V2_PROGRAM_ID
+                );
+                return { position, nft_account: pubkey };
+            });
+        if (positions.length === 0) return [];
+
+        const position_infos = await global.CONNECTION.getMultipleAccountsInfo(
+            positions.map(({ position }) => position),
+            COMMITMENT
+        );
+        const decoded_positions = positions.flatMap(({ position, nft_account }, index) => {
+            const info = position_infos[index];
+            if (!info || !info.owner.equals(METEORA_DAMM_V2_PROGRAM_ID)) return [];
+            try {
+                return [{ position, nft_account, state: DAMMV2PositionStruct.decode(info.data) }];
+            } catch {
+                return [];
+            }
+        });
+        const pools = [...new Map(decoded_positions.map(({ state }) => [state.pool.toBase58(), state.pool])).values()];
+        const pool_infos = await global.CONNECTION.getMultipleAccountsInfo(pools, COMMITMENT);
+        const pool_states = new Map<string, ReturnType<typeof DAMMV2StateStruct.decode>>();
+        for (let i = 0; i < pools.length; i++) {
+            const info = pool_infos[i];
+            if (!info || !info.owner.equals(METEORA_DAMM_V2_PROGRAM_ID)) continue;
+            try {
+                pool_states.set(pools[i].toBase58(), DAMMV2StateStruct.decode(info.data));
+            } catch {}
+        }
+        if (pool_states.size === 0) return [];
+        const slot = await global.CONNECTION.getSlot(COMMITMENT);
+        const current_time = BigInt((await global.CONNECTION.getBlockTime(slot)) ?? 0);
+        const assets: MeteoraClaimableAsset[] = [];
+        for (const { position, nft_account, state: position_state } of decoded_positions) {
+            const pool_state = pool_states.get(position_state.pool.toBase58());
+            if (!pool_state) continue;
+            const liquidity =
+                position_state.unlocked_liquidity +
+                position_state.vested_liquidity +
+                position_state.permanent_locked_liquidity;
+            const fee_a =
+                position_state.fee_a_pending +
+                ((liquidity *
+                    (this.damm_u256_le(pool_state.fee_a_per_liquidity) -
+                        this.damm_u256_le(position_state.fee_a_checkpoint))) >>
+                    128n);
+            const fee_b =
+                position_state.fee_b_pending +
+                ((liquidity *
+                    (this.damm_u256_le(pool_state.fee_b_per_liquidity) -
+                        this.damm_u256_le(position_state.fee_b_checkpoint))) >>
+                    128n);
+            if (fee_a > 0n || fee_b > 0n) {
+                const [a_supply, b_supply] = await Promise.all([
+                    trade.get_token_supply(pool_state.token_a_mint),
+                    trade.get_token_supply(pool_state.token_b_mint)
+                ]);
+                if (fee_a > 0n)
+                    assets.push({
+                        mint: pool_state.token_a_mint,
+                        raw_amount: fee_a,
+                        decimals: a_supply.decimals,
+                        source: 'position_reward',
+                        kind: 'damm_fee',
+                        pool: position_state.pool,
+                        damm_state: pool_state,
+                        position,
+                        position_nft_account: nft_account
+                    });
+                if (fee_b > 0n)
+                    assets.push({
+                        mint: pool_state.token_b_mint,
+                        raw_amount: fee_b,
+                        decimals: b_supply.decimals,
+                        source: 'position_reward',
+                        kind: 'damm_fee',
+                        pool: position_state.pool,
+                        damm_state: pool_state,
+                        position,
+                        position_nft_account: nft_account
+                    });
+            }
+            for (let index = 0; index < 2; index++) {
+                const reward = this.damm_reward_info(pool_state.reward_infos, index);
+                if (!reward.initialized || liquidity === 0n) continue;
+                const checkpoint = this.damm_u256_le(position_state.reward_infos.subarray(index * 48, index * 48 + 32));
+                const pending = position_state.reward_infos.readBigUInt64LE(index * 48 + 32);
+                const stored =
+                    reward.stored +
+                    (((BigInt.asUintN(64, current_time < reward.end ? current_time : reward.end) - reward.last_update) *
+                        reward.rate) <<
+                        128n) /
+                        pool_state.liquidity;
+                const amount = pending + ((liquidity * (stored - checkpoint)) >> 192n);
+                if (amount <= 0n) continue;
+                const token_program = await this.get_token_program(reward.mint);
+                const supply = await trade.get_token_supply(reward.mint);
+                assets.push({
+                    mint: reward.mint,
+                    raw_amount: amount,
+                    decimals: supply.decimals,
+                    source: 'position_reward',
+                    kind: 'damm_reward',
+                    pool: position_state.pool,
+                    damm_state: pool_state,
+                    position,
+                    position_nft_account: nft_account,
+                    reward_index: index,
+                    token_program
+                });
+            }
+        }
+        return assets;
     }
 
     public async buy_token(
@@ -871,6 +1159,18 @@ export class Trader implements trade.IProgramTrader {
         );
     }
 
+    private async get_damm_v2_transfer_fee(
+        mint: PublicKey,
+        program: PublicKey,
+        amount: bigint,
+        epoch: number
+    ): Promise<bigint> {
+        if (!program.equals(TOKEN_2022_PROGRAM_ID) || amount === 0n) return 0n;
+        const transfer_fee_config = getTransferFeeConfig(await getMint(global.CONNECTION, mint, COMMITMENT, program));
+        if (!transfer_fee_config) return 0n;
+        return calculateFee(getEpochFee(transfer_fee_config, BigInt(epoch)), amount);
+    }
+
     private damm_v2_swap_data(amount_in: bigint, minimum_amount_out: bigint): Buffer {
         const data = Buffer.alloc(25);
         Buffer.from([65, 75, 63, 76, 235, 91, 91, 136]).copy(data);
@@ -1062,8 +1362,22 @@ export class Trader implements trade.IProgramTrader {
         const input_is_token_a = state.token_a_mint.equals(input_mint);
         const input_ata = trade.calc_ata(trader.publicKey, input_mint, input_program);
         const output_ata = trade.calc_ata(trader.publicKey, output_mint, output_program);
-        const quote = await this.quote_damm_v2_exact_in(amount_in, input_is_token_a, state, pool_response.context.slot);
-        const minimum_amount_out = this.calc_slippage_down(quote.output_amount, slippage);
+        const epoch =
+            input_program.equals(TOKEN_2022_PROGRAM_ID) || output_program.equals(TOKEN_2022_PROGRAM_ID)
+                ? (await global.CONNECTION.getEpochInfo(COMMITMENT)).epoch
+                : 0;
+        const actual_amount_in =
+            amount_in - (await this.get_damm_v2_transfer_fee(input_mint, input_program, amount_in, epoch));
+        const quote = await this.quote_damm_v2_exact_in(
+            actual_amount_in,
+            input_is_token_a,
+            state,
+            pool_response.context.slot
+        );
+        const output_amount =
+            quote.output_amount -
+            (await this.get_damm_v2_transfer_fee(output_mint, output_program, quote.output_amount, epoch));
+        const minimum_amount_out = this.calc_slippage_down(output_amount, slippage);
         const [pool_authority] = PublicKey.findProgramAddressSync(
             [Buffer.from('pool_authority')],
             METEORA_DAMM_V2_PROGRAM_ID
@@ -1125,6 +1439,6 @@ export class Trader implements trade.IProgramTrader {
             }),
             createCloseAccountInstruction(buy ? input_ata : output_ata, trader.publicKey, trader.publicKey)
         );
-        return { instructions, output_amount: quote.output_amount };
+        return { instructions, output_amount };
     }
 }

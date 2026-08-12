@@ -75,7 +75,9 @@ import {
     MAYHEM_STATE_SEED,
     ACCOUNT_SUBSCRIPTION_FLUSH_MS,
     PUMP_COLLECT_CREATOR_FEE_DISCRIMINATOR,
-    PUMP_AMM_COLLECT_CREATOR_FEE_DISCRIMINATOR
+    PUMP_AMM_COLLECT_CREATOR_FEE_DISCRIMINATOR,
+    PUMP_CLAIM_CASHBACK_DISCRIMINATOR,
+    PUMP_CLAIM_TOKEN_INCENTIVES_DISCRIMINATOR
 } from '../constants';
 import { readFileSync } from 'fs';
 import { basename } from 'path';
@@ -227,6 +229,26 @@ const AMMStateStruct = define_decoder_struct({
     virtual_quote_reserves: i128()
 });
 
+const UserVolumeAccumulatorStruct = define_decoder_struct({
+    discriminator: discriminator(Buffer.from([86, 255, 112, 14, 102, 53, 154, 250])),
+    user: pubkey(),
+    needs_claim: bool(),
+    total_unclaimed_tokens: u64(),
+    claimed_tokens: skip(8),
+    volume: skip(8),
+    timestamp: skip(8),
+    has_claimed_tokens: skip(1),
+    cashback_earned: u64(),
+    claimed_cashback: skip(8),
+    stable_cashback_earned: u64()
+});
+
+const GlobalVolumeAccumulatorStruct = define_decoder_struct({
+    discriminator: discriminator(Buffer.from([202, 42, 246, 43, 142, 190, 30, 255])),
+    padding: skip(24),
+    mint: pubkey()
+});
+
 type AMMState = ReturnType<typeof AMMStateStruct.decode> & {
     base_vault_balance: bigint;
     quote_vault_balance: bigint;
@@ -237,6 +259,12 @@ type PumpClaimableAsset = trade.ClaimableAsset & {
     vault: PublicKey;
     vault_ata: PublicKey;
     curve: 'v1' | 'v2';
+    quote_mint?: PublicKey;
+    quote_token_program?: PublicKey;
+    claim?: 'cashback' | 'incentives';
+    program?: PublicKey;
+    accumulator?: PublicKey;
+    global_accumulator?: PublicKey;
 };
 
 export class Trader implements trade.IProgramTrader {
@@ -253,15 +281,17 @@ export class Trader implements trade.IProgramTrader {
     }
 
     public async get_trader_fees(trader: Signer): Promise<PumpClaimableAsset[]> {
-        const [amm_creator_vault, amm_creator_vault_ata] = this.calc_amm_creator_vault(trader.publicKey);
         const [creator_vault, creator_vault_ata] = this.calc_creator_vault(trader.publicKey);
-        const [creator_vault_info, creator_vault_rent, amm_fees] = await Promise.all([
+        const [creator_vault_info, creator_vault_rent, amm_pools] = await Promise.all([
             global.CONNECTION.getAccountInfo(creator_vault, COMMITMENT),
             global.CONNECTION.getMinimumBalanceForRentExemption(0, COMMITMENT),
-            trade.get_vault_balance(amm_creator_vault_ata).catch(() => ({ balance: 0n, decimals: 9 }))
+            trade.get_program_accounts_v2(PUMP_AMM_PROGRAM_ID, [
+                { memcmp: { offset: AMMStateStruct.get_offset('creator'), bytes: trader.publicKey.toBase58() } },
+                { memcmp: { offset: 0, bytes: base58.encode(PUMP_AMM_STATE_HEADER) } }
+            ])
         ]);
         const pump_fees = Math.max(0, (creator_vault_info?.lamports ?? 0) - creator_vault_rent);
-        const assets = [];
+        const assets: PumpClaimableAsset[] = [];
         if (pump_fees > 0) {
             assets.push({
                 mint: SOL_MINT,
@@ -273,17 +303,83 @@ export class Trader implements trade.IProgramTrader {
                 curve: 'v1' as const
             });
         }
-        if (amm_fees.balance > 0) {
-            assets.push({
-                mint: SOL_MINT,
-                raw_amount: BigInt(amm_fees.balance),
-                decimals: 9,
-                source: 'creator_reward' as const,
-                vault: amm_creator_vault,
-                vault_ata: amm_creator_vault_ata,
-                curve: 'v2' as const
-            });
-        }
+        const [amm_creator_vault] = this.calc_amm_creator_vault(trader.publicKey);
+        const amm_assets = await Promise.all(
+            amm_pools.map(async ({ account }) => {
+                const state = AMMStateStruct.decode(account.data);
+                const quote_mint_info = await global.CONNECTION.getAccountInfo(state.quote_mint, COMMITMENT);
+                if (!quote_mint_info) throw new Error(`Pump AMM quote mint is missing: ${state.quote_mint}`);
+                const quote_token_program = quote_mint_info.owner;
+                const vault_ata = trade.calc_ata(amm_creator_vault, state.quote_mint, quote_token_program);
+                const fees = await trade.get_vault_balance(vault_ata).catch(() => ({ balance: 0n, decimals: 0 }));
+                if (fees.balance === 0n) return null;
+                return {
+                    mint: state.quote_mint,
+                    raw_amount: fees.balance,
+                    decimals: fees.decimals,
+                    source: 'creator_reward' as const,
+                    vault: amm_creator_vault,
+                    vault_ata,
+                    curve: 'v2' as const,
+                    quote_mint: state.quote_mint,
+                    quote_token_program
+                };
+            })
+        );
+        assets.push(...amm_assets.filter((asset) => asset !== null));
+
+        const reward_assets = await Promise.all(
+            [
+                { program: PUMP_PROGRAM_ID, global: PUMP_GLOBAL_VOLUME_ACCUMULATOR },
+                { program: PUMP_AMM_PROGRAM_ID, global: PUMP_AMM_GLOBAL_VOLUME_ACCUMULATOR }
+            ].map(async ({ program, global: global_accumulator }) => {
+                const accumulator = this.calc_user_volume_accumulator(trader.publicKey, program);
+                const [accumulator_info, global_info] = await Promise.all([
+                    global.CONNECTION.getAccountInfo(accumulator, COMMITMENT),
+                    global.CONNECTION.getAccountInfo(global_accumulator, COMMITMENT)
+                ]);
+                if (!accumulator_info) return [];
+                const state = UserVolumeAccumulatorStruct.decode(accumulator_info.data);
+                if (!state.user.equals(trader.publicKey)) return [];
+                const claimable: PumpClaimableAsset[] = [];
+                if (state.cashback_earned > 0n) {
+                    claimable.push({
+                        mint: SOL_MINT,
+                        raw_amount: state.cashback_earned,
+                        decimals: 9,
+                        source: 'cashback_reward',
+                        vault: accumulator,
+                        vault_ata: trade.calc_ata(accumulator, SOL_MINT),
+                        curve: program.equals(PUMP_PROGRAM_ID) ? 'v1' : 'v2',
+                        claim: 'cashback',
+                        program,
+                        accumulator
+                    });
+                }
+                if (state.needs_claim && state.total_unclaimed_tokens > 0n && global_info) {
+                    const mint = GlobalVolumeAccumulatorStruct.decode(global_info.data).mint;
+                    const mint_info = await global.CONNECTION.getAccountInfo(mint, COMMITMENT);
+                    if (!mint_info) return claimable;
+                    const supply = await trade.get_token_supply(mint);
+                    claimable.push({
+                        mint,
+                        raw_amount: state.total_unclaimed_tokens,
+                        decimals: supply.decimals,
+                        source: 'token_incentive_reward',
+                        vault: accumulator,
+                        vault_ata: trade.calc_ata(accumulator, mint, mint_info.owner),
+                        curve: program.equals(PUMP_PROGRAM_ID) ? 'v1' : 'v2',
+                        claim: 'incentives',
+                        program,
+                        accumulator,
+                        global_accumulator,
+                        quote_token_program: mint_info.owner
+                    });
+                }
+                return claimable;
+            })
+        );
+        assets.push(...reward_assets.flat());
         return assets;
     }
 
@@ -294,11 +390,94 @@ export class Trader implements trade.IProgramTrader {
     ): Promise<String> {
         if (assets.length === 0) throw new Error(`No assets were provided`);
 
-        const creator_ata = trade.calc_ata(trader.publicKey, SOL_MINT);
         const instructions: TransactionInstruction[] = [];
 
         for (const asset of assets) {
-            if (asset.curve === 'v1') {
+            if (asset.claim === 'cashback') {
+                if (!asset.program || !asset.accumulator)
+                    throw new Error('Pump cashback claim is missing account data.');
+                if (asset.program.equals(PUMP_PROGRAM_ID)) {
+                    instructions.push(
+                        new TransactionInstruction({
+                            programId: asset.program,
+                            data: Buffer.from(PUMP_CLAIM_CASHBACK_DISCRIMINATOR),
+                            keys: [
+                                { pubkey: trader.publicKey, isSigner: false, isWritable: true },
+                                { pubkey: asset.accumulator, isSigner: false, isWritable: true },
+                                { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
+                                { pubkey: PUMP_EVENT_AUTHORITY_ACCOUNT, isSigner: false, isWritable: false },
+                                { pubkey: asset.program, isSigner: false, isWritable: false }
+                            ]
+                        })
+                    );
+                } else {
+                    const user_ata = trade.calc_ata(trader.publicKey, SOL_MINT);
+                    const accumulator_ata = trade.calc_ata(asset.accumulator, SOL_MINT);
+                    instructions.push(
+                        createAssociatedTokenAccountIdempotentInstruction(
+                            trader.publicKey,
+                            user_ata,
+                            trader.publicKey,
+                            SOL_MINT
+                        ),
+                        new TransactionInstruction({
+                            programId: asset.program,
+                            data: Buffer.from(PUMP_CLAIM_CASHBACK_DISCRIMINATOR),
+                            keys: [
+                                { pubkey: trader.publicKey, isSigner: false, isWritable: true },
+                                { pubkey: asset.accumulator, isSigner: false, isWritable: true },
+                                { pubkey: SOL_MINT, isSigner: false, isWritable: false },
+                                { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+                                { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+                                { pubkey: accumulator_ata, isSigner: false, isWritable: true },
+                                { pubkey: user_ata, isSigner: false, isWritable: true },
+                                { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
+                                { pubkey: PUMP_AMM_EVENT_AUTHORITY_ACCOUNT, isSigner: false, isWritable: false },
+                                { pubkey: asset.program, isSigner: false, isWritable: false }
+                            ]
+                        }),
+                        createCloseAccountInstruction(user_ata, trader.publicKey, trader.publicKey)
+                    );
+                }
+            } else if (asset.claim === 'incentives') {
+                if (!asset.program || !asset.accumulator || !asset.global_accumulator || !asset.quote_token_program)
+                    throw new Error('Pump incentive claim is missing account data.');
+                const user_ata = trade.calc_ata(trader.publicKey, asset.mint, asset.quote_token_program);
+                const global_ata = trade.calc_ata(asset.global_accumulator, asset.mint, asset.quote_token_program);
+                instructions.push(
+                    createAssociatedTokenAccountIdempotentInstruction(
+                        trader.publicKey,
+                        user_ata,
+                        trader.publicKey,
+                        asset.mint,
+                        asset.quote_token_program
+                    ),
+                    new TransactionInstruction({
+                        programId: asset.program,
+                        data: Buffer.from(PUMP_CLAIM_TOKEN_INCENTIVES_DISCRIMINATOR),
+                        keys: [
+                            { pubkey: trader.publicKey, isSigner: false, isWritable: false },
+                            { pubkey: user_ata, isSigner: false, isWritable: true },
+                            { pubkey: asset.global_accumulator, isSigner: false, isWritable: false },
+                            { pubkey: global_ata, isSigner: false, isWritable: true },
+                            { pubkey: asset.accumulator, isSigner: false, isWritable: true },
+                            { pubkey: asset.mint, isSigner: false, isWritable: false },
+                            { pubkey: asset.quote_token_program, isSigner: false, isWritable: false },
+                            { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
+                            { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+                            {
+                                pubkey: asset.program.equals(PUMP_PROGRAM_ID)
+                                    ? PUMP_EVENT_AUTHORITY_ACCOUNT
+                                    : PUMP_AMM_EVENT_AUTHORITY_ACCOUNT,
+                                isSigner: false,
+                                isWritable: false
+                            },
+                            { pubkey: asset.program, isSigner: false, isWritable: false },
+                            { pubkey: trader.publicKey, isSigner: true, isWritable: true }
+                        ]
+                    })
+                );
+            } else if (asset.curve === 'v1') {
                 instructions.push(
                     new TransactionInstruction({
                         keys: [
@@ -313,17 +492,21 @@ export class Trader implements trade.IProgramTrader {
                     })
                 );
             } else if (asset.curve === 'v2') {
+                if (!asset.quote_mint || !asset.quote_token_program)
+                    throw new Error('Pump AMM claim is missing quote token data.');
+                const creator_ata = trade.calc_ata(trader.publicKey, asset.quote_mint, asset.quote_token_program);
                 instructions.push(
                     createAssociatedTokenAccountIdempotentInstruction(
                         trader.publicKey,
                         creator_ata,
                         trader.publicKey,
-                        SOL_MINT
+                        asset.quote_mint,
+                        asset.quote_token_program
                     ),
                     new TransactionInstruction({
                         keys: [
-                            { pubkey: SOL_MINT, isSigner: false, isWritable: false },
-                            { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+                            { pubkey: asset.quote_mint, isSigner: false, isWritable: false },
+                            { pubkey: asset.quote_token_program, isSigner: false, isWritable: false },
                             { pubkey: trader.publicKey, isSigner: false, isWritable: false },
                             { pubkey: asset.vault, isSigner: false, isWritable: false },
                             { pubkey: asset.vault_ata, isSigner: false, isWritable: true },
@@ -334,7 +517,9 @@ export class Trader implements trade.IProgramTrader {
                         programId: PUMP_AMM_PROGRAM_ID,
                         data: Buffer.from(PUMP_AMM_COLLECT_CREATOR_FEE_DISCRIMINATOR)
                     }),
-                    createCloseAccountInstruction(creator_ata, trader.publicKey, trader.publicKey)
+                    ...(asset.quote_mint.equals(SOL_MINT)
+                        ? [createCloseAccountInstruction(creator_ata, trader.publicKey, trader.publicKey)]
+                        : [])
                 );
             }
         }
@@ -973,7 +1158,7 @@ export class Trader implements trade.IProgramTrader {
         const mint = new PublicKey(mint_meta.mint);
         const token_program = new PublicKey(mint_meta.token_program_id);
         const creator_vault = new PublicKey(mint_meta.creator_vault);
-        const user_volume_accumulator = this.calc_user_volume_accumulator(buyer.publicKey, 'pump');
+        const user_volume_accumulator = this.calc_user_volume_accumulator(buyer.publicKey, PUMP_PROGRAM_ID);
         const bonding_curve = new PublicKey(mint_meta.base_vault);
         const assoc_bonding_curve = new PublicKey(mint_meta.quote_vault);
         const sol_amount_raw = BigInt(Math.floor(sol_amount * LAMPORTS_PER_SOL));
@@ -1060,7 +1245,7 @@ export class Trader implements trade.IProgramTrader {
         const mint = new PublicKey(mint_meta.mint);
         const token_program = new PublicKey(mint_meta.token_program_id);
         const creator_vault = new PublicKey(mint_meta.creator_vault);
-        const user_volume_accumulator = this.calc_user_volume_accumulator(seller.publicKey, 'pump');
+        const user_volume_accumulator = this.calc_user_volume_accumulator(seller.publicKey, PUMP_PROGRAM_ID);
         const bonding_curve = new PublicKey(mint_meta.base_vault);
         const assoc_bonding_curve = new PublicKey(mint_meta.quote_vault);
         const token_amount_raw = BigInt(token_amount.amount);
@@ -1310,10 +1495,10 @@ export class Trader implements trade.IProgramTrader {
         return [creator_vault, creator_vault_ata];
     }
 
-    private calc_user_volume_accumulator(user: PublicKey, program: 'pump' | 'pump-swap'): PublicKey {
+    private calc_user_volume_accumulator(user: PublicKey, program: PublicKey): PublicKey {
         const [user_volume_accumulator] = PublicKey.findProgramAddressSync(
             [PUMP_USER_VOLUME_ACCUMULATOR_SEED, user.toBuffer()],
-            program === 'pump' ? PUMP_PROGRAM_ID : PUMP_AMM_PROGRAM_ID
+            program
         );
         return user_volume_accumulator;
     }
@@ -1396,7 +1581,7 @@ export class Trader implements trade.IProgramTrader {
         const amm = new PublicKey(mint_meta.amm_pool);
         const creator_vault = new PublicKey(mint_meta.creator_vault);
         const creator_vault_ata = new PublicKey(mint_meta.creator_vault_ata);
-        const user_volume_accumulator = this.calc_user_volume_accumulator(buyer.publicKey, 'pump-swap');
+        const user_volume_accumulator = this.calc_user_volume_accumulator(buyer.publicKey, PUMP_AMM_PROGRAM_ID);
         const bonding_curve = new PublicKey(mint_meta.base_vault);
         const assoc_bonding_curve = new PublicKey(mint_meta.quote_vault);
         const sol_amount_raw = BigInt(Math.floor(sol_amount * LAMPORTS_PER_SOL));
@@ -1491,7 +1676,7 @@ export class Trader implements trade.IProgramTrader {
         const amm = new PublicKey(mint_meta.amm_pool);
         const creator_vault = new PublicKey(mint_meta.creator_vault);
         const creator_vault_ata = new PublicKey(mint_meta.creator_vault_ata);
-        const user_volume_accumulator = this.calc_user_volume_accumulator(seller.publicKey, 'pump-swap');
+        const user_volume_accumulator = this.calc_user_volume_accumulator(seller.publicKey, PUMP_AMM_PROGRAM_ID);
         const bonding_curve = new PublicKey(mint_meta.base_vault);
         const assoc_bonding_curve = new PublicKey(mint_meta.quote_vault);
         const token_amount_raw = BigInt(token_amount.amount);

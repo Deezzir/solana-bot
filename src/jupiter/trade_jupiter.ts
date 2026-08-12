@@ -366,7 +366,7 @@ export class Trader implements trade.IProgramTrader {
         _mint_meta: JupiterMintMeta,
         _callback: (mint_meta: JupiterMintMeta) => void
     ): Promise<() => void> {
-        return () => {};
+        throw new Error('Not implemented');
     }
 
     public async create_token_metadata(meta: common.IPFSMetadata, image_path: string): Promise<string> {

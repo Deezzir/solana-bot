@@ -89,8 +89,8 @@ const CPMMStateStruct = define_decoder_struct({
     auth_bump: skip(u8().size),
     status: skip(u8().size),
     lp_mint_decimals: skip(u8().size),
-    mint_0_decimals: skip(u8().size),
-    mint_1_decimals: skip(u8().size),
+    mint_0_decimals: u8(),
+    mint_1_decimals: u8(),
     lp_supply: skip(u64().size),
     protocol_fees_token_0: u64(),
     protocol_fees_token_1: u64(),
@@ -246,27 +246,28 @@ export class RaydiumTrader implements trade.IProgramTrader {
         ]);
         const assets = pools.map(({ pubkey, account }) => {
             const state = CPMMStateStruct.decode(account.data);
-            if (state.creator_fees_token_0 === 0n)
-                return {
+            const claimable: RaydiumClaimableAsset[] = [];
+            if (state.creator_fees_token_0 > 0n)
+                claimable.push({
                     mint: state.token_0_mint,
                     raw_amount: state.creator_fees_token_0,
-                    decimals: 9,
+                    decimals: state.mint_0_decimals,
                     source: 'creator_reward' as const,
                     state,
                     pool: pubkey
-                };
-            if (state.creator_fees_token_1 === 0n)
-                return {
+                });
+            if (state.creator_fees_token_1 > 0n)
+                claimable.push({
                     mint: state.token_1_mint,
                     raw_amount: state.creator_fees_token_1,
-                    decimals: 9,
+                    decimals: state.mint_1_decimals,
                     source: 'creator_reward' as const,
                     state,
                     pool: pubkey
-                };
-            return null;
+                });
+            return claimable;
         });
-        return assets.filter((a) => a !== null);
+        return assets.flat();
     }
 
     public async claim_trader_fees(
@@ -277,7 +278,10 @@ export class RaydiumTrader implements trade.IProgramTrader {
         if (assets.length === 0) throw new Error(`No assets were provided`);
 
         const instructions: TransactionInstruction[] = [];
+        const claimed_pools = new Set<string>();
         for (const asset of assets) {
+            if (claimed_pools.has(asset.pool.toBase58())) continue;
+            claimed_pools.add(asset.pool.toBase58());
             const state = asset.state;
             if (state.creator_fees_token_0 === 0n && state.creator_fees_token_1 === 0n) continue;
             const creator_token_0 = trade.calc_ata(trader.publicKey, state.token_0_mint, state.token_0_program);
