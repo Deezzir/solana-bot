@@ -33,10 +33,10 @@
     ```shell
     > alias bot="node dist/bot.js"
     > bot -h
-      ____            _                             ____            _   
-     / ___|    ___   | |   __ _   _ __     __ _    | __ )    ___   | |_ 
+      ____            _                             ____            _
+     / ___|    ___   | |   __ _   _ __     __ _    | __ )    ___   | |_
      \___ \   / _ \  | |  / _` | | '_ \   / _` |   |  _ \   / _ \  | __|
-      ___) | | (_) | | | | (_| | | | | | | (_| |   | |_) | | (_) | | |_ 
+      ___) | | (_) | | | | (_| | | | | | | (_| |   | |_) | | (_) | | |_
      |____/   \___/  |_|  \__,_| |_| |_|  \__,_|   |____/   \___/   \__|
 
     Usage: bot [options] [command]
@@ -46,7 +46,7 @@
     Options:
       -V, --version                                                  output the version number
       -k, --keys <path>                                              Path to the CSV file with the wallets (default: keys.csv)
-      -g, --program <type>                                           specify program (choices: "pump", "moonit", "meteora", "bonk", "generic", default: pump)
+      -g, --program <type>                                           specify program (choices: "pump", "meteora", "bonk", "generic", default: pump)
       -h, --help                                                     display help for command
 
     Commands:
@@ -93,39 +93,39 @@ The `snipe` subcommand optionally accepts a JSON config with the following field
 - `thread_cnt` (`number`) – Number of threads (≤ `keys_cnt`)
 - `min_buy` (`number`) – Minimum buy amount in SOL (e.g., 0.1)
 - Token must be identified via:
-  - `mint` (`string`, valid pubkey) **OR**
-  - `token_name` (`string`) **AND** `token_ticker` (`string`)
+    - `mint` (`string`, valid pubkey) **OR**
+    - `token_name` (`string`) **AND** `token_ticker` (`string`)
 
 > ⚠️ `mint` and `token_name/token_ticker` are **mutually exclusive**
 
 ### Optional fields
 
-| Field             | Type      | Default                  | Notes                                       |
-|-------------------|-----------|--------------------------|---------------------------------------------|
-| `trade_interval`  | `number`  | `0`                      | Required if `is_buy_once = false`           |
-| `mcap_threshold`  | `number`  | `Infinity`               | Must be ≥ `SNIPE_MIN_MCAP`                  |
-| `start_interval`  | `number`  | `0`                      | Must be ≥ 0                                 |
-| `spend_limit`     | `number`  | `Infinity`               | Must be ≥ 0                                 |
-| `max_buy`         | `number`  | `Infinity`               | Must be ≥ `min_buy`                         |
-| `is_buy_once`     | `boolean` | `false`                  | If `true`, `trade_interval` must not be set |
-| `sell_slippage`   | `number`  | `SNIPE_SELL_SLIPPAGE`    | 0.0 – `TRADE_MAX_SLIPPAGE`                  |
-| `buy_slippage`    | `number`  | `SNIPE_BUY_SLIPPAGE`     | 0.0 – `TRADE_MAX_SLIPPAGE`                  |
-| `priority_level`  | `string`  | `Default`                | See **Priority Levels** below               |
-| `protection_tip`  | `number`  | `undefined`              | Must be ≥ 0.0                               |
+| Field            | Type      | Default               | Notes                                       |
+| ---------------- | --------- | --------------------- | ------------------------------------------- |
+| `trade_interval` | `number`  | `0`                   | Required if `is_buy_once = false`           |
+| `mcap_threshold` | `number`  | `Infinity`            | Must be ≥ `SNIPE_MIN_MCAP`                  |
+| `start_interval` | `number`  | `0`                   | Must be ≥ 0                                 |
+| `spend_limit`    | `number`  | `Infinity`            | Must be ≥ 0                                 |
+| `max_buy`        | `number`  | `Infinity`            | Must be ≥ `min_buy`                         |
+| `is_buy_once`    | `boolean` | `false`               | If `true`, `trade_interval` must not be set |
+| `sell_slippage`  | `number`  | `SNIPE_SELL_SLIPPAGE` | 0.0 – `TRADE_MAX_SLIPPAGE`                  |
+| `buy_slippage`   | `number`  | `SNIPE_BUY_SLIPPAGE`  | 0.0 – `TRADE_MAX_SLIPPAGE`                  |
+| `priority_level` | `string`  | `Default`             | See **Priority Levels** below               |
+| `protection_tip` | `number`  | `undefined`           | Must be ≥ 0.0                               |
 
-----------------------------------------------------------------------------------------------------------
+---
 
 ### Priority Levels
 
 ```ts
 export enum PriorityLevel {
-  MIN = 'Min',
-  LOW = 'Low',
-  MEDIUM = 'Medium',
-  HIGH = 'High',
-  VERY_HIGH = 'VeryHigh',
-  UNSAFE_MAX = 'UnsafeMax',
-  DEFAULT = 'Default'
+    MIN = 'Min',
+    LOW = 'Low',
+    MEDIUM = 'Medium',
+    HIGH = 'High',
+    VERY_HIGH = 'VeryHigh',
+    UNSAFE_MAX = 'UnsafeMax',
+    DEFAULT = 'Default'
 }
 ```
 
@@ -137,13 +137,13 @@ Set `priority_level` to control transaction fees.
 
 ```json
 {
-  "thread_cnt": 3,
-  "spend_limit": 100,
-  "start_buy": 10,
-  "mint": "So11111111111111111111111111111111111111112",
-  "is_buy_once": false,
-  "trade_interval": 5,
-  "priority_level": "MEDIUM"
+    "thread_cnt": 3,
+    "spend_limit": 100,
+    "start_buy": 10,
+    "mint": "So11111111111111111111111111111111111111112",
+    "is_buy_once": false,
+    "trade_interval": 5,
+    "priority_level": "MEDIUM"
 }
 ```
 
@@ -161,7 +161,7 @@ The `create-metadata` subcommand accepts a JSON config with the following fields
     "createdOn": "string | undefined",
     "twitter": "string | undefined",
     "telegram": "string | undefined",
-    "website": "string | undefined",
+    "website": "string | undefined"
 }
 ```
 

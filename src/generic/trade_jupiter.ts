@@ -9,7 +9,7 @@ import {
 import * as common from '../common/common';
 import * as trade from '../common/trade_common';
 import { PriorityLevel, SOL_MINT, TRADE_DEFAULT_TOKEN_DECIMALS, TRADE_RAYDIUM_SWAP_TAX } from '../constants';
-import { quote_jupiter, swap_jupiter, swap_jupiter_instructions } from '../common/trade_dex';
+import { quote_jupiter, swap_jupiter, swap_jupiter_instructions } from '../common/trade_jupiter';
 import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
 
 class GenericMintMeta implements trade.IMintMeta {
