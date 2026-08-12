@@ -250,7 +250,7 @@ export class Trader implements trade.IProgramTrader {
         trader: Signer,
         dry_run: boolean,
         priority?: PriorityLevel
-    ): Promise<{ signature: String | null; fees: number }> {
+    ): Promise<trade.ClaimDevFeesResult> {
         const [creator_vault] = this.calc_creator_vault(trader.publicKey);
         const [amm_creator_vault, amm_creator_vault_ata] = this.calc_amm_creator_vault(trader.publicKey);
         const [creator_vault_info, creator_vault_rent, amm_fees] = await Promise.all([
@@ -260,7 +260,18 @@ export class Trader implements trade.IProgramTrader {
         ]);
         const pump_fees = Math.max(0, (creator_vault_info?.lamports ?? 0) - creator_vault_rent);
         const fees = (pump_fees + Number(amm_fees.balance)) / LAMPORTS_PER_SOL;
-        if (fees === 0 || dry_run) return { signature: null, fees };
+        const assets =
+            fees === 0
+                ? []
+                : [
+                      {
+                          mint: SOL_MINT,
+                          raw_amount: BigInt(pump_fees) + amm_fees.balance,
+                          decimals: 9,
+                          source: 'creator_fee' as const
+                      }
+                  ];
+        if (fees === 0 || dry_run) return { signatures: [], assets, skipped: [] };
 
         const creator_ata = trade.calc_ata(trader.publicKey, SOL_MINT);
         const instructions: TransactionInstruction[] = [];
@@ -304,7 +315,7 @@ export class Trader implements trade.IProgramTrader {
                 createCloseAccountInstruction(creator_ata, trader.publicKey, trader.publicKey)
             );
         }
-        return { signature: await trade.send_tx(instructions, [trader], priority), fees };
+        return { signatures: [await trade.send_tx(instructions, [trader], priority)], assets, skipped: [] };
     }
 
     public async buy_token(

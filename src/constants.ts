@@ -146,6 +146,9 @@ export const METEORA_DBC_STATE_HEADER = new Uint8Array([213, 224, 5, 209, 98, 69
 export const METEORA_CONFIG_HEADER = new Uint8Array([26, 108, 14, 123, 116, 230, 129, 43]);
 export const METEORA_SWAP_DISCRIMINATOR = new Uint8Array([248, 198, 158, 145, 225, 117, 135, 200]);
 export const METEORA_DBC_CREATE_DISCRIMINATOR = new Uint8Array([140, 85, 215, 176, 102, 54, 104, 79]);
+export const METEORA_DBC_CLAIM_CREATOR_FEE_DISCRIMINATOR = new Uint8Array([82, 220, 250, 189, 3, 85, 107, 45]);
+export const METEORA_DAMM_V2_CLAIM_POSITION_FEE_DISCRIMINATOR = new Uint8Array([180, 38, 154, 17, 133, 33, 162, 211]);
+export const METEORA_DAMM_V2_CLAIM_REWARD_DISCRIMINATOR = new Uint8Array([149, 95, 181, 242, 94, 90, 158, 162]);
 
 // PUMP CONSTANTS
 export const PUMP_API_URL = 'https://frontend-api-v3.pump.fun';

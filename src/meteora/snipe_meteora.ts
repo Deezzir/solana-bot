@@ -1,5 +1,6 @@
-import { METEORA_DBC_PROGRAM_ID, METEORA_DBC_POOL_AUTHORITY } from '../constants';
+import { METEORA_DBC_PROGRAM_ID, METEORA_DBC_POOL_AUTHORITY, METEORA_DBC_CREATE_DISCRIMINATOR } from '../constants';
 import * as snipe from '../common/snipe_common';
+import { read_borsh_string } from '../common/struct_decoder';
 
 export class Runner extends snipe.SniperBase {
     protected mint_authority = METEORA_DBC_POOL_AUTHORITY;
@@ -10,26 +11,12 @@ export class Runner extends snipe.SniperBase {
     }
 
     protected decode_create_instr(data: Uint8Array): { name: string; symbol: string; misc?: object } | null {
-        try {
-            if (data.length < 18) return null;
-
-            const prefix = Uint8Array.from([0x8c, 0x55, 0xd7, 0xb0, 0x66, 0x36, 0x68, 0x4f]);
-            const data_prefix = Buffer.from(data.slice(0, 8));
-            if (!data_prefix.equals(prefix)) return null;
-
-            const name_length = data[8];
-            const name_start = 8 + 4;
-            const name_end = name_start + name_length;
-            const name = Buffer.from(data.slice(name_start, name_end)).toString('utf-8');
-
-            const symbol_length = data[name_end];
-            const symbol_start = name_end + 4;
-            const symbol_end = symbol_start + symbol_length;
-            const symbol = Buffer.from(data.slice(symbol_start, symbol_end)).toString('utf-8');
-
-            return { name, symbol };
-        } catch (err) {
-            return null;
-        }
+        const prefix = Buffer.from(METEORA_DBC_CREATE_DISCRIMINATOR);
+        if (!Buffer.from(data.subarray(0, 8)).equals(prefix)) return null;
+        const name = read_borsh_string(data, 8);
+        if (!name) return null;
+        const symbol = read_borsh_string(data, name[1]);
+        if (!symbol) return null;
+        return { name: name[0], symbol: symbol[0] };
     }
 }

@@ -90,10 +90,10 @@ const CPMMStateStruct = define_decoder_struct({
     mint_0_decimals: skip(u8().size),
     mint_1_decimals: skip(u8().size),
     lp_supply: skip(u64().size),
-    protocol_fees_token_0: skip(u64().size),
-    protocol_fees_token_1: skip(u64().size),
-    fund_fees_token_0: skip(u64().size),
-    fund_fees_token_1: skip(u64().size),
+    protocol_fees_token_0: u64(),
+    protocol_fees_token_1: u64(),
+    fund_fees_token_0: u64(),
+    fund_fees_token_1: u64(),
     open_time: skip(u64().size),
     recent_epoch: skip(u64().size),
     creator_fee_on: skip(u8().size),
@@ -236,7 +236,7 @@ export class RaydiumTrader implements trade.IProgramTrader {
         trader: Signer,
         dry_run: boolean,
         priority?: PriorityLevel
-    ): Promise<{ signature: String | null; fees: number }> {
+    ): Promise<trade.ClaimDevFeesResult> {
         const pools = await trade.get_program_accounts_v2(RAYDIUM_CPMM_PROGRAM_ID, [
             { memcmp: { offset: CPMMStateStruct.get_offset('pool_creator'), bytes: trader.publicKey.toBase58() } },
             { memcmp: { offset: 0, bytes: base58.encode(RAYDIUM_CPMM_POOL_STATE_HEADER) } }
@@ -245,12 +245,29 @@ export class RaydiumTrader implements trade.IProgramTrader {
             pool: pubkey,
             state: CPMMStateStruct.decode(account.data)
         }));
-        const fees = states.reduce(
-            (total, { state }) =>
-                total + Number(state.creator_fees_token_0 + state.creator_fees_token_1) / LAMPORTS_PER_SOL,
-            0
-        );
-        if (fees === 0 || dry_run) return { signature: null, fees };
+        const assets = states.flatMap(({ state }) => [
+            ...(state.creator_fees_token_0 === 0n
+                ? []
+                : [
+                      {
+                          mint: state.token_0_mint,
+                          raw_amount: state.creator_fees_token_0,
+                          decimals: 9,
+                          source: 'creator_fee' as const
+                      }
+                  ]),
+            ...(state.creator_fees_token_1 === 0n
+                ? []
+                : [
+                      {
+                          mint: state.token_1_mint,
+                          raw_amount: state.creator_fees_token_1,
+                          decimals: 9,
+                          source: 'creator_fee' as const
+                      }
+                  ])
+        ]);
+        if (assets.length === 0 || dry_run) return { signatures: [], assets, skipped: [] };
 
         const instructions: TransactionInstruction[] = [];
         for (const { pool, state } of states) {
@@ -298,7 +315,7 @@ export class RaydiumTrader implements trade.IProgramTrader {
                 })
             );
         }
-        return { signature: await trade.send_tx(instructions, [trader], priority), fees };
+        return { signatures: [await trade.send_tx(instructions, [trader], priority)], assets, skipped: [] };
     }
 
     public async buy_token(
@@ -947,8 +964,16 @@ export class RaydiumTrader implements trade.IProgramTrader {
 
         return {
             ...state,
-            token_0_reserves: token_0_reserves.balance,
-            token_1_reserves: token_1_reserves.balance,
+            token_0_reserves:
+                token_0_reserves.balance -
+                state.protocol_fees_token_0 -
+                state.fund_fees_token_0 -
+                state.creator_fees_token_0,
+            token_1_reserves:
+                token_1_reserves.balance -
+                state.protocol_fees_token_1 -
+                state.fund_fees_token_1 -
+                state.creator_fees_token_1,
             supply: supply.supply
         };
     }

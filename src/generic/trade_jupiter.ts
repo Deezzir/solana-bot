@@ -106,7 +106,7 @@ export class Trader implements trade.IProgramTrader {
         return new GenericMintMeta().deserialize(data);
     }
 
-    public async claim_dev_fees(): Promise<{ signature: String | null; fees: number }> {
+    public async claim_dev_fees(): Promise<trade.ClaimDevFeesResult> {
         throw new Error('Claiming dev fees is not implemented for Generic.');
     }
 

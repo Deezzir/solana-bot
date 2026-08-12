@@ -150,7 +150,7 @@ async function main() {
 
     const program = new Command();
 
-    program.version('5.0.0').description('Solana Bot CLI');
+    program.version('1.0.0', '-v, --version').description('Solana Bot CLI');
 
     program.addHelpText('beforeAll', figlet.textSync('Solana Bot', { horizontalLayout: 'full' }));
     program.showHelpAfterError('Use --help for additional information');
@@ -323,6 +323,7 @@ async function main() {
 
     program
         .command('claim-dev-fees')
+        .alias('cdf')
         .description('Claim Pump creator fees for the wallets')
         .option('--dry-run', 'Print available fees without claiming them', false)
         .addOption(get_from_option(wallet_cnt))

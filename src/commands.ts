@@ -8,6 +8,7 @@ import {
     COMMITMENT,
     HELIUS_RPC,
     PriorityLevel,
+    SOL_MINT,
     TRADE_MAX_WALLETS_PER_CREATE_BUNDLE,
     WALLETS_FILE_HEADERS
 } from './constants';
@@ -148,22 +149,39 @@ export async function claim_dev_fees(
 ): Promise<void> {
     if (wallets.length === 0) throw new Error('No wallets available.');
     const trader = get_trader(program);
-    let total_fees = 0;
+    let total_sol_raw = 0n;
     for (const wallet of wallets) {
         try {
             const result = await trader.claim_dev_fees(wallet.keypair, dry_run, priority);
-            total_fees += result.fees;
-            if (result.fees === 0) continue;
-
             const prefix = `${wallet.id} ${wallet.keypair.publicKey.toString()} (${wallet.name})`;
-            if (dry_run) common.log(`${prefix}: ${result.fees} SOL available`);
-            else common.log(common.green(`${prefix}: claimed ${result.fees} SOL, signature: ${result.signature}`));
+            for (const asset of result.assets) {
+                if (asset.mint.equals(SOL_MINT)) total_sol_raw += asset.raw_amount;
+                common.log(
+                    `${prefix}: ${dry_run ? 'available' : 'claimed'} ${asset.raw_amount} raw units (${asset.decimals} decimals) ${asset.source} ${asset.mint}`
+                );
+            }
+            for (const skipped of result.skipped)
+                common.log(
+                    common.yellow(
+                        `${prefix}: skipped ${skipped.id}${skipped.mint ? ` ${skipped.mint}` : ''}: ${skipped.reason}`
+                    )
+                );
+            if (!dry_run && result.signatures.length > 0)
+                common.log(
+                    common.green(
+                        `${prefix}: signature${result.signatures.length === 1 ? '' : 's'} ${result.signatures.join(', ')}`
+                    )
+                );
         } catch (error) {
             common.error(common.red(`Failed to claim dev fees for ${wallet.name}: ${error}`));
         }
         await common.sleep(COMMANDS_INTERVAL_MS);
     }
-    common.log(common.bold(`${dry_run ? 'Available' : 'Claimed'} dev fees: ${total_fees} SOL`));
+    common.log(
+        common.bold(
+            `${dry_run ? 'Available' : 'Claimed'} SOL dev fees: ${Number(total_sol_raw) / LAMPORTS_PER_SOL} SOL`
+        )
+    );
 }
 
 export async function create_token_metadata(
