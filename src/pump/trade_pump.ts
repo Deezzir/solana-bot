@@ -30,7 +30,7 @@ import {
     PUMP_BONDING_SEED,
     PUMP_STATE_HEADER,
     PUMP_TOKEN_DECIMALS,
-    PUMP_EVENT_AUTHORITUY_ACCOUNT,
+    PUMP_EVENT_AUTHORITY_ACCOUNT,
     PUMP_FEE_PERCENTAGE,
     PUMP_FEE_ACCOUNT,
     PUMP_API_URL,
@@ -68,7 +68,7 @@ import {
     PUMP_CREATE_V2_DISCRIMINATOR,
     MAYHEM_FEE_ACCOUNT,
     MAYHEM_FEE_TOKEN_ACCOUNT,
-    PUMB_BONDING_SEED_2,
+    PUMP_BONDING_SEED_2,
     PUMP_AMM_POOL_SEED_2,
     PUMP_AMM_POOL_SEED,
     PUMP_POOL_AUTHORITY_SEED,
@@ -271,7 +271,7 @@ export class Trader implements trade.IProgramTrader {
                         { pubkey: trader.publicKey, isSigner: false, isWritable: true },
                         { pubkey: creator_vault, isSigner: false, isWritable: true },
                         { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
-                        { pubkey: PUMP_EVENT_AUTHORITUY_ACCOUNT, isSigner: false, isWritable: false },
+                        { pubkey: PUMP_EVENT_AUTHORITY_ACCOUNT, isSigner: false, isWritable: false },
                         { pubkey: PUMP_PROGRAM_ID, isSigner: false, isWritable: false }
                     ],
                     programId: PUMP_PROGRAM_ID,
@@ -953,7 +953,7 @@ export class Trader implements trade.IProgramTrader {
                     { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
                     { pubkey: token_program, isSigner: false, isWritable: false },
                     { pubkey: creator_vault, isSigner: false, isWritable: true },
-                    { pubkey: PUMP_EVENT_AUTHORITUY_ACCOUNT, isSigner: false, isWritable: false },
+                    { pubkey: PUMP_EVENT_AUTHORITY_ACCOUNT, isSigner: false, isWritable: false },
                     { pubkey: PUMP_PROGRAM_ID, isSigner: false, isWritable: false },
                     { pubkey: PUMP_GLOBAL_VOLUME_ACCUMULATOR, isSigner: false, isWritable: true },
                     { pubkey: user_volume_accumulator, isSigner: false, isWritable: true },
@@ -1012,7 +1012,7 @@ export class Trader implements trade.IProgramTrader {
                     { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
                     { pubkey: creator_vault, isSigner: false, isWritable: true },
                     { pubkey: token_program, isSigner: false, isWritable: false },
-                    { pubkey: PUMP_EVENT_AUTHORITUY_ACCOUNT, isSigner: false, isWritable: false },
+                    { pubkey: PUMP_EVENT_AUTHORITY_ACCOUNT, isSigner: false, isWritable: false },
                     { pubkey: PUMP_PROGRAM_ID, isSigner: false, isWritable: false },
                     { pubkey: PUMP_FEE_CONFIG, isSigner: false, isWritable: false },
                     { pubkey: PUMP_FEE_PROGRAM_ID, isSigner: false, isWritable: false },
@@ -1119,7 +1119,7 @@ export class Trader implements trade.IProgramTrader {
                     { pubkey: MAYHEM_SOL_VAULT, isSigner: false, isWritable: true },
                     { pubkey: mayhem_state, isSigner: false, isWritable: true },
                     { pubkey: mayhem_token_vault, isSigner: false, isWritable: true },
-                    { pubkey: PUMP_EVENT_AUTHORITUY_ACCOUNT, isSigner: false, isWritable: false },
+                    { pubkey: PUMP_EVENT_AUTHORITY_ACCOUNT, isSigner: false, isWritable: false },
                     { pubkey: PUMP_PROGRAM_ID, isSigner: false, isWritable: false }
                 ],
                 programId: PUMP_PROGRAM_ID,
@@ -1144,7 +1144,7 @@ export class Trader implements trade.IProgramTrader {
                     { pubkey: token_program, isSigner: false, isWritable: false },
                     { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
                     { pubkey: RENT_PROGRAM_ID, isSigner: false, isWritable: false },
-                    { pubkey: PUMP_EVENT_AUTHORITUY_ACCOUNT, isSigner: false, isWritable: false },
+                    { pubkey: PUMP_EVENT_AUTHORITY_ACCOUNT, isSigner: false, isWritable: false },
                     { pubkey: PUMP_PROGRAM_ID, isSigner: false, isWritable: false }
                 ],
                 programId: PUMP_PROGRAM_ID,
@@ -1159,7 +1159,7 @@ export class Trader implements trade.IProgramTrader {
                     { pubkey: bonding, isSigner: false, isWritable: true },
                     { pubkey: creator.publicKey, isSigner: true, isWritable: true },
                     { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
-                    { pubkey: PUMP_EVENT_AUTHORITUY_ACCOUNT, isSigner: false, isWritable: false },
+                    { pubkey: PUMP_EVENT_AUTHORITY_ACCOUNT, isSigner: false, isWritable: false },
                     { pubkey: PUMP_PROGRAM_ID, isSigner: false, isWritable: false }
                 ],
                 programId: PUMP_PROGRAM_ID,
@@ -1182,7 +1182,7 @@ export class Trader implements trade.IProgramTrader {
 
     private calc_bonding_curve_v2(mint: PublicKey): PublicKey {
         const [bonding_curve] = PublicKey.findProgramAddressSync(
-            [PUMB_BONDING_SEED_2, mint.toBuffer()],
+            [PUMP_BONDING_SEED_2, mint.toBuffer()],
             PUMP_PROGRAM_ID
         );
         return bonding_curve;

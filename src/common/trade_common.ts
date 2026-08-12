@@ -49,12 +49,12 @@ import {
     COMPUTE_BUDGET_PROGRAM_ID,
     PRIORITY_FEE_TTL_MS,
     CACHE_SIZE_MAX,
-    ACCOUNT_READ_CACHE_TTL_MS
+    ACCOUNT_READ_CACHE_TTL_MS,
+    HELIUS_RPC
 } from '../constants';
 import * as common from './common';
 import bs58 from 'bs58';
-import { SendSmartTransactionOptions } from 'helius-sdk';
-import { helius_request } from './rate_limit';
+import { rate_limit_request } from './rate_limit';
 
 export type SerializedMintMeta = {
     token_usd_mc: number;
@@ -67,6 +67,36 @@ export type SerializedMintMeta = {
     token_mint: string;
     [key: string]: unknown;
 };
+
+type HeliusRpcResponse<T> = {
+    result?: T;
+    error?: { code: number; message: string; data?: unknown };
+};
+
+type HeliusAsset = {
+    token_info?: {
+        decimals?: number;
+        supply?: number;
+        token_program?: string;
+        price_info?: { price_per_token?: number };
+    };
+    content?: { metadata: { name: string; symbol: string } };
+    creators?: { address: string }[];
+};
+
+async function helius_rpc<T>(method: string, params: unknown[]): Promise<T> {
+    const response = await rate_limit_request(() =>
+        fetch(HELIUS_RPC, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params })
+        })
+    );
+    const payload = (await response.json()) as HeliusRpcResponse<T>;
+    if (!response.ok || payload.error) throw new Error(payload.error?.message || `Helius ${method} request failed.`);
+    if (payload.result === undefined) throw new Error(`Helius ${method} returned no result.`);
+    return payload.result;
+}
 
 export interface IMintMeta {
     readonly token_name: string;
@@ -167,6 +197,7 @@ type PriorityOptions = {
     transaction?: {
         instructions: TransactionInstruction[];
         signers: Signer[];
+        alts?: AddressLookupTableAccount[];
     };
     priority_level?: PriorityLevel;
 };
@@ -462,8 +493,8 @@ export async function get_token_balance(
     program_id: PublicKey = TOKEN_PROGRAM_ID
 ): Promise<TokenAmount> {
     try {
-        const assoc_addres = calc_ata(owner, mint, program_id);
-        const account_info = await global.CONNECTION.getTokenAccountBalance(assoc_addres, commitment);
+        const assoc_address = calc_ata(owner, mint, program_id);
+        const account_info = await global.CONNECTION.getTokenAccountBalance(assoc_address, commitment);
         return account_info.value;
     } catch (err) {
         return {
@@ -476,7 +507,7 @@ export async function get_token_balance(
 
 export async function get_token_meta(mint: PublicKey): Promise<MintAsset> {
     try {
-        const result = await helius_request(() => global.HELIUS_CONNECTION.rpc.getAsset({ id: mint.toString() }));
+        const result = await helius_rpc<HeliusAsset>('getAsset', [{ id: mint.toString() }]);
         if (result.token_info && result.content && result.creators) {
             const creator = result.creators.at(0);
             return {
@@ -559,7 +590,10 @@ async function send_jito_bundle(serialized_txs: string[]): Promise<string[]> {
         requests.map((resp) =>
             resp
                 .then((resp) => resp.json())
-                .then((data) => data.result as string)
+                .then((data) => {
+                    if (data.error || !data.result) throw new Error(data.error?.message || 'Jito bundle rejected.');
+                    return data.result as string;
+                })
                 .catch((err) => err)
         )
     );
@@ -590,7 +624,11 @@ async function send_jito_tx(serialized_tx: string): Promise<string[]> {
         requests.map((resp) =>
             resp
                 .then((resp) => resp.json())
-                .then((data) => data.result as string)
+                .then((data) => {
+                    if (data.error || !data.result)
+                        throw new Error(data.error?.message || 'Jito transaction rejected.');
+                    return data.result as string;
+                })
                 .catch((err) => err)
         )
     );
@@ -599,7 +637,7 @@ async function send_jito_tx(serialized_tx: string): Promise<string[]> {
 
 async function send_sender_tx(serialized_tx: string): Promise<string[]> {
     const requests = SENDER_ENDPOINTS.map((endpoint) =>
-        helius_request(() =>
+        rate_limit_request(() =>
             fetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -623,7 +661,11 @@ async function send_sender_tx(serialized_tx: string): Promise<string[]> {
         requests.map((resp) =>
             resp
                 .then((resp) => resp.json())
-                .then((data) => data.result as string)
+                .then((data) => {
+                    if (data.error || !data.result)
+                        throw new Error(data.error?.message || 'Sender transaction rejected.');
+                    return data.result as string;
+                })
                 .catch((err) => err)
         )
     );
@@ -662,7 +704,7 @@ async function send_protected_tx(
         await check_transaction_status(jito_tx_signature, ctx);
         return responses[0];
     } else {
-        throw new Error(`Failed to send the protected transaction, no successfull response from the JITO endpoints`);
+        throw new Error(`Failed to send the protected transaction, no successful response from the JITO endpoints`);
     }
 }
 
@@ -727,7 +769,7 @@ export async function send_bundle(
         await check_transaction_status(signature!, ctx);
         return responses[0];
     } else {
-        throw new Error(`Failed to send the bundle, no successfull response from the JITO endpoints`);
+        throw new Error(`Failed to send the bundle, no successful response from the JITO endpoints`);
     }
 }
 
@@ -745,7 +787,11 @@ async function check_transaction_status(
     while (true) {
         const { value: status } = await CONNECTION.getSignatureStatus(signature);
 
-        if (status && status.confirmationStatus === finality) {
+        if (
+            status &&
+            (status.confirmationStatus === finality ||
+                (finality === 'confirmed' && status.confirmationStatus === 'finalized'))
+        ) {
             const tx = await CONNECTION.getTransaction(signature, {
                 maxSupportedTransactionVersion: 0,
                 commitment: finality
@@ -793,24 +839,37 @@ async function get_priority_fee(priority_opts: PriorityOptions): Promise<number>
         let encoded_tx: string | undefined;
         if (priority_opts.transaction) {
             const { blockhash, lastValidBlockHeight } = await global.CONNECTION.getLatestBlockhash(COMMITMENT);
-            const tx = new Transaction({
-                blockhash: blockhash,
-                lastValidBlockHeight: lastValidBlockHeight,
-                feePayer: priority_opts.transaction.signers[0].publicKey
-            }).add(...priority_opts.transaction.instructions);
-            encoded_tx = bs58.encode(tx.serialize({ verifySignatures: false, requireAllSignatures: false }));
+            const { instructions, signers, alts } = priority_opts.transaction;
+            if (alts?.length) {
+                const tx = new VersionedTransaction(
+                    new TransactionMessage({
+                        payerKey: signers[0].publicKey,
+                        recentBlockhash: blockhash,
+                        instructions
+                    }).compileToV0Message(alts)
+                );
+                tx.sign(signers);
+                encoded_tx = bs58.encode(tx.serialize());
+            } else {
+                const tx = new Transaction({
+                    blockhash: blockhash,
+                    lastValidBlockHeight: lastValidBlockHeight,
+                    feePayer: signers[0].publicKey
+                }).add(...instructions);
+                encoded_tx = bs58.encode(tx.serialize({ verifySignatures: false, requireAllSignatures: false }));
+            }
         }
 
-        const response = await helius_request(() =>
-            global.HELIUS_CONNECTION.rpc.getPriorityFeeEstimate({
+        const response = await helius_rpc<{ priorityFeeEstimate?: number }>('getPriorityFeeEstimate', [
+            {
                 transaction: encoded_tx,
                 accountKeys: priority_opts.accounts,
                 options: {
                     priorityLevel: priority_opts.priority_level,
                     recommended: priority_opts.priority_level === undefined ? true : undefined
                 }
-            })
-        );
+            }
+        ]);
 
         const fee = Math.floor(response.priorityFeeEstimate || 0);
         priority_cache.set(cache_key, { value: fee, expires_at: Date.now() + PRIORITY_FEE_TTL_MS });
@@ -833,26 +892,52 @@ async function send_smart_tx(
     if (instructions.length === 0) throw new Error(`No instructions provided.`);
     if (signers.length === 0) throw new Error(`No signers provided.`);
 
-    const options: SendSmartTransactionOptions = {
-        skipPreflight: true,
-        preflightCommitment: COMMITMENT,
-        maxRetries: TRADE_TX_RETRIES
-    };
+    if (instructions.some((instruction) => instruction.programId.equals(ComputeBudgetProgram.programId)))
+        throw new Error('Smart transactions cannot include compute budget instructions.');
 
-    if (protection_tip)
-        return await helius_request(() =>
-            global.HELIUS_CONNECTION.rpc.sendSmartTransactionWithTip(
-                instructions,
-                signers,
-                alts,
-                protection_tip,
-                'Default',
-                options
-            )
+    const ctx = await global.CONNECTION.getLatestBlockhashAndContext(COMMITMENT);
+    const priority_fee = await get_priority_fee({
+        transaction: { instructions, signers, alts }
+    });
+    const simulation_instructions = [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }), ...instructions];
+    const simulation_tx = create_versioned_tx(signers, simulation_instructions, ctx, alts);
+    const simulation = await global.CONNECTION.simulateTransaction(simulation_tx, {
+        sigVerify: true,
+        commitment: COMMITMENT
+    });
+    if (simulation.value.err || !simulation.value.unitsConsumed)
+        throw new Error(`Smart transaction simulation failed: ${JSON.stringify(simulation.value.err)}`);
+
+    const final_instructions = [
+        ComputeBudgetProgram.setComputeUnitLimit({
+            units: Math.max(1_000, Math.ceil(simulation.value.unitsConsumed * 1.1))
+        }),
+        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priority_fee }),
+        ...instructions
+    ];
+    if (protection_tip) {
+        final_instructions.push(
+            SystemProgram.transfer({
+                fromPubkey: signers[0].publicKey,
+                toPubkey: get_random_sender_tip_account(),
+                lamports: protection_tip * LAMPORTS_PER_SOL
+            })
         );
-    return await helius_request(() =>
-        global.HELIUS_CONNECTION.rpc.sendSmartTransaction(instructions, signers, alts, options)
-    );
+    }
+    const transaction = create_versioned_tx(signers, final_instructions, ctx, alts);
+    const signature = bs58.encode(transaction.signatures[0]);
+    if (protection_tip) {
+        const responses = await send_sender_tx(Buffer.from(transaction.serialize()).toString('base64'));
+        if (responses.length === 0) throw new Error('Sender did not accept the smart transaction.');
+    } else {
+        await global.CONNECTION.sendTransaction(transaction, {
+            skipPreflight: true,
+            preflightCommitment: COMMITMENT,
+            maxRetries: TRADE_TX_RETRIES
+        });
+    }
+    await check_transaction_status(signature, ctx);
+    return signature;
 }
 
 export async function send_tx(

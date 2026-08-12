@@ -14,7 +14,7 @@ function get_env_variable(var_name: string, default_value: string = ''): any {
 // NETWORK CONSTANTS
 export const HELIUS_API_KEY = get_env_variable('HELIUS_API_KEY');
 export const HELIUS_RPC = `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`;
-export const HELIUS_REQUESTS_PER_SECOND = Number(process.env.HELIUS_REQUESTS_PER_SECOND || 50);
+export const RPC_REQUESTS_PER_SECOND = Number(get_env_variable('RPC_REQUESTS_PER_SECOND', '50'));
 export const COMMITMENT = 'confirmed';
 
 // COMMANDS CONSTANTS
@@ -80,8 +80,12 @@ export const SENDER_TIP_ACCOUNTS = [
 export const JITO_ENDPOINTS = [
     'https://mainnet.block-engine.jito.wtf/api/v1',
     'https://amsterdam.mainnet.block-engine.jito.wtf/api/v1',
+    'https://dublin.mainnet.block-engine.jito.wtf/api/v1',
     'https://frankfurt.mainnet.block-engine.jito.wtf/api/v1',
+    'https://london.mainnet.block-engine.jito.wtf/api/v1',
     'https://ny.mainnet.block-engine.jito.wtf/api/v1',
+    'https://slc.mainnet.block-engine.jito.wtf/api/v1',
+    'https://singapore.mainnet.block-engine.jito.wtf/api/v1',
     'https://tokyo.mainnet.block-engine.jito.wtf/api/v1'
 ];
 export const SENDER_ENDPOINTS = [
@@ -90,7 +94,7 @@ export const SENDER_ENDPOINTS = [
     'http://lon-sender.helius-rpc.com/fast',
     'http://fra-sender.helius-rpc.com/fast',
     'http://ams-sender.helius-rpc.com/fast',
-    'http://sg-sender.helius-rpc.com/fast ',
+    'http://sg-sender.helius-rpc.com/fast',
     'http://tyo-sender.helius-rpc.com/fast'
 ];
 export enum PriorityLevel {
@@ -170,7 +174,7 @@ export const PUMP_FEE_CONFIG = new PublicKey('8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BS
 export const PUMP_AMM_FEE_CONFIG = new PublicKey('5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx');
 export const PUMP_GLOBAL_ACCOUNT = new PublicKey('4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf');
 export const PUMP_FEE_ACCOUNT = new PublicKey('CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM');
-export const PUMP_EVENT_AUTHORITUY_ACCOUNT = new PublicKey('Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1');
+export const PUMP_EVENT_AUTHORITY_ACCOUNT = new PublicKey('Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1');
 export const PUMP_MINT_AUTHORITY_ACCOUNT = new PublicKey('TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM');
 export const PUMP_AMM_PROGRAM_ID = new PublicKey('pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA');
 export const PUMP_AMM_GLOBAL_ACCOUNT = new PublicKey('ADyA8hdefvWN2dbGGWFotbzWxrAvLW83WG6QCVXvJKqw');
@@ -184,7 +188,7 @@ export const PUMP_AMM_COLLECT_CREATOR_FEE_DISCRIMINATOR = new Uint8Array([160, 5
 export const PUMP_STATE_HEADER = new Uint8Array([23, 183, 248, 55, 96, 216, 172, 96]);
 export const PUMP_AMM_STATE_HEADER = new Uint8Array([241, 154, 109, 4, 17, 177, 109, 188]);
 export const PUMP_BONDING_SEED = new Uint8Array([98, 111, 110, 100, 105, 110, 103, 45, 99, 117, 114, 118, 101]);
-export const PUMB_BONDING_SEED_2 = new Uint8Array([
+export const PUMP_BONDING_SEED_2 = new Uint8Array([
     98, 111, 110, 100, 105, 110, 103, 45, 99, 117, 114, 118, 101, 45, 118, 50
 ]);
 export const PUMP_CREATOR_VAULT_SEED = new Uint8Array([99, 114, 101, 97, 116, 111, 114, 45, 118, 97, 117, 108, 116]);

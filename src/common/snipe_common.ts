@@ -15,7 +15,7 @@ import {
 import * as common from './common';
 import { IProgramTrader, get_balance, retry_get_tx } from './trade_common';
 import bs58 from 'bs58';
-import { configure_helius_rate_limiter, create_helius_rate_limit_state } from './rate_limit';
+import { configure_rpc_rate_limiter, create_rpc_rate_limit_state } from './rate_limit';
 
 export type BotConfig = {
     thread_cnt: number;
@@ -49,7 +49,7 @@ export type WorkerConfig = {
     buy_slippage: number;
     priority_level: PriorityLevel;
     protection_tip?: number;
-    helius_rate_limit_state: SharedArrayBuffer;
+    rpc_rate_limit_state: SharedArrayBuffer;
 };
 
 export function update_config(config: WorkerConfig | BotConfig, key: string, value: string): [boolean, string?] {
@@ -132,7 +132,7 @@ export abstract class SniperBase implements ISniper {
     protected bot_config: BotConfig | null;
     protected trader: IProgramTrader;
     protected workers: WorkerJob[];
-    private helius_rate_limit_state: SharedArrayBuffer;
+    private rpc_rate_limit_state: SharedArrayBuffer;
 
     protected mint_authority!: PublicKey;
     protected program_id!: PublicKey;
@@ -144,7 +144,7 @@ export abstract class SniperBase implements ISniper {
         this.workers = new Array<WorkerJob>();
         this.trader = trader;
         this.bot_config = null;
-        this.helius_rate_limit_state = create_helius_rate_limit_state();
+        this.rpc_rate_limit_state = create_rpc_rate_limit_state();
     }
 
     protected abstract decode_create_instr(data: Uint8Array): { name: string; symbol: string; misc?: object } | null;
@@ -248,7 +248,7 @@ export abstract class SniperBase implements ISniper {
 
     public async snipe(wallets: common.Wallet[], sol_price: number): Promise<void> {
         if (!this.bot_config) throw new Error('The bot configuration is not set.');
-        configure_helius_rate_limiter(this.helius_rate_limit_state);
+        configure_rpc_rate_limiter(this.rpc_rate_limit_state);
 
         if (this.bot_config.mint) {
             common.log(common.yellow('Sniping existing mint...'));
@@ -425,7 +425,7 @@ export abstract class SniperBase implements ISniper {
                 buy_slippage: this.bot_config.buy_slippage,
                 priority_level: this.bot_config.priority_level,
                 protection_tip: this.bot_config.protection_tip,
-                helius_rate_limit_state: this.helius_rate_limit_state
+                rpc_rate_limit_state: this.rpc_rate_limit_state
             };
 
             const worker = new Worker(this.get_worker_path(), {

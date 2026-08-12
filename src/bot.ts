@@ -5,12 +5,10 @@ import * as common from './common/common';
 import * as commands from './commands';
 import { exit } from 'process';
 import { Connection, Keypair, PublicKey } from '@solana/web3.js';
-import { Helius } from 'helius-sdk';
 import {
     COMMITMENT,
     DROP_AIRDROP_CSV,
     DROP_PRESALE_CSV,
-    HELIUS_API_KEY,
     HELIUS_RPC,
     JITO_MIN_TIP,
     PriorityLevel,
@@ -19,7 +17,7 @@ import {
     WALLETS_FILE
 } from './constants';
 import base58 from 'bs58';
-import { helius_connection_config } from './common/rate_limit';
+import { rpc_connection_config } from './common/rate_limit';
 
 const MULTI_CHARACTER_OPTION_ALIASES: Record<string, string> = {
     '-pr': '--pr',
@@ -147,9 +145,8 @@ async function main() {
 
     global.CONNECTION = new Connection(
         HELIUS_RPC,
-        helius_connection_config({ disableRetryOnRateLimit: true, commitment: COMMITMENT })
+        rpc_connection_config({ disableRetryOnRateLimit: true, commitment: COMMITMENT })
     );
-    global.HELIUS_CONNECTION = new Helius(HELIUS_API_KEY);
 
     const program = new Command();
 

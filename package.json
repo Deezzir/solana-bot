@@ -29,7 +29,6 @@
         "csv-parse": "^7.0.2",
         "dotenv": "^17.4.2",
         "figlet": "^1.11.4",
-        "helius-sdk": "^1.5.3",
         "inquirer": "^14.0.2"
     }
 }

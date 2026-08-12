@@ -3,10 +3,8 @@ import { Keypair, LAMPORTS_PER_SOL, Connection, TokenAmount } from '@solana/web3
 import * as common from './common';
 import * as snipe from './snipe_common';
 import * as trade from './trade_common';
-import { Helius } from 'helius-sdk';
 import {
     COMMITMENT,
-    HELIUS_API_KEY,
     HELIUS_RPC,
     SNIPE_TRADE_BATCH,
     SNIPE_MIN_BUY,
@@ -14,7 +12,7 @@ import {
     SNIPE_RETRY_INTERVAL_MS
 } from '../constants';
 import { get_trader } from './get_trader';
-import { configure_helius_rate_limiter, helius_connection_config } from './rate_limit';
+import { configure_rpc_rate_limiter, rpc_connection_config } from './rate_limit';
 
 type State =
     | { mode: 'idle'; spendings?: number; buys: number; sells: number }
@@ -25,9 +23,8 @@ type State =
 const CONFIG: snipe.WorkerConfig = workerData as snipe.WorkerConfig;
 const KEYPAIR: Keypair = Keypair.fromSecretKey(new Uint8Array(CONFIG.secret));
 const TRADER: trade.IProgramTrader = get_trader(CONFIG.program);
-configure_helius_rate_limiter(CONFIG.helius_rate_limit_state);
-global.CONNECTION = new Connection(HELIUS_RPC, helius_connection_config({ commitment: COMMITMENT }));
-global.HELIUS_CONNECTION = new Helius(HELIUS_API_KEY);
+configure_rpc_rate_limiter(CONFIG.rpc_rate_limit_state);
+global.CONNECTION = new Connection(HELIUS_RPC, rpc_connection_config({ commitment: COMMITMENT }));
 
 var MINT_METADATA: trade.IMintMeta;
 var CANCEL_SLEEP: (() => void) | null = null;

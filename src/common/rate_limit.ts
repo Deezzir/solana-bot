@@ -1,5 +1,5 @@
 import { ConnectionConfig } from '@solana/web3.js';
-import { HELIUS_REQUESTS_PER_SECOND } from '../constants';
+import { RPC_REQUESTS_PER_SECOND } from '../constants';
 
 export function create_rate_limiter(
     requests_per_second: number,
@@ -27,21 +27,21 @@ export function create_rate_limiter(
     };
 }
 
-export function create_helius_rate_limit_state(): SharedArrayBuffer {
+export function create_rpc_rate_limit_state(): SharedArrayBuffer {
     return new SharedArrayBuffer(BigInt64Array.BYTES_PER_ELEMENT);
 }
 
-export let helius_request = create_rate_limiter(HELIUS_REQUESTS_PER_SECOND);
+export let rate_limit_request = create_rate_limiter(RPC_REQUESTS_PER_SECOND);
 
-export function configure_helius_rate_limiter(state: SharedArrayBuffer): void {
-    helius_request = create_rate_limiter(HELIUS_REQUESTS_PER_SECOND, state);
+export function configure_rpc_rate_limiter(state: SharedArrayBuffer): void {
+    rate_limit_request = create_rate_limiter(RPC_REQUESTS_PER_SECOND, state);
 }
 
-export function helius_connection_config(config: ConnectionConfig): ConnectionConfig {
+export function rpc_connection_config(config: ConnectionConfig): ConnectionConfig {
     return {
         ...config,
         fetchMiddleware: (info, init, fetch) => {
-            void helius_request(async () => fetch(info, init));
+            void rate_limit_request(async () => fetch(info, init));
         }
     };
 }

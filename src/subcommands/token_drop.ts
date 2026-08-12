@@ -84,12 +84,12 @@ function calc_presale_amounts(
     return { presale_tokens, presale_sol };
 }
 
-function update_airdrop_balance_csv(token_amount: number, aidrop_path: string): void {
-    const records = read_csv<AirdropUser>(aidrop_path);
+function update_airdrop_balance_csv(token_amount: number, airdrop_path: string): void {
+    const records = read_csv<AirdropUser>(airdrop_path);
     for (const r of records) {
         if (!r.tx) r.tokensToSend = token_amount;
     }
-    write_csv(aidrop_path, records);
+    write_csv(airdrop_path, records);
 }
 
 function update_presale_balance_csv(token_amount: number, total_sol: number, presale_path: string): void {
