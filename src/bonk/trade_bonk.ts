@@ -88,30 +88,6 @@ const StateStruct = define_decoder_struct({
 
 type State = ReturnType<typeof StateStruct.decode>;
 
-// const CPMM_STATE_OFFSETS = {
-//     AMM_CONFIG: 0x08,
-//     POOL_CREATOR: 0x28,
-//     TOKEN_0_VAULT: 0x48,
-//     TOKEN_1_VAULT: 0x68,
-//     LP_MINT: 0x88,
-//     TOKEN_0_MINT: 0xa8,
-//     TOKEN_1_MINT: 0xc8,
-//     OBSERVATION_KEY: 0x128
-// };
-// type CPMMState = {
-//     amm_config: PublicKey;
-//     pool_creator: PublicKey;
-//     token_0_vault: PublicKey;
-//     token_1_vault: PublicKey;
-//     lp_mint: PublicKey;
-//     token_0_mint: PublicKey;
-//     token_1_mint: PublicKey;
-//     observation_key: PublicKey;
-//     token_0_reserves: bigint;
-//     token_1_reserves: bigint;
-//     supply: bigint;
-// };
-
 const CPMMStateStruct = define_decoder_struct({
     discriminator: discriminator(Buffer.from(RAYDIUM_CPMM_POOL_STATE_HEADER)),
     amm_config: pubkey(),

@@ -156,6 +156,7 @@ configs
 .env_old
 
 .DS_Store
+.worktrees/
 
 src/test*
 

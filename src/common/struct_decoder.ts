@@ -14,6 +14,14 @@ export function skip(size: number): DecoderField<void> {
     };
 }
 
+export function bytes(size: number, name?: string): DecoderField<Buffer> {
+    return {
+        name,
+        size,
+        decode: (data, offset) => Buffer.from(data.subarray(offset, offset + size))
+    };
+}
+
 export function discriminator(data: Buffer): DecoderField<void> {
     return {
         name: undefined,

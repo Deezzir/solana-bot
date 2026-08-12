@@ -145,19 +145,15 @@ export const BONK_CONFIG_3 = new PublicKey('8pCtbn9iatQ8493mDQax4xfEUjhoVBpUWYVQ
 
 // METEORA CONSTANTS
 export const METEORA_DBC_PROGRAM_ID = new PublicKey('dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN');
-export const METEORA_DAMM_V1_PROGRAM_ID = new PublicKey('Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB');
 export const METEORA_DAMM_V2_PROGRAM_ID = new PublicKey('cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG');
-export const METEORA_VAULT_PROGRAM_ID = new PublicKey('24Uqj9JCLxUeoC3hGfh5W3s9FM9uCHDS2SG3LYwBpyTi');
 export const METEORA_DBC_POOL_AUTHORITY = new PublicKey('FhVo3mqL8PW5pH5U2CN4XE33DokiyZnUwuGpH2hmHLuM');
 export const METEORA_DBC_EVENT_AUTHORITY = new PublicKey('8Ks12pbrD6PXxfty1hVQiE9sc289zgU1zHkvXhrSdriF');
 export const METEORA_LTA_ACCOUNT = new PublicKey('F1geeThcTKPq5nJDpJ9Eh7gk7t4k22PKpcGjbzzPJD14');
 export const METEORA_LTA_ACCOUNT_EXTRA = new PublicKey('6WgD151HNpmFfv5Hzf2NsPTVNoSC1JjeMoJ8sEFtpDKh');
-export const METEORA_DAMM_V1_STATE_HEADER = new Uint8Array([241, 154, 109, 4, 17, 177, 109, 188]);
 export const METEORA_DAMM_V2_STATE_HEADER = new Uint8Array([241, 154, 109, 4, 17, 177, 109, 188]);
 export const METEORA_DBC_VAULT_SEED = new Uint8Array([116, 111, 107, 101, 110, 95, 118, 97, 117, 108, 116]);
 export const METEORA_DBC_STATE_HEADER = new Uint8Array([213, 224, 5, 209, 98, 69, 119, 92]);
 export const METEORA_CONFIG_HEADER = new Uint8Array([26, 108, 14, 123, 116, 230, 129, 43]);
-export const METEORA_VAULT_HEADER = new Uint8Array([211, 8, 232, 43, 2, 152, 117, 119]);
 export const METEORA_SWAP_DISCRIMINATOR = new Uint8Array([248, 198, 158, 145, 225, 117, 135, 200]);
 
 // PUMP CONSTANTS
