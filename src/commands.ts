@@ -52,23 +52,91 @@ export async function burn_token(mint: PublicKey, burner: Signer, amount?: numbe
         .catch((error) => common.error(common.red(`Transaction failed: ${error.message}`)));
 }
 
-export async function clean(wallets: common.Wallet[]): Promise<void> {
+export async function clean(wallets: common.Wallet[], burn: boolean = false): Promise<void> {
     if (wallets.length === 0) throw new Error('No wallets available.');
 
-    common.log(common.yellow('Closing all the token accounts for the wallets...'));
-    let unsold_mints: string[] = [];
+    common.log(common.yellow(`${burn ? 'Burning tokens and closing' : 'Closing'} token accounts for the wallets...`));
+    const unsold_mints = new Map<string, { amount: bigint; decimals: number }>();
+    const unclosed_wallets: common.Wallet[] = [];
+    const unsold_wallets: common.Wallet[] = [];
+    let total_closed_cnt = 0;
+    let total_failed_cnt = 0;
 
-    for (const wallet of wallets) {
-        const closer = wallet.keypair;
-        common.log(`\nCleaning ${closer.publicKey.toString().padEnd(44, ' ')} (${wallet.name})...`);
-        const { ok, unsold } = await trade.close_accounts(closer);
-        unsold_mints = [...new Set([...unsold_mints, ...unsold.map((i) => i.toString())])];
-        if (ok) common.log(common.green(`Cleaned`));
+    for (const batch of common.chunks(wallets, 40)) {
+        await Promise.all(
+            batch.map(async (wallet) => {
+                try {
+                    const closer = wallet.keypair;
+                    common.log(`Cleaning ${closer.publicKey.toString().padEnd(44, ' ')} (${wallet.name})...`);
+                    const {
+                        unsold_mints: unsold,
+                        failed_cnt,
+                        closed_cnt,
+                        closed,
+                        failures
+                    } = await trade.close_accounts(closer, burn);
+                    total_closed_cnt += closed_cnt;
+                    total_failed_cnt += failed_cnt;
+                    if (failed_cnt > 0) unclosed_wallets.push(wallet);
+                    if (unsold.length > 0) unsold_wallets.push(wallet);
+                    for (const result of closed) {
+                        common.log(
+                            `${closer.publicKey.toString().padEnd(44, ' ')} (${wallet.name}) | ${result.count} accounts closed after ${result.attempts} attempts | Signature ${result.signature}`
+                        );
+                    }
+                    for (const failure of failures) {
+                        common.error(
+                            common.red(
+                                `${closer.publicKey.toString().padEnd(44, ' ')} (${wallet.name}) | Failed to close ${failure.count} accounts after ${failure.attempts} attempts: ${failure.error}`
+                            )
+                        );
+                    }
+                    for (const mint of unsold) {
+                        const existing = unsold_mints.get(mint.mint.toString());
+                        unsold_mints.set(mint.mint.toString(), {
+                            amount: (existing?.amount ?? 0n) + mint.amount,
+                            decimals: mint.decimals
+                        });
+                    }
+                    if (closed_cnt === 0 && failed_cnt === 0 && unsold.length === 0)
+                        common.log(
+                            `${closer.publicKey.toString().padEnd(44, ' ')} (${wallet.name}) | No accounts to close`
+                        );
+                } catch (error) {
+                    unclosed_wallets.push(wallet);
+                    common.error(
+                        common.red(
+                            `Failed to clean ${wallet.keypair.publicKey}: ${error} (failed account count unknown)`
+                        )
+                    );
+                }
+            })
+        );
     }
 
-    if (unsold_mints.length > 0) {
+    common.log(
+        common.bold(`\nTotal closed accounts: ${total_closed_cnt} | Total failed accounts: ${total_failed_cnt}`)
+    );
+
+    if (unclosed_wallets.length > 0) {
+        common.log(common.red(`\nUnclosed Wallets:`));
+        for (const wallet of unclosed_wallets) {
+            common.log(`${wallet.keypair.publicKey.toString()}`);
+        }
+    }
+
+    if (unsold_wallets.length > 0) {
+        common.log(common.yellow(`\nWallets With Unsold Tokens:`));
+        for (const wallet of unsold_wallets) {
+            common.log(`${wallet.keypair.publicKey.toString()}`);
+        }
+    }
+
+    if (unsold_mints.size > 0) {
         common.log(common.red(`\nUnsold Tokens:`));
-        unsold_mints.forEach((mint) => common.log(common.bold(mint)));
+        for (const [mint, balance] of unsold_mints.entries()) {
+            common.log(`${common.bold(mint)}: ${balance.amount} raw units (${balance.decimals} decimals)`);
+        }
     }
 }
 

@@ -986,7 +986,16 @@ export async function send_tokens(
     return await send_tx(instructions, [sender], priority);
 }
 
-export async function close_accounts(owner: Keypair): Promise<{ ok: boolean; unsold: PublicKey[] }> {
+export async function close_accounts(
+    owner: Keypair,
+    burn: boolean = false
+): Promise<{
+    unsold_mints: { mint: PublicKey; amount: bigint; decimals: number }[];
+    closed_cnt: number;
+    failed_cnt: number;
+    closed: { count: number; attempts: number; signature: String }[];
+    failures: { count: number; attempts: number; error: string }[];
+}> {
     const token_accounts = (
         await Promise.all([
             global.CONNECTION.getTokenAccountsByOwner(owner.publicKey, {
@@ -1007,41 +1016,85 @@ export async function close_accounts(owner: Keypair): Promise<{ ok: boolean; uns
         });
     const unsold_mints = await Promise.all(
         token_accounts
-            .filter((acc) => acc.data.amount !== BigInt(0))
+            .filter((acc) => acc.data.amount !== 0n && !acc.data.mint.equals(SOL_MINT) && !burn)
             .map(async (acc) => {
                 const mint = acc.data.mint;
-                const balance = Number(acc.data.amount) / 10 ** (await get_token_supply(mint)).decimals;
-                common.log(`Unsold mint: ${mint.toString()} | Balance: ${balance.toString()} `);
-                return acc.data.mint;
+                const { decimals } = await get_token_supply(mint);
+                return { mint, amount: acc.data.amount, decimals };
             })
     );
-    const accounts_to_close = token_accounts.filter((acc) => acc.data.amount === BigInt(0));
+    const accounts_to_close = token_accounts.filter(
+        (acc) => acc.data.amount === 0n || acc.data.mint.equals(SOL_MINT) || burn
+    );
 
     if ((await get_balance(owner.publicKey, COMMITMENT)) === 0) {
-        common.error(common.red(`Owner has no balance to close the accounts, skipping...`));
-        return { ok: false, unsold: unsold_mints };
+        if (accounts_to_close.length === 0)
+            return {
+                unsold_mints,
+                closed_cnt: 0,
+                failed_cnt: 0,
+                closed: [],
+                failures: []
+            };
+        return {
+            unsold_mints,
+            closed_cnt: 0,
+            failed_cnt: accounts_to_close.length,
+            closed: [],
+            failures: [{ count: accounts_to_close.length, attempts: 0, error: 'No SOL balance' }]
+        };
     }
-    for (const chunk of common.chunks(accounts_to_close, 15)) {
-        while (true) {
-            const intructions = chunk.map((account) => {
-                return createCloseAccountInstruction(
+
+    let closed_cnt = 0;
+    let failed_cnt = 0;
+    const closed: { count: number; attempts: number; signature: String }[] = [];
+    const failures: { count: number; attempts: number; error: string }[] = [];
+    for (const chunk of common.chunks(accounts_to_close, burn ? 7 : 15)) {
+        const instructions = chunk.flatMap((account) => {
+            const close = createCloseAccountInstruction(
+                account.pubkey,
+                owner.publicKey,
+                owner.publicKey,
+                undefined,
+                account.programId
+            );
+            if (!burn || account.data.amount === 0n || account.data.mint.equals(SOL_MINT)) return [close];
+            return [
+                createBurnInstruction(
                     account.pubkey,
+                    account.data.mint,
                     owner.publicKey,
-                    owner.publicKey,
-                    undefined,
+                    account.data.amount,
+                    [],
                     account.programId
-                );
-            });
+                ),
+                close
+            ];
+        });
+        for (let attempt = 0; attempt <= TRADE_RETRIES; attempt++) {
             try {
-                const signature = await send_tx(intructions, [owner], PriorityLevel.DEFAULT);
-                common.log(`${chunk.length} accounts closed | Signature ${signature} `);
+                const signature = await send_tx(instructions, [owner], PriorityLevel.DEFAULT);
+                closed_cnt += chunk.length;
+                closed.push({ count: chunk.length, attempts: attempt + 1, signature });
                 break;
             } catch (err) {
-                common.error(common.red(`Failed to close accounts, retrying...`));
+                if (attempt === TRADE_RETRIES) {
+                    failed_cnt += chunk.length;
+                    failures.push({ count: chunk.length, attempts: attempt + 1, error: String(err) });
+                    break;
+                }
+                await common.sleep(TRADE_RETRY_INTERVAL_MS);
             }
         }
     }
-    return { ok: true, unsold: unsold_mints };
+
+    return {
+        unsold_mints: unsold_mints,
+        closed_cnt: closed_cnt,
+        failed_cnt: failed_cnt,
+        closed,
+        failures
+    };
 }
 
 export function get_sol_token_amount(amount: number): TokenAmount {

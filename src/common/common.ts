@@ -119,7 +119,7 @@ export async function to_confirm(message: string) {
 export function setup_rescue_file(): string {
     const file_name = new Date().toISOString().replace(/T/, ' ').replace(/\..+/, '').replace(' ', '_');
     const target_file = `${file_name}.csv`;
-    const target_file_path = path.join(WALLETS_RESCUE_DIR_PATH, target_file);
+    const target_file_path = path.join(WALLETS_RESCUE_DIR_PATH, 'keys-csv', target_file);
 
     try {
         if (!existsSync(WALLETS_RESCUE_DIR_PATH)) mkdirSync(WALLETS_RESCUE_DIR_PATH);

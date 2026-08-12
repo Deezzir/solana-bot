@@ -253,10 +253,12 @@ export class Trader implements trade.IProgramTrader {
     ): Promise<{ signature: String | null; fees: number }> {
         const [creator_vault] = this.calc_creator_vault(trader.publicKey);
         const [amm_creator_vault, amm_creator_vault_ata] = this.calc_amm_creator_vault(trader.publicKey);
-        const [pump_fees, amm_fees] = await Promise.all([
-            trade.get_balance(creator_vault, COMMITMENT),
+        const [creator_vault_info, creator_vault_rent, amm_fees] = await Promise.all([
+            global.CONNECTION.getAccountInfo(creator_vault, COMMITMENT),
+            global.CONNECTION.getMinimumBalanceForRentExemption(0, COMMITMENT),
             trade.get_vault_balance(amm_creator_vault_ata).catch(() => ({ balance: 0n, decimals: 9 }))
         ]);
+        const pump_fees = Math.max(0, (creator_vault_info?.lamports ?? 0) - creator_vault_rent);
         const fees = (pump_fees + Number(amm_fees.balance)) / LAMPORTS_PER_SOL;
         if (fees === 0 || dry_run) return { signature: null, fees };
 

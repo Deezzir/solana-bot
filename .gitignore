@@ -160,3 +160,4 @@ configs
 src/test*
 
 .github
+scripts

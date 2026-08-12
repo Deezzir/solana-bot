@@ -321,7 +321,8 @@ async function main() {
         .command('clean')
         .alias('cl')
         .description('Clean the wallets by closing zero balance token accounts')
-        .action(async () => await commands.clean(wallets));
+        .option('--burn', 'Burn non-SOL token balances before closing their accounts', false)
+        .action(async (options) => await commands.clean(wallets, options.burn));
 
     program
         .command('claim-dev-fees')
