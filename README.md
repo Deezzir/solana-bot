@@ -5,7 +5,7 @@
 1. Open the terminal and clone the repo
 
     ```shell
-    git clone https://github.com/Deezzir/SolanaBot.git
+    git clone https://github.com/Deezzir/solana-bott.git
     ```
 
 2. Install Bun if you haven't already, and install the dependencies
@@ -13,7 +13,7 @@
     See the [Bun installation guide](https://bun.sh/docs/installation).
 
     ```shell
-    cd SolanaBot && bun install
+    cd solana-bot && bun install
     ```
 
 3. Create a `.env` file in the root directory and add the following
@@ -22,22 +22,12 @@
     HELIUS_API_KEY=
     ```
 
-4. Build the project
+4. Run the project
 
     ```shell
-    bun run build
-    ```
-
-5. Run the project
-
-    ```shell
-    > alias bot="bun dist/bot.js"
+    > alias bot="bun run src/bot.js"
     > bot -h
-      ____            _                             ____            _
-     / ___|    ___   | |   __ _   _ __     __ _    | __ )    ___   | |_
-     \___ \   / _ \  | |  / _` | | '_ \   / _` |   |  _ \   / _ \  | __|
-      ___) | | (_) | | | | (_| | | | | | | (_| |   | |_) | | (_) | | |_
-     |____/   \___/  |_|  \__,_| |_| |_|  \__,_|   |____/   \___/   \__|
+     Solana Bot
 
     Usage: bot [options] [command]
 
@@ -47,6 +37,7 @@
       -V, --version                                                  output the version number
       -k, --keys <path>                                              Path to the CSV file with the wallets (default: keys.csv)
       -g, --program <type>                                           specify program (choices: "pump", "meteora", "raydium", "bonk", "generic", default: pump)
+      --no-colors                                                    Disable colored output
       -h, --help                                                     display help for command
 
     Commands:
@@ -57,6 +48,7 @@
       token-balance|tb <mint>                                        Get the token balance of the wallets
       warmup|w [options]                                             Warmup the wallets with the tokens
       clean|cl                                                       Clean the wallets by closing zero balance token accounts
+      claim-dev-fees [options]                                       Claim Pump creator fees for the wallets
       token-burn|tburn [options] <mint> <burner_index>               Burn the tokens by mint from a wallet
       collect|c [options] <receiver>                                 Collect all the SOL from the wallets to the provided address
       token-collect|tc [options] <mint> <receiver>                   Collect all tokens by mint from the wallets to the provided address

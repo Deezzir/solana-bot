@@ -4,7 +4,6 @@
     "description": "Solana bot",
     "main": "./src/bot.ts",
     "scripts": {
-        "build": "bun build ./src/bot.ts --outdir ./dist --target bun",
         "start": "bun run ./src/bot.ts",
         "typecheck": "bunx tsc --noEmit",
         "prune": "ts-prune",
