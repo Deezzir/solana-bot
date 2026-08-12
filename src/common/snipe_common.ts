@@ -17,7 +17,7 @@ import { IProgramTrader, get_balance, retry_get_tx } from './trade_common';
 import bs58 from 'bs58';
 import { configure_rpc_rate_limiter, create_rpc_rate_limit_state } from './rate_limit';
 
-export type BotConfig = {
+type BotConfig = {
     thread_cnt: number;
     spend_limit: number;
     min_buy: number;

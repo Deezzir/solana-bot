@@ -1,7 +1,7 @@
 import { ConnectionConfig } from '@solana/web3.js';
 import { RPC_REQUESTS_PER_SECOND } from '../constants';
 
-export function create_rate_limiter(
+function create_rate_limiter(
     requests_per_second: number,
     state = new SharedArrayBuffer(BigInt64Array.BYTES_PER_ELEMENT)
 ) {

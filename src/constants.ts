@@ -12,7 +12,7 @@ function get_env_variable(var_name: string, default_value: string = ''): any {
 }
 
 // NETWORK CONSTANTS
-export const HELIUS_API_KEY = get_env_variable('HELIUS_API_KEY');
+const HELIUS_API_KEY = get_env_variable('HELIUS_API_KEY');
 export const HELIUS_RPC = `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`;
 export const RPC_REQUESTS_PER_SECOND = Number(get_env_variable('RPC_REQUESTS_PER_SECOND', '50'));
 export const COMMITMENT = 'confirmed';

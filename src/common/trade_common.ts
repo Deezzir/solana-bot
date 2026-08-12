@@ -262,7 +262,7 @@ export type TxBalanceChanges = {
     fees: number;
 };
 
-export type CostBasis = {
+type CostBasis = {
     average_cost_basis: number;
     total_spendings: number;
     total_tokens: number;

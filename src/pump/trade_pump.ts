@@ -82,7 +82,7 @@ import { basename } from 'path';
 import base58 from 'bs58';
 import { define_decoder_struct, skip, u8, u64, i128, discriminator, pubkey, u16, bool } from '../common/struct_decoder';
 
-export class PumpMintMeta implements trade.IMintMeta {
+class PumpMintMeta implements trade.IMintMeta {
     mint!: string;
     name: string = 'Unknown';
     symbol: string = 'Unknown';

@@ -36,9 +36,21 @@ import {
     TOKEN_2022_PROGRAM_ID,
     TOKEN_PROGRAM_ID
 } from '@solana/spl-token';
-import { bytes, define_decoder_struct, discriminator, pubkey, skip, u8, u64 } from '../common/struct_decoder';
+import {
+    bytes,
+    define_decoder_struct,
+    discriminator,
+    pubkey,
+    skip,
+    u128,
+    u16,
+    u32,
+    u8,
+    u64
+} from '../common/struct_decoder';
+import { quote_exact_in, TradeDirection } from './damm_math';
 
-export class MeteoraMintMeta implements trade.IMintMeta {
+class MeteoraMintMeta implements trade.IMintMeta {
     mint!: string;
     name: string = 'Unknown';
     symbol: string = 'Unknown';
@@ -147,29 +159,36 @@ const DAMMV2StateStruct = define_decoder_struct({
     discriminator: discriminator(Buffer.from(METEORA_DAMM_V2_STATE_HEADER)),
     base_fee_data: bytes(32),
     base_fee_padding: skip(8),
-    protocol_fee_percent: skip(1),
+    protocol_fee_percent: u8(),
     pool_fee_padding_0: skip(1),
-    referral_fee_percent: skip(1),
+    referral_fee_percent: u8(),
     pool_fee_padding_1: skip(3),
-    compounding_fee_bps: skip(2),
+    compounding_fee_bps: u16(),
     dynamic_fee_initialized: u8(),
-    dynamic_fee_data: skip(95),
-    init_sqrt_price: skip(16),
+    dynamic_fee_padding: skip(7),
+    dynamic_fee_max_volatility_accumulator: skip(4),
+    dynamic_fee_variable_fee_control: u32(),
+    dynamic_fee_bin_step: u16(),
+    dynamic_fee_padding_0: skip(14),
+    dynamic_fee_price_references: skip(32),
+    dynamic_fee_volatility_accumulator: u128(),
+    dynamic_fee_padding_1: skip(16),
+    init_sqrt_price: u128(),
     token_a_mint: pubkey(),
     token_b_mint: pubkey(),
     token_a_vault: pubkey(),
     token_b_vault: pubkey(),
     whitelisted_vault: skip(32),
     pool_padding_0: skip(32),
-    liquidity: skip(16),
+    liquidity: u128(),
     pool_padding_1: skip(16),
     protocol_a_fee: skip(8),
     protocol_b_fee: skip(8),
     pool_padding_2: skip(16),
-    sqrt_min_price: skip(16),
-    sqrt_max_price: skip(16),
-    sqrt_price: skip(16),
-    activation_point: skip(8),
+    sqrt_min_price: u128(),
+    sqrt_max_price: u128(),
+    sqrt_price: u128(),
+    activation_point: u64(),
     activation_type: u8(),
     pool_status: u8(),
     token_a_flag: u8(),
@@ -469,10 +488,18 @@ export class Trader implements trade.IProgramTrader {
         slippage: number
     ): Promise<[TransactionInstruction[], TransactionInstruction[], AddressLookupTableAccount[]?]> {
         const sol_amount_raw = BigInt(Math.floor(sol_amount * LAMPORTS_PER_SOL));
-        const token_amount_raw = mint_meta.migrated
-            ? this.calc_damm_v2_amount_out(sol_amount_raw, SOL_MINT, mint_meta)
-            : this.calc_dbc_token_amount_raw(sol_amount_raw, mint_meta.dbc_data!);
-        let [buy_instructions, lta] = await this.buy_token_instructions(sol_amount, trader, mint_meta, slippage);
+        let buy_instructions: TransactionInstruction[];
+        let lta: AddressLookupTableAccount[] | undefined;
+        let token_amount_raw: bigint;
+        if (mint_meta.migrated) {
+            const result = await this.get_damm_v2_swap_instructions(sol_amount_raw, trader, mint_meta, true, slippage);
+            buy_instructions = result.instructions;
+            token_amount_raw = result.output_amount;
+            lta = await trade.get_ltas([METEORA_LTA_ACCOUNT]);
+        } else {
+            [buy_instructions, lta] = await this.buy_token_instructions(sol_amount, trader, mint_meta, slippage);
+            token_amount_raw = this.calc_dbc_token_amount_raw(sol_amount_raw, mint_meta.dbc_data!);
+        }
         let [sell_instructions] = await this.sell_token_instructions(
             {
                 uiAmount: Number(token_amount_raw) / 10 ** mint_meta.token_decimal,
@@ -806,17 +833,11 @@ export class Trader implements trade.IProgramTrader {
         });
     }
 
-    private validate_damm_v2_state(state: ReturnType<typeof DAMMV2StateStruct.decode>): bigint {
-        const base_fee_mode = state.base_fee_data[8];
-        const period_frequency = state.base_fee_data.readBigUInt64LE(16);
-        if (state.collect_fee_mode !== 2) throw new Error('DAMM v2 trading supports compounding pools only.');
+    private validate_damm_v2_state(state: ReturnType<typeof DAMMV2StateStruct.decode>): void {
         if (state.pool_status !== 0) throw new Error('DAMM v2 pool is disabled.');
         if (state.layout_version !== 1) throw new Error('DAMM v2 pool layout version is not supported.');
-        if (state.dynamic_fee_initialized !== 0) throw new Error('DAMM v2 dynamic-fee pools are not supported.');
-        if ((base_fee_mode !== 0 && base_fee_mode !== 1) || period_frequency !== 0n)
-            throw new Error('DAMM v2 non-static fee pools are not supported.');
+        if (state.collect_fee_mode > 2) throw new Error('Unsupported DAMM v2 fee collection mode.');
         if (state.fee_version > 1) throw new Error('Unsupported DAMM v2 fee version.');
-        return state.base_fee_data.readBigUInt64LE(0);
     }
 
     private async get_token_program(mint: PublicKey): Promise<PublicKey> {
@@ -832,42 +853,22 @@ export class Trader implements trade.IProgramTrader {
         return mint_info.owner;
     }
 
-    private calc_damm_v2_minimum_amount_out(
+    private async quote_damm_v2_exact_in(
         amount_in: bigint,
         input_is_token_a: boolean,
         state: ReturnType<typeof DAMMV2StateStruct.decode>,
-        slippage: number
-    ): bigint {
-        const fee_numerator = this.validate_damm_v2_state(state);
-        const fee_denominator = 1_000_000_000n;
-        const fee = (amount_in * fee_numerator + fee_denominator - 1n) / fee_denominator;
-        const amount_after_fee = input_is_token_a ? amount_in : amount_in - fee;
-        const input_reserve = input_is_token_a ? state.token_a_amount : state.token_b_amount;
-        const output_reserve = input_is_token_a ? state.token_b_amount : state.token_a_amount;
-        const output_before_fee = (output_reserve * amount_after_fee) / (input_reserve + amount_after_fee);
-        const output_after_fee = input_is_token_a
-            ? output_before_fee - (output_before_fee * fee_numerator + fee_denominator - 1n) / fee_denominator
-            : output_before_fee;
-        return this.calc_slippage_down(output_after_fee, slippage);
-    }
-
-    private calc_damm_v2_amount_out(amount_in: bigint, input_mint: PublicKey, mint_meta: MeteoraMintMeta): bigint {
-        if (!mint_meta.damm_v2_data) throw new Error('Missing DAMM v2 pool data.');
-        const input_is_token_a = input_mint.toBase58() === mint_meta.damm_v2_data.token_a_mint;
-        const input_reserve = input_is_token_a
-            ? mint_meta.damm_v2_data.token_a_amount
-            : mint_meta.damm_v2_data.token_b_amount;
-        const output_reserve = input_is_token_a
-            ? mint_meta.damm_v2_data.token_b_amount
-            : mint_meta.damm_v2_data.token_a_amount;
-        const fee_denominator = 1_000_000_000n;
-        const fee = (amount_in * mint_meta.damm_v2_data.fee_numerator + fee_denominator - 1n) / fee_denominator;
-        const amount_after_fee = input_is_token_a ? amount_in : amount_in - fee;
-        const output_before_fee = (output_reserve * amount_after_fee) / (input_reserve + amount_after_fee);
-        return input_is_token_a
-            ? output_before_fee -
-                  (output_before_fee * mint_meta.damm_v2_data.fee_numerator + fee_denominator - 1n) / fee_denominator
-            : output_before_fee;
+        slot: number
+    ) {
+        this.validate_damm_v2_state(state);
+        const current_point =
+            state.activation_type === 0 ? BigInt(slot) : BigInt((await global.CONNECTION.getBlockTime(slot)) ?? 0);
+        if (current_point < state.activation_point) throw new Error('DAMM v2 pool is not active.');
+        return quote_exact_in(
+            state,
+            amount_in,
+            input_is_token_a ? TradeDirection.AtoB : TradeDirection.BtoA,
+            current_point
+        );
     }
 
     private damm_v2_swap_data(amount_in: bigint, minimum_amount_out: bigint): Buffer {
@@ -1014,13 +1015,14 @@ export class Trader implements trade.IProgramTrader {
         mint_meta: MeteoraMintMeta,
         slippage: number
     ): Promise<TransactionInstruction[]> {
-        return this.get_damm_v2_swap_instructions(
+        const result = await this.get_damm_v2_swap_instructions(
             BigInt(Math.floor(sol_amount * LAMPORTS_PER_SOL)),
             buyer,
             mint_meta,
             true,
             slippage
         );
+        return result.instructions;
     }
 
     private async get_sell_damm_v2_instructions(
@@ -1030,7 +1032,9 @@ export class Trader implements trade.IProgramTrader {
         slippage: number
     ): Promise<TransactionInstruction[]> {
         if (token_amount.amount === null) throw new Error(`Invalid token amount: ${token_amount.amount}`);
-        return this.get_damm_v2_swap_instructions(BigInt(token_amount.amount), seller, mint_meta, false, slippage);
+        return (
+            await this.get_damm_v2_swap_instructions(BigInt(token_amount.amount), seller, mint_meta, false, slippage)
+        ).instructions;
     }
 
     private async get_damm_v2_swap_instructions(
@@ -1039,14 +1043,14 @@ export class Trader implements trade.IProgramTrader {
         mint_meta: MeteoraMintMeta,
         buy: boolean,
         slippage: number
-    ): Promise<TransactionInstruction[]> {
+    ): Promise<{ instructions: TransactionInstruction[]; output_amount: bigint }> {
         if (!mint_meta.pool || !mint_meta.damm_v2_data) throw new Error('Incomplete DAMM v2 pool data.');
         if (amount_in <= 0n) throw new RangeError('DAMM v2 swap amount must be positive.');
 
         const pool = new PublicKey(mint_meta.pool);
-        const pool_info = await global.CONNECTION.getAccountInfo(pool, COMMITMENT);
-        if (!pool_info) throw new Error('DAMM v2 pool not found.');
-        const state = DAMMV2StateStruct.decode(pool_info.data);
+        const pool_response = await global.CONNECTION.getAccountInfoAndContext(pool, COMMITMENT);
+        if (!pool_response.value) throw new Error('DAMM v2 pool not found.');
+        const state = DAMMV2StateStruct.decode(pool_response.value.data);
         const input_mint = buy ? SOL_MINT : mint_meta.mint_pubkey;
         const output_mint = buy ? mint_meta.mint_pubkey : SOL_MINT;
         const input_program = await this.get_token_program(input_mint);
@@ -1058,7 +1062,8 @@ export class Trader implements trade.IProgramTrader {
         const input_is_token_a = state.token_a_mint.equals(input_mint);
         const input_ata = trade.calc_ata(trader.publicKey, input_mint, input_program);
         const output_ata = trade.calc_ata(trader.publicKey, output_mint, output_program);
-        const minimum_amount_out = this.calc_damm_v2_minimum_amount_out(amount_in, input_is_token_a, state, slippage);
+        const quote = await this.quote_damm_v2_exact_in(amount_in, input_is_token_a, state, pool_response.context.slot);
+        const minimum_amount_out = this.calc_slippage_down(quote.output_amount, slippage);
         const [pool_authority] = PublicKey.findProgramAddressSync(
             [Buffer.from('pool_authority')],
             METEORA_DAMM_V2_PROGRAM_ID
@@ -1120,6 +1125,6 @@ export class Trader implements trade.IProgramTrader {
             }),
             createCloseAccountInstruction(buy ? input_ata : output_ata, trader.publicKey, trader.publicKey)
         );
-        return instructions;
+        return { instructions, output_amount: quote.output_amount };
     }
 }

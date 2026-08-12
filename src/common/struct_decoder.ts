@@ -60,11 +60,27 @@ export function u16(name?: string): DecoderField<number> {
     };
 }
 
+export function u32(name?: string): DecoderField<number> {
+    return {
+        name,
+        size: 4,
+        decode: (data, offset) => data.readUInt32LE(offset)
+    };
+}
+
 export function u64(name?: string): DecoderField<bigint> {
     return {
         name,
         size: 8,
         decode: (data, offset) => data.readBigUint64LE(offset)
+    };
+}
+
+export function u128(name?: string): DecoderField<bigint> {
+    return {
+        name,
+        size: 16,
+        decode: (data, offset) => data.readBigUInt64LE(offset) + (data.readBigUInt64LE(offset + 8) << 64n)
     };
 }
 
