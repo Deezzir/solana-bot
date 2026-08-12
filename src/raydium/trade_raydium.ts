@@ -1,5 +1,6 @@
 import {
     AddressLookupTableAccount,
+    AccountInfo,
     Keypair,
     LAMPORTS_PER_SOL,
     PublicKey,
@@ -28,6 +29,7 @@ import {
     RAYDIUM_LAUNCHPAD_SELL_DISCRIMINATOR,
     RAYDIUM_LAUNCHPAD_VAULT_SEED,
     RAYDIUM_LTA_ACCOUNT,
+    ACCOUNT_SUBSCRIPTION_FLUSH_MS,
     SOL_MINT,
     SYSTEM_PROGRAM_ID,
     TRADE_DEFAULT_TOKEN_DECIMALS,
@@ -522,10 +524,126 @@ export class RaydiumTrader implements trade.IProgramTrader {
     }
 
     public async subscribe_mint_meta(
-        _mint_meta: RaydiumMintMeta,
-        _callback: (mint_meta: RaydiumMintMeta) => void
+        mint_meta: RaydiumMintMeta,
+        callback: (mint_meta: RaydiumMintMeta) => void,
+        sol_price: number = 0
     ): Promise<() => void> {
-        throw new Error('Not implemented');
+        let launchpad_sub: number | undefined;
+        const cpmm_subs: number[] = [];
+        let flush_timeout: NodeJS.Timeout | null = null;
+        let latest_update: RaydiumMintMeta | null = null;
+        let stopped = false;
+
+        const publish = (update: RaydiumMintMeta) => {
+            latest_update = update;
+            if (flush_timeout || stopped) return;
+            flush_timeout = setTimeout(() => {
+                flush_timeout = null;
+                if (!latest_update || stopped) return;
+                callback(latest_update);
+                latest_update = null;
+            }, ACCOUNT_SUBSCRIPTION_FLUSH_MS);
+        };
+        const unsubscribe = (id: number | undefined) => {
+            if (id !== undefined) global.CONNECTION.removeAccountChangeListener(id).catch(() => {});
+        };
+        const subscribe_cpmm = (pool: PublicKey) => {
+            let vaults_subscribed = false;
+            const process = async (info: AccountInfo<Buffer>) => {
+                if (stopped) return;
+                const state = CPMMStateStruct.decode(info.data);
+                const [token_0, token_1, supply] = await Promise.all([
+                    trade.get_vault_balance(state.token_0_vault),
+                    trade.get_vault_balance(state.token_1_vault),
+                    trade.get_token_supply(state.token_1_mint)
+                ]);
+                const token_0_reserves =
+                    token_0.balance -
+                    state.protocol_fees_token_0 -
+                    state.fund_fees_token_0 -
+                    state.creator_fees_token_0;
+                const token_1_reserves =
+                    token_1.balance -
+                    state.protocol_fees_token_1 -
+                    state.fund_fees_token_1 -
+                    state.creator_fees_token_1;
+                const metrics = this.get_token_metrics(token_0_reserves, token_1_reserves, supply.supply);
+                publish(
+                    new RaydiumMintMeta({
+                        ...mint_meta,
+                        pool: pool.toBase58(),
+                        sol_reserves: token_0_reserves,
+                        token_reserves: token_1_reserves,
+                        base_vault: state.token_1_vault.toBase58(),
+                        quote_vault: state.token_0_vault.toBase58(),
+                        total_supply: supply.supply,
+                        complete: true,
+                        config: state.amm_config.toBase58(),
+                        observation_state: state.observation_key.toBase58(),
+                        market_cap: metrics.mcap_sol,
+                        usd_market_cap: metrics.mcap_sol * sol_price
+                    })
+                );
+                if (vaults_subscribed) return;
+                vaults_subscribed = true;
+                const refresh = async () => {
+                    const pool_info = await global.CONNECTION.getAccountInfo(pool, COMMITMENT);
+                    if (pool_info) await process(pool_info);
+                };
+                cpmm_subs.push(
+                    global.CONNECTION.onAccountChange(state.token_0_vault, refresh, { commitment: COMMITMENT }),
+                    global.CONNECTION.onAccountChange(state.token_1_vault, refresh, { commitment: COMMITMENT })
+                );
+            };
+            cpmm_subs.push(global.CONNECTION.onAccountChange(pool, process, { commitment: COMMITMENT }));
+            global.CONNECTION.getAccountInfo(pool, COMMITMENT)
+                .then((info) => info && process(info))
+                .catch(() => {});
+        };
+        const pool = new PublicKey(mint_meta.pool);
+        const cpmm = await this.get_cpmm_from_mint(new PublicKey(mint_meta.mint));
+        if (cpmm) {
+            subscribe_cpmm(cpmm);
+        } else {
+            launchpad_sub = global.CONNECTION.onAccountChange(
+                pool,
+                async (info) => {
+                    if (stopped) return;
+                    const state = StateStruct.decode(info.data);
+                    const metrics = this.get_token_metrics(
+                        state.real_quote + state.virtual_quote,
+                        state.virtual_base - state.real_base,
+                        state.supply
+                    );
+                    publish(
+                        new RaydiumMintMeta({
+                            ...mint_meta,
+                            sol_reserves: state.real_quote + state.virtual_quote,
+                            token_reserves: state.virtual_base - state.real_base,
+                            total_supply: state.supply,
+                            complete: state.status !== 0,
+                            config: state.platform_config.toBase58(),
+                            creator: state.creator.toBase58(),
+                            market_cap: metrics.mcap_sol,
+                            usd_market_cap: metrics.mcap_sol * sol_price
+                        })
+                    );
+                    if (state.status === 0) return;
+                    const migrated = await this.get_cpmm_from_mint(new PublicKey(mint_meta.mint));
+                    if (!migrated) return;
+                    unsubscribe(launchpad_sub);
+                    launchpad_sub = undefined;
+                    subscribe_cpmm(migrated);
+                },
+                { commitment: COMMITMENT }
+            );
+        }
+        return () => {
+            stopped = true;
+            if (flush_timeout) clearTimeout(flush_timeout);
+            unsubscribe(launchpad_sub);
+            cpmm_subs.forEach(unsubscribe);
+        };
     }
 
     public async update_mint_meta(mint_meta: RaydiumMintMeta, sol_price: number = 0.0): Promise<RaydiumMintMeta> {

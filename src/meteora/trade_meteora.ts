@@ -1,5 +1,6 @@
 import {
     AddressLookupTableAccount,
+    AccountInfo,
     Keypair,
     LAMPORTS_PER_SOL,
     PublicKey,
@@ -23,6 +24,7 @@ import {
     METEORA_DBC_PROGRAM_ID,
     METEORA_DBC_STATE_HEADER,
     METEORA_LTA_ACCOUNT,
+    ACCOUNT_SUBSCRIPTION_FLUSH_MS,
     METEORA_SWAP_DISCRIMINATOR,
     PriorityLevel,
     SOL_MINT,
@@ -891,10 +893,98 @@ export class Trader implements trade.IProgramTrader {
     }
 
     public async subscribe_mint_meta(
-        _mint_meta: MeteoraMintMeta,
-        _callback: (mint_meta: MeteoraMintMeta) => void
+        mint_meta: MeteoraMintMeta,
+        callback: (mint_meta: MeteoraMintMeta) => void,
+        sol_price: number = 0
     ): Promise<() => void> {
-        throw new Error('Not implemented');
+        let dbc_sub: number | undefined;
+        let damm_sub: number | undefined;
+        let flush_timeout: NodeJS.Timeout | null = null;
+        let latest_update: MeteoraMintMeta | null = null;
+        let stopped = false;
+
+        const publish = (update: MeteoraMintMeta) => {
+            latest_update = update;
+            if (flush_timeout || stopped) return;
+            flush_timeout = setTimeout(() => {
+                flush_timeout = null;
+                if (!latest_update || stopped) return;
+                callback(latest_update);
+                latest_update = null;
+            }, ACCOUNT_SUBSCRIPTION_FLUSH_MS);
+        };
+        const unsubscribe = (id: number | undefined) => {
+            if (id !== undefined) global.CONNECTION.removeAccountChangeListener(id).catch(() => {});
+        };
+        const subscribe_damm = (pool: PublicKey) => {
+            damm_sub = global.CONNECTION.onAccountChange(
+                pool,
+                (account) => {
+                    if (stopped) return;
+                    publish(this.damm_v2_mint_meta(mint_meta, { pubkey: pool, account }, sol_price));
+                },
+                { commitment: COMMITMENT }
+            );
+        };
+        const mint = new PublicKey(mint_meta.mint);
+        const damm = await this.get_damm_from_mint(mint);
+        if (damm) {
+            subscribe_damm(damm.pubkey);
+        } else {
+            const dbc_pool = new PublicKey(mint_meta.pool);
+            dbc_sub = global.CONNECTION.onAccountChange(
+                dbc_pool,
+                async (account: AccountInfo<Buffer>) => {
+                    if (stopped) return;
+                    const state = DBCStateStruct.decode(account.data);
+                    const metrics = this.get_dbc_token_metrics({
+                        pool: dbc_pool,
+                        base_mint: mint,
+                        config: state.config,
+                        quote_mint: SOL_MINT,
+                        token_decimals: mint_meta.token_decimal,
+                        total_supply: mint_meta.total_supply,
+                        base_vault: state.base_vault,
+                        quote_vault: state.quote_vault,
+                        base_reserve: state.base_reserve,
+                        quote_reserve: state.quote_reserve,
+                        sqrt_price: common.read_biguint_le(state.sqrt_price, 0, 16),
+                        is_migrated: state.is_migrated === 1,
+                        creator: new PublicKey(Buffer.alloc(32))
+                    });
+                    publish(
+                        new MeteoraMintMeta({
+                            ...mint_meta,
+                            pool: dbc_pool.toBase58(),
+                            sol_reserves: state.quote_reserve,
+                            token_reserves: state.base_reserve,
+                            dbc_data: {
+                                sqrt_price: common.read_biguint_le(state.sqrt_price, 0, 16),
+                                base_vault: state.base_vault.toBase58(),
+                                quote_vault: state.quote_vault.toBase58(),
+                                config: state.config.toBase58()
+                            },
+                            complete: state.is_migrated === 1,
+                            market_cap: metrics.mcap_sol,
+                            usd_market_cap: metrics.mcap_sol * sol_price
+                        })
+                    );
+                    if (state.is_migrated !== 1) return;
+                    const migrated = await this.get_damm_from_mint(mint);
+                    if (!migrated) return;
+                    unsubscribe(dbc_sub);
+                    dbc_sub = undefined;
+                    subscribe_damm(migrated.pubkey);
+                },
+                { commitment: COMMITMENT }
+            );
+        }
+        return () => {
+            stopped = true;
+            if (flush_timeout) clearTimeout(flush_timeout);
+            unsubscribe(dbc_sub);
+            unsubscribe(damm_sub);
+        };
     }
 
     public async update_mint_meta(mint_meta: MeteoraMintMeta, sol_price: number = 0): Promise<MeteoraMintMeta> {

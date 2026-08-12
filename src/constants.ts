@@ -204,7 +204,6 @@ export const PUMP_AMM_GLOBAL_VOLUME_ACCUMULATOR = new PublicKey('C2aFPdENg4A2HQs
 export const PUMP_COLLECT_CREATOR_FEE_DISCRIMINATOR = new Uint8Array([20, 22, 86, 123, 198, 28, 219, 132]);
 export const PUMP_AMM_COLLECT_CREATOR_FEE_DISCRIMINATOR = new Uint8Array([160, 57, 89, 42, 181, 139, 43, 66]);
 export const PUMP_CLAIM_CASHBACK_DISCRIMINATOR = new Uint8Array([37, 58, 35, 126, 190, 53, 228, 197]);
-export const PUMP_AMM_CLAIM_CASHBACK_DISCRIMINATOR = new Uint8Array([37, 58, 35, 126, 190, 53, 228, 197]);
 export const PUMP_CLAIM_TOKEN_INCENTIVES_DISCRIMINATOR = new Uint8Array([16, 4, 71, 28, 204, 1, 40, 27]);
 export const PUMP_STATE_HEADER = new Uint8Array([23, 183, 248, 55, 96, 216, 172, 96]);
 export const PUMP_AMM_STATE_HEADER = new Uint8Array([241, 154, 109, 4, 17, 177, 109, 188]);
