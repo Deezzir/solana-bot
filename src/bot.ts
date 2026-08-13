@@ -322,9 +322,9 @@ async function main() {
         .action(async (options) => await commands.clean(wallets, options.burn));
 
     program
-        .command('claim-fees')
+        .command('claim-rewards')
         .alias('cf')
-        .description('Claim trader/dev fees for the wallets')
+        .description('Claim trader/dev rewards for the wallets')
         .option('-p, --print', 'Print available fees without claiming them', false)
         .addOption(get_from_option(wallet_cnt))
         .addOption(get_to_option(wallet_cnt))

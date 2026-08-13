@@ -239,8 +239,9 @@ const UserVolumeAccumulatorStruct = define_decoder_struct({
     timestamp: skip(8),
     has_claimed_tokens: skip(1),
     cashback_earned: u64(),
-    claimed_cashback: skip(8),
-    stable_cashback_earned: u64()
+    total_cashback_claimed: u64(),
+    stable_cashback_earned: u64(),
+    total_stable_cashback_claimed: u64()
 });
 
 const GlobalVolumeAccumulatorStruct = define_decoder_struct({
@@ -342,10 +343,11 @@ export class Trader implements trade.IProgramTrader {
                 const state = UserVolumeAccumulatorStruct.decode(accumulator_info.data);
                 if (!state.user.equals(trader.publicKey)) return [];
                 const claimable: PumpClaimableAsset[] = [];
-                if (state.cashback_earned > 0n) {
+                const cashback = state.cashback_earned - state.total_cashback_claimed;
+                if (cashback > 0n) {
                     claimable.push({
                         mint: SOL_MINT,
-                        raw_amount: state.cashback_earned,
+                        raw_amount: cashback,
                         decimals: 9,
                         source: 'cashback_reward',
                         vault: accumulator,
@@ -416,6 +418,12 @@ export class Trader implements trade.IProgramTrader {
                     instructions.push(
                         createAssociatedTokenAccountIdempotentInstruction(
                             trader.publicKey,
+                            accumulator_ata,
+                            asset.accumulator,
+                            SOL_MINT
+                        ),
+                        createAssociatedTokenAccountIdempotentInstruction(
+                            trader.publicKey,
                             user_ata,
                             trader.publicKey,
                             SOL_MINT
@@ -428,7 +436,6 @@ export class Trader implements trade.IProgramTrader {
                                 { pubkey: asset.accumulator, isSigner: false, isWritable: true },
                                 { pubkey: SOL_MINT, isSigner: false, isWritable: false },
                                 { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-                                { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
                                 { pubkey: accumulator_ata, isSigner: false, isWritable: true },
                                 { pubkey: user_ata, isSigner: false, isWritable: true },
                                 { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
