@@ -5,6 +5,7 @@ import { read_borsh_string } from '../common/struct_decoder';
 export class Runner extends snipe.SniperBase {
     protected mint_authority = METEORA_DBC_POOL_AUTHORITY;
     protected program_id = METEORA_DBC_PROGRAM_ID;
+    protected mint_account_index = 3;
 
     protected is_create_tx(logs: string[]): boolean {
         return logs.some((log) => log.includes('Program log: Instruction: InitializeVirtualPoolWithSplToken'));

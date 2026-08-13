@@ -1,7 +1,7 @@
 import { Worker } from 'worker_threads';
 import inquirer from 'inquirer';
 import { clearLine, moveCursor } from 'readline';
-import { LAMPORTS_PER_SOL, PartiallyDecodedInstruction, PublicKey } from '@solana/web3.js';
+import { LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js';
 import {
     COMMITMENT,
     PriorityLevel,
@@ -136,6 +136,7 @@ export abstract class SniperBase implements ISniper {
 
     protected mint_authority!: PublicKey;
     protected program_id!: PublicKey;
+    protected mint_account_index!: number;
 
     private sub_id: number | undefined;
     private logs_stop_func: (() => void) | null = null;
@@ -151,7 +152,7 @@ export abstract class SniperBase implements ISniper {
     protected abstract is_create_tx(logs: string[]): boolean;
 
     private get_worker_path(): string {
-        return './dist/common/snipe_worker';
+        return './src/common/snipe_worker.ts';
     }
 
     private async wait_drop_unsub(): Promise<void> {
@@ -183,25 +184,20 @@ export abstract class SniperBase implements ISniper {
                             const tx = await retry_get_tx(signature);
                             if (!tx || !tx.meta || !tx.transaction.message) return;
 
-                            const instructions = tx.transaction.message.instructions as PartiallyDecodedInstruction[];
+                            const instructions = tx.transaction.message.instructions;
 
                             for (const instr of instructions) {
-                                const program_id = instr.programId;
-                                const mint = tx.transaction.message.accountKeys[1];
-
-                                if (!program_id.equals(this.program_id)) continue;
+                                if (!('accounts' in instr) || !instr.programId.equals(this.program_id)) continue;
                                 const result = this.decode_create_instr(bs58.decode(instr.data));
                                 if (!result) continue;
-
-                                if (
-                                    result.name.toLowerCase() === name &&
-                                    result.symbol.toLowerCase() === ticker &&
-                                    mint
-                                ) {
+                                const mint = instr.accounts[this.mint_account_index];
+                                if (result.name.toLowerCase() === name && result.symbol.toLowerCase() === ticker) {
+                                    if (!mint) continue;
                                     this.logs_stop_func = null;
                                     await this.wait_drop_unsub();
-                                    common.log(`Found the mint using Solana logs`);
-                                    resolve({ mint: mint.pubkey, misc: result.misc });
+                                    common.log(`Caught the new token drop for the '${this.trader.get_name()}' program`);
+                                    resolve({ mint, misc: result.misc });
+                                    return;
                                 }
                             }
                         } catch (err) {
@@ -389,7 +385,7 @@ export abstract class SniperBase implements ISniper {
             } else {
                 this.workers.forEach((worker) => {
                     common.log(`[Main Worker] Sending the sell command to worker ${worker.index} `);
-                    worker.worker.postMessage({ command: 'sell', data });
+                    worker.worker.postMessage({ command: `sell${worker.index}`, data });
                 });
                 return;
             }
@@ -614,8 +610,8 @@ export abstract class SniperBase implements ISniper {
         if (spend_limit !== undefined && (typeof spend_limit !== 'number' || spend_limit < min_buy)) {
             throw new Error(`spend_limit must be a number greater than or equal to min_buy.`);
         }
-        if (typeof thread_cnt !== 'number' || thread_cnt > keys_cnt) {
-            throw new Error('thread_cnt must be a number and less than or equal to keys_cnt.');
+        if (!Number.isInteger(thread_cnt) || thread_cnt < 1 || thread_cnt > keys_cnt) {
+            throw new Error('thread_cnt must be an integer between 1 and keys_cnt.');
         }
         if (mcap_threshold && (typeof mcap_threshold !== 'number' || mcap_threshold < SNIPE_MIN_MCAP)) {
             throw new Error(`mcap_threshold must be a number greater than or equal to ${SNIPE_MIN_MCAP}.`);
@@ -623,7 +619,7 @@ export abstract class SniperBase implements ISniper {
         if (start_interval && (typeof start_interval !== 'number' || start_interval < 0)) {
             throw new Error('start_interval must be a number greater than or equal to 0.');
         }
-        if (is_buy_once && typeof is_buy_once !== 'boolean') {
+        if (is_buy_once !== undefined && typeof is_buy_once !== 'boolean') {
             throw new Error('is_buy_once must be a boolean');
         }
         if (trade_interval && (typeof trade_interval !== 'number' || trade_interval <= 0)) {

@@ -14,6 +14,7 @@ export async function bundle_buy(
     const wallet_bundles = common.chunks(entries, JITO_BUNDLE_SIZE);
     const bundles: Promise<void>[] = [];
     const ltas: AddressLookupTableAccount[] = [];
+    let failed = 0;
 
     for (const wallet_bundle of wallet_bundles) {
         const instructions: TransactionInstruction[][] = [];
@@ -36,8 +37,11 @@ export async function bundle_buy(
                 mint_meta = trader.update_mint_meta_reserves(mint_meta, amount);
                 instructions.push(buy_instructions);
                 signers.push([buyer]);
-                if (ltas.length === 0) ltas.push(...(buy_ltas || []));
+                for (const lta of buy_ltas || []) {
+                    if (!ltas.some((existing) => existing.key.equals(lta.key))) ltas.push(lta);
+                }
             } catch (error) {
+                failed++;
                 common.error(common.red(`Failed to add buy instruction to bundle ${wallet.name}: ${error}`));
             }
         }
@@ -46,12 +50,16 @@ export async function bundle_buy(
             trade
                 .send_bundle(instructions, signers, bundle_tip, priority, ltas)
                 .then((signature) => common.log(common.green(`Bundle completed, signature: ${signature}`)))
-                .catch((error) => common.error(common.red(`Bundle failed: ${error}`)))
+                .catch((error) => {
+                    failed++;
+                    common.error(common.red(`Bundle failed: ${error}`));
+                })
         );
         await common.sleep(JITO_BUNDLE_INTERVAL_MS);
         mint_meta = await trader.update_mint_meta(mint_meta);
     }
     await Promise.allSettled(bundles);
+    if (failed > 0) throw new Error(`${failed} bundle buy operation(s) failed.`);
 }
 
 export async function bundle_sell(
@@ -88,6 +96,7 @@ export async function bundle_sell(
     const wallet_bundles = common.chunks(wallets_with_balance, JITO_BUNDLE_SIZE);
     const bundles: Promise<void>[] = [];
     const ltas: AddressLookupTableAccount[] = [];
+    let failed = 0;
 
     for (const wallet_bundle of wallet_bundles) {
         const instructions: TransactionInstruction[][] = [];
@@ -108,8 +117,11 @@ export async function bundle_sell(
                 mint_meta = trader.update_mint_meta_reserves(mint_meta, token_amount);
                 instructions.push(sell_instructions);
                 signers.push([seller]);
-                if (ltas.length === 0) ltas.push(...(sell_ltas || []));
+                for (const lta of sell_ltas || []) {
+                    if (!ltas.some((existing) => existing.key.equals(lta.key))) ltas.push(lta);
+                }
             } catch (error) {
+                failed++;
                 common.error(common.red(`Failed to add sell instruction to bundle ${wallet.name}: ${error}`));
             }
         }
@@ -118,12 +130,16 @@ export async function bundle_sell(
             trade
                 .send_bundle(instructions, signers, bundle_tip, priority, ltas)
                 .then((signature) => common.log(common.green(`Bundle completed, signature: ${signature}`)))
-                .catch((error) => common.error(common.red(`Bundle failed: ${error}`)))
+                .catch((error) => {
+                    failed++;
+                    common.error(common.red(`Bundle failed: ${error}`));
+                })
         );
         await common.sleep(JITO_BUNDLE_INTERVAL_MS);
         mint_meta = await trader.update_mint_meta(mint_meta);
     }
     await Promise.allSettled(bundles);
+    if (failed > 0) throw new Error(`${failed} bundle sell operation(s) failed.`);
 }
 
 export async function seq_buy(
@@ -135,6 +151,7 @@ export async function seq_buy(
     protection_tip?: number
 ): Promise<void> {
     const transactions: Promise<void>[] = [];
+    let failed = 0;
 
     for (const entry of entries) {
         const [wallet, amount] = entry;
@@ -151,20 +168,23 @@ export async function seq_buy(
                     .then((signature) =>
                         common.log(common.green(`Transaction completed for ${wallet.name}, signature: ${signature}`))
                     )
-                    .catch((error) =>
+                    .catch((error) => {
+                        failed++;
                         common.error(
                             common.red(`Transaction failed for ${wallet.name} (${wallet.id}): ${error.message}`)
-                        )
-                    )
+                        );
+                    })
             );
             mint_meta = trader.update_mint_meta_reserves(mint_meta, amount);
             if (protection_tip) await common.sleep(SENDER_INTERVAL_MS);
             mint_meta = await trader.update_mint_meta(mint_meta);
         } catch (error) {
+            failed++;
             common.error(common.red(`Failed to buy the token for ${wallet.name}: ${error}`));
         }
     }
     await Promise.allSettled(transactions);
+    if (failed > 0) throw new Error(`${failed} sequential buy operation(s) failed.`);
 }
 
 export async function seq_sell(
@@ -177,6 +197,7 @@ export async function seq_sell(
     protection_tip?: number
 ): Promise<void> {
     const transactions: Promise<void>[] = [];
+    let failed = 0;
 
     for (const wallet of wallets) {
         const seller = wallet.keypair;
@@ -198,18 +219,21 @@ export async function seq_sell(
                     .then((signature) =>
                         common.log(common.green(`Transaction completed for ${wallet.name}, signature: ${signature}`))
                     )
-                    .catch((error) =>
+                    .catch((error) => {
+                        failed++;
                         common.error(
                             common.red(`Transaction failed for ${wallet.name} (${wallet.id}): ${error.message}`)
-                        )
-                    )
+                        );
+                    })
             );
             mint_meta = trader.update_mint_meta_reserves(mint_meta, token_amount_to_sell);
             if (protection_tip) await common.sleep(SENDER_INTERVAL_MS);
             mint_meta = await trader.update_mint_meta(mint_meta);
         } catch (error) {
+            failed++;
             common.error(common.red(`Failed to sell the token for ${wallet.name}: ${error}`));
         }
     }
     await Promise.allSettled(transactions);
+    if (failed > 0) throw new Error(`${failed} sequential sell operation(s) failed.`);
 }

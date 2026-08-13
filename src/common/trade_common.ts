@@ -1076,6 +1076,9 @@ export async function send_lamports(
                 signers: [sender]
             }
         });
+        const transfer_lamports = lamports - 5000 - Math.ceil((fees * units) / 10 ** 6);
+        if (transfer_lamports <= 0)
+            throw new Error(`Spend cap of ${lamports} lamports is insufficient to cover transaction fees.`);
         instructions = [
             ComputeBudgetProgram.setComputeUnitLimit({
                 units: units
@@ -1086,7 +1089,7 @@ export async function send_lamports(
             SystemProgram.transfer({
                 fromPubkey: sender.publicKey,
                 toPubkey: receiver,
-                lamports: lamports - 5000 - Math.ceil((fees * units) / 10 ** 6)
+                lamports: transfer_lamports
             })
         ];
     }
@@ -1107,17 +1110,24 @@ export async function send_tokens(
     mint: PublicKey,
     sender: Signer,
     receiver: PublicKey,
-    priority?: PriorityLevel
+    priority?: PriorityLevel,
+    token_program: PublicKey = TOKEN_PROGRAM_ID
 ): Promise<String> {
     if (token_amount.uiAmount === null) throw new Error(`Invalid token amount.`);
     const token_amount_raw = BigInt(token_amount.amount);
 
-    const receiver_ata = calc_ata(receiver, mint);
-    const sender_ata = calc_ata(sender.publicKey, mint);
+    const receiver_ata = calc_ata(receiver, mint, token_program);
+    const sender_ata = calc_ata(sender.publicKey, mint, token_program);
 
     const instructions = [
-        createAssociatedTokenAccountIdempotentInstruction(sender.publicKey, receiver_ata, receiver, mint),
-        createTransferInstruction(sender_ata, receiver_ata, sender.publicKey, token_amount_raw)
+        createAssociatedTokenAccountIdempotentInstruction(
+            sender.publicKey,
+            receiver_ata,
+            receiver,
+            mint,
+            token_program
+        ),
+        createTransferInstruction(sender_ata, receiver_ata, sender.publicKey, token_amount_raw, [], token_program)
     ];
 
     return await send_tx(instructions, [sender], priority);

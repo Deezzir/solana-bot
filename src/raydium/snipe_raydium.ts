@@ -9,6 +9,7 @@ import { read_borsh_string } from '../common/struct_decoder';
 export class RaydiumRunner extends snipe.SniperBase {
     protected mint_authority = RAYDIUM_LAUNCHPAD_AUTHORITY;
     protected program_id = RAYDIUM_LAUNCHPAD_PROGRAM_ID;
+    protected mint_account_index = 6;
 
     protected is_create_tx(logs: string[]): boolean {
         return logs.some((log) => log.includes('Program log: Instruction: InitializeV2'));

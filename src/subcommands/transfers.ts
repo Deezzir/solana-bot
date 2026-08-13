@@ -312,7 +312,9 @@ export async function execute_depth_sol_fund(
     for (const bundle of transfer_map) {
         const wallet = bundle.wallet;
         const fund_amount = bundle.amount as number;
-        const txs = common.chunks(bundle.path, TRANSFER_MAX_WALLETS_PER_TX);
+        const txs: Keypair[][] = [];
+        for (let start = 0; start < bundle.path.length - 1; start += TRANSFER_MAX_WALLETS_PER_TX - 1)
+            txs.push(bundle.path.slice(start, start + TRANSFER_MAX_WALLETS_PER_TX));
         const bundle_instructions: TransactionInstruction[][] = [];
         const bundle_signers: Signer[][] = [];
         common.log(
@@ -328,8 +330,8 @@ export async function execute_depth_sol_fund(
                     (tx_idx === txs.length - 1 ? bundle_tip * LAMPORTS_PER_SOL : 0)
             );
             for (let wallet_idx = 1; wallet_idx < tx.length; wallet_idx++) {
-                const sender = bundle.path[wallet_idx - 1 + txs.length * tx_idx];
-                const receiver = bundle.path[wallet_idx + txs.length * tx_idx];
+                const sender = tx[wallet_idx - 1];
+                const receiver = tx[wallet_idx];
                 tx_instructions.push(
                     SystemProgram.transfer({
                         fromPubkey: sender.publicKey,
@@ -360,6 +362,7 @@ export async function execute_depth_sol_fund(
     if (failed.length > 0) {
         common.error(common.red(`Failed transactions:`));
         for (const item of failed) common.error(common.bold(`Wallet: ${item.name} (${item.id})`));
+        throw new Error(`${failed.length} depth funding transfer(s) failed.`);
     }
 
     return common.get_wallets(target_file);
@@ -374,7 +377,7 @@ export async function execute_fund_sol(entries: [common.Wallet, number][], funde
         const receiver = wallet.keypair;
         if (receiver.publicKey.equals(funder.publicKey)) continue;
         common.log(
-            `Sending ${fund_amount} SOL to ${receiver.publicKey.toString().padEnd(44, ' ')} ${wallet.name} (${wallet.id})...`
+            `Sending ${fund_amount} SOL, for ${receiver.publicKey.toString().padEnd(44, ' ')} ${wallet.name} (${wallet.id})...`
         );
         transactions.push(
             trade
@@ -395,6 +398,7 @@ export async function execute_fund_sol(entries: [common.Wallet, number][], funde
     if (failed.length > 0) {
         common.error(common.red(`\nFailed transactions:`));
         for (const item of failed) common.error(common.bold(`Wallet: ${item.name} (${item.id})`));
+        throw new Error(`${failed.length} funding transfer(s) failed.`);
     }
 }
 
@@ -416,33 +420,51 @@ export async function execute_depth_dist_token(
     for (const bundle of transfer_map) {
         const wallet = bundle.wallet;
         const token_amount = bundle.amount as TokenAmount;
-        const txs = common.chunks(bundle.path, TRANSFER_MAX_WALLETS_PER_TX);
+        const txs: Keypair[][] = [];
+        for (let start = 0; start < bundle.path.length - 1; start += TRANSFER_MAX_WALLETS_PER_TX - 1)
+            txs.push(bundle.path.slice(start, start + TRANSFER_MAX_WALLETS_PER_TX));
         const bundle_instructions: TransactionInstruction[][] = [];
         const bundle_signers: Signer[][] = [];
         common.log(
             `Sending ${token_amount.uiAmount} $${mint_meta.token_symbol} to ${wallet.keypair.publicKey.toString().padEnd(44, ' ')} ${wallet.name} (${wallet.id})...`
         );
 
-        for (const [tx_idx, tx] of txs.entries()) {
+        for (const tx of txs) {
             const tx_instructions: TransactionInstruction[] = [];
             const tx_signers: Signer[] = [];
             for (let wallet_idx = 1; wallet_idx < tx.length; wallet_idx++) {
-                const sender = bundle.path[wallet_idx - 1 + txs.length * tx_idx];
-                const receiver = bundle.path[wallet_idx + txs.length * tx_idx];
-                const receiver_ata = trade.calc_ata(receiver.publicKey, mint_meta.mint);
-                const sender_ata = trade.calc_ata(sender.publicKey, mint_meta.mint);
+                const sender = tx[wallet_idx - 1];
+                const receiver = tx[wallet_idx];
+                const receiver_ata = trade.calc_ata(receiver.publicKey, mint_meta.mint, mint_meta.token_program);
+                const sender_ata = trade.calc_ata(sender.publicKey, mint_meta.mint, mint_meta.token_program);
                 const token_amount_raw = BigInt(token_amount.amount);
                 tx_instructions.push(
                     createAssociatedTokenAccountIdempotentInstruction(
                         sender.publicKey,
                         receiver_ata,
                         receiver.publicKey,
-                        mint_meta.mint
+                        mint_meta.mint,
+                        mint_meta.token_program
                     ),
-                    createTransferInstruction(sender_ata, receiver_ata, sender.publicKey, token_amount_raw)
+                    createTransferInstruction(
+                        sender_ata,
+                        receiver_ata,
+                        sender.publicKey,
+                        token_amount_raw,
+                        [],
+                        mint_meta.token_program
+                    )
                 );
                 if (!sender.publicKey.equals(distributer.publicKey))
-                    tx_instructions.push(createCloseAccountInstruction(sender_ata, sender.publicKey, sender.publicKey));
+                    tx_instructions.push(
+                        createCloseAccountInstruction(
+                            sender_ata,
+                            sender.publicKey,
+                            sender.publicKey,
+                            [],
+                            mint_meta.token_program
+                        )
+                    );
                 tx_signers.push(sender);
             }
             bundle_instructions.push(tx_instructions);
@@ -466,6 +488,7 @@ export async function execute_depth_dist_token(
     if (failed.length > 0) {
         common.error(common.red(`Failed transactions:`));
         for (const item of failed) common.error(common.bold(`Wallet: ${item.name} (${item.id})`));
+        throw new Error(`${failed.length} depth token distribution(s) failed.`);
     }
 
     return common.get_wallets(target_file);
@@ -488,7 +511,14 @@ export async function execute_dist_token(
         );
         transactions.push(
             trade
-                .send_tokens(token_amount, mint_meta.mint, distributer, receiver.publicKey, PriorityLevel.HIGH)
+                .send_tokens(
+                    token_amount,
+                    mint_meta.mint,
+                    distributer,
+                    receiver.publicKey,
+                    PriorityLevel.HIGH,
+                    mint_meta.token_program
+                )
                 .then((signature) =>
                     common.log(common.green(`Transaction completed for ${wallet.name}, signature: ${signature}`))
                 )
@@ -505,5 +535,6 @@ export async function execute_dist_token(
     if (failed.length > 0) {
         common.error(common.red(`\nFailed transactions:`));
         for (const item of failed) common.error(common.bold(`Wallet: ${item.name} (${item.id})`));
+        throw new Error(`${failed.length} token distribution(s) failed.`);
     }
 }

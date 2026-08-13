@@ -104,9 +104,9 @@ function get_slippage_option(): Option {
     return new Option('-s, --slippage <number>', 'Slippage in percents').argParser((value) => {
         const parsed_value = parseFloat(value);
         if (isNaN(parsed_value)) throw new InvalidOptionArgumentError('Not a number.');
-        if (parsed_value < 0.0 || parsed_value > TRADE_MAX_SLIPPAGE)
-            throw new InvalidOptionArgumentError(`Invalid range (0.0 - ${TRADE_MAX_SLIPPAGE.toFixed(1)}).`);
-        return parsed_value;
+        if (parsed_value < 0.0 || parsed_value > TRADE_MAX_SLIPPAGE * 100)
+            throw new InvalidOptionArgumentError(`Invalid range (0.0 - ${(TRADE_MAX_SLIPPAGE * 100).toFixed(1)}).`);
+        return parsed_value / 100;
     });
 }
 

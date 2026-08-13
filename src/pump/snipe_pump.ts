@@ -12,6 +12,7 @@ import { read_borsh_string } from '../common/struct_decoder';
 export class Runner extends snipe.SniperBase {
     protected mint_authority = PUMP_MINT_AUTHORITY_ACCOUNT;
     protected program_id = PUMP_PROGRAM_ID;
+    protected mint_account_index = 0;
 
     protected is_create_tx(logs: string[]): boolean {
         return logs.some((log) => log.includes('Program log: Instruction: Create'));
@@ -35,6 +36,7 @@ export class Runner extends snipe.SniperBase {
 
         const is_v2 = data_prefix.equals(prefix_v2);
         if (is_v2 && offset + 2 > data.length) return null;
+
         return {
             name: name[0],
             symbol: symbol[0],

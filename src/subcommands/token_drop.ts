@@ -69,7 +69,7 @@ function count_presale_records(presale_path: string): number {
 }
 
 function calc_airdrop_amount(airdrop_percent: number, total_tokens: number, record_count: number): number {
-    return Math.floor((airdrop_percent * total_tokens) / record_count);
+    return (airdrop_percent * total_tokens) / record_count;
 }
 
 function calc_presale_amounts(
@@ -79,8 +79,8 @@ function calc_presale_amounts(
 ): { presale_tokens: number; presale_sol: number } {
     const records = read_csv<PresaleUser>(presale_path);
     const valid = records.filter((r) => !r.tx && r.txEnroll?.length > 0);
-    const presale_tokens = Math.floor(percent * total_tokens);
-    const presale_sol = common.round_two(valid.reduce((sum, r) => sum + r.solAmount, 0));
+    const presale_tokens = percent * total_tokens;
+    const presale_sol = common.round_two(valid.reduce((sum, r) => sum + Number(r.solAmount), 0));
     return { presale_tokens, presale_sol };
 }
 
@@ -96,8 +96,8 @@ function update_presale_balance_csv(token_amount: number, total_sol: number, pre
     const records = read_csv<PresaleUser>(presale_path);
     for (const r of records) {
         if (!r.tx && r.txEnroll?.length > 0) {
-            const portion = r.solAmount / total_sol;
-            r.tokensToSend = Math.floor(token_amount * portion);
+            const portion = Number(r.solAmount) / total_sol;
+            r.tokensToSend = token_amount * portion;
         }
     }
     write_csv(presale_path, records);
@@ -119,19 +119,24 @@ async function drop_tokens_csv<T extends AirdropUser | PresaleUser>(
     while (pending.length > 0) {
         common.log(common.yellow(`Processing ${pending.length} records...`));
         const promises = pending.map(async (record: any) => {
-            const receiver = new PublicKey(record.wallet);
-            const token_amount = trade.get_token_amount(record.tokensToSend, mint_meta.token_decimal);
-
             try {
-                await trade.send_tokens(token_amount, mint_meta.mint, drop, receiver).then((sig) => {
-                    record.tx = sig;
-                    common.log(common.green(`Sent ${record.tokensToSend} to ${receiver.toBase58()} | tx: ${sig}`));
-                });
+                const receiver = new PublicKey(record.wallet);
+                const token_amount = trade.get_token_amount(record.tokensToSend, mint_meta.token_decimal);
+                await trade
+                    .send_tokens(token_amount, mint_meta.mint, drop, receiver, undefined, mint_meta.token_program)
+                    .then((sig) => {
+                        record.tx = sig;
+                        common.log(common.green(`Sent ${record.tokensToSend} to ${receiver.toBase58()} | tx: ${sig}`));
+                    });
             } catch (error: any) {
-                common.error(common.red(`Failed to send tokens to ${receiver.toBase58()}: ${error.message}`));
-                if (error.message.includes('Provided owner is not allowed')) {
-                    record.tx = 'Provided owner is not allowed';
-                }
+                common.error(common.red(`Failed to send tokens to ${record.wallet}: ${error.message}`));
+                if (
+                    error.message.includes('Provided owner is not allowed') ||
+                    error.message.includes('Invalid public key')
+                )
+                    record.tx = error.message.includes('Invalid public key')
+                        ? 'Invalid public key'
+                        : 'Provided owner is not allowed';
             }
         });
         await Promise.allSettled(promises);
