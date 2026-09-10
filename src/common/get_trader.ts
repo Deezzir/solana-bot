@@ -8,6 +8,7 @@ import { BonkRunner, BonkTrader } from '../bonk/bonk';
 import { RaydiumRunner, RaydiumTraderInstance } from '../raydium/raydium';
 import { SubscriberType } from './subscriber';
 import { PROGRAM_COMPUTE_UNIT_LIMITS } from '../constants';
+import { Executor } from './executor';
 
 export function get_program_compute_unit_limit(program: Program = global.PROGRAM): number | undefined {
     return PROGRAM_COMPUTE_UNIT_LIMITS[program];
@@ -34,6 +35,11 @@ export function get_trader(program: Program = global.PROGRAM): IProgramTrader {
             throw new Error(`Invalid program received: ${program}`);
         }
     }
+}
+
+export function get_executor(enable_funding: boolean, program: Program = global.PROGRAM): Executor {
+    const trader = get_trader(program);
+    return new Executor(trader, enable_funding);
 }
 
 export function get_sniper(subscriber_type: SubscriberType, program: Program = global.PROGRAM): ISniper {

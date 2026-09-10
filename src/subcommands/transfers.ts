@@ -150,7 +150,7 @@ async function process_inner_transfers(tree: SpiderTree): Promise<Keypair[]> {
 
         if (node.left) {
             const amount = node.left.amount;
-            const sol_amount = Math.ceil(amount * LAMPORTS_PER_SOL);
+            const lamports = trade.sol_to_lamports(amount);
             const sender = node.keypair;
             const receiver = node.left.keypair;
             const layer_name = `${layer_cnt}_${postfixes.get(layer_cnt) || 0}`;
@@ -161,7 +161,7 @@ async function process_inner_transfers(tree: SpiderTree): Promise<Keypair[]> {
 
             try {
                 const sig = await trade.retry_send_lamports(
-                    sol_amount,
+                    lamports,
                     sender,
                     receiver.publicKey,
                     PriorityLevel.DEFAULT
@@ -180,7 +180,7 @@ async function process_inner_transfers(tree: SpiderTree): Promise<Keypair[]> {
 
         if (node.right) {
             const amount = node.right.amount;
-            const sol_amount = Math.ceil(amount * LAMPORTS_PER_SOL);
+            const lamports = trade.sol_to_lamports(amount);
             const sender = node.keypair;
             const receiver = node.right.keypair;
             const layer_name = `${layer_cnt}_${postfixes.get(layer_cnt) || 0}`;
@@ -189,12 +189,7 @@ async function process_inner_transfers(tree: SpiderTree): Promise<Keypair[]> {
                 `${sender.publicKey.toString().padEnd(44, ' ')} is sending ${amount.toFixed(4).padEnd(7, ' ')} SOL to ${receiver.publicKey.toString().padEnd(44, ' ')} (Layer: ${layer_name}})...`
             );
             try {
-                let sig = await trade.retry_send_lamports(
-                    sol_amount,
-                    sender,
-                    receiver.publicKey,
-                    PriorityLevel.DEFAULT
-                );
+                let sig = await trade.retry_send_lamports(lamports, sender, receiver.publicKey, PriorityLevel.DEFAULT);
                 common.log(`Transaction completed for ${layer_name}, signature: ${sig}`);
             } catch (error) {
                 common.error(common.red(`Failed to send lamports: ${error}`));
@@ -226,7 +221,7 @@ async function process_final_transfers(entries: [common.Wallet, Keypair][]): Pro
         if (amount <= 0) continue;
 
         common.log(
-            `${sender.publicKey.toString().padEnd(44, ' ')} is sending ${(amount / LAMPORTS_PER_SOL).toFixed(3).padEnd(7, ' ')} SOL to ${receiver.publicKey.toString().padEnd(44, ' ')}...`
+            `${sender.publicKey.toString().padEnd(44, ' ')} is sending ${trade.lamports_to_sol(amount).toFixed(3).padEnd(7, ' ')} SOL to ${receiver.publicKey.toString().padEnd(44, ' ')}...`
         );
         transactions.push(
             trade
@@ -324,7 +319,7 @@ export async function execute_depth_sol_fund(
             const tx_instructions: TransactionInstruction[] = [];
             const tx_signers: Keypair[] = [];
             const tx_lamports = Math.floor(
-                common.safe_number(common.sol_to_lamports(fund_amount)) -
+                common.safe_number(trade.sol_to_lamports(fund_amount)) -
                     (5000 * tx.length - 2) -
                     (tx_idx === txs.length - 1 ? bundle_tip * LAMPORTS_PER_SOL : 0)
             );
@@ -380,12 +375,7 @@ export async function execute_fund_sol(entries: [common.Wallet, number][], funde
         );
         transactions.push(
             trade
-                .send_lamports(
-                    common.safe_number(common.sol_to_lamports(fund_amount)),
-                    funder,
-                    receiver.publicKey,
-                    PriorityLevel.HIGH
-                )
+                .send_lamports(trade.sol_to_lamports(fund_amount), funder, receiver.publicKey, PriorityLevel.HIGH)
                 .then((signature) =>
                     common.log(common.green(`Transaction completed for ${wallet.name}, signature: ${signature}`))
                 )

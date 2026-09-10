@@ -3,14 +3,13 @@ import {
     AccountInfo,
     Commitment,
     Keypair,
-    LAMPORTS_PER_SOL,
     PublicKey,
-    SystemProgram,
     TokenAmount,
     TransactionInstruction
 } from '@solana/web3.js';
 import * as common from '../common/common';
 import * as trade from '../common/trade_common';
+import { get_quote_info, normalize_quote_mint, prepare_quote_account, quote_metrics } from '../common/trade_common';
 import {
     COMMITMENT,
     IPFS,
@@ -50,14 +49,16 @@ import {
     ASSOCIATED_TOKEN_PROGRAM_ID,
     decode_token_account,
     createAssociatedTokenAccountIdempotentInstruction,
-    createCloseAccountInstruction,
-    createSyncNativeInstruction,
     TOKEN_PROGRAM_ID
 } from '../common/token';
 import base58 from 'bs58';
-import { define_decoder_struct, skip, u8, u64, discriminator, pubkey } from '../common/struct_decoder';
+import { define_decoder_struct, skip, u8, u16, u64, discriminator, pubkey } from '../common/struct_decoder';
 
-type State = ReturnType<typeof StateStruct.decode>;
+type CreateOptions = {
+    global_config?: string;
+    quote_mint?: string;
+    fundraising?: string;
+};
 
 type CPMMState = ReturnType<typeof CPMMStateStruct.decode> & {
     token_0_reserves: bigint;
@@ -72,13 +73,28 @@ type RaydiumClaimableAsset = trade.ClaimableAsset & {
 
 const RAYDIUM_COMPUTE_UNIT_LIMIT = PROGRAM_COMPUTE_UNIT_LIMITS[common.Program.Raydium];
 
+const LaunchConfigStruct = define_decoder_struct({
+    header: skip(16),
+    curve_type: u8(),
+    index: u16(),
+    migrate_fee: u64(),
+    trade_fee_rate: u64(),
+    max_share_fee_rate: u64(),
+    min_supply: u64(),
+    max_lock_rate: u64(),
+    min_sell_rate: u64(),
+    min_migrate_rate: u64(),
+    min_fundraising: u64(),
+    quote_mint: pubkey()
+});
+
 const StateStruct = define_decoder_struct({
     discriminator: discriminator(Buffer.from(RAYDIUM_LAUNCHPAD_POOL_HEADER)),
     epoch: skip(u64().size),
     auth_bump: skip(u8().size),
     status: u8(),
-    base_decimals: skip(u8().size),
-    quote_decimals: skip(u8().size),
+    base_decimals: u8(),
+    quote_decimals: u8(),
     migrate_type: skip(u8().size),
     supply: u64(),
     total_base_sell: skip(u64().size),
@@ -91,12 +107,12 @@ const StateStruct = define_decoder_struct({
     platform_fee: skip(u64().size),
     migrate_fee: skip(u64().size),
     vesting_schedule: skip(5 * u64().size),
-    global_config: skip(pubkey().size),
+    global_config: pubkey(),
     platform_config: pubkey(),
-    base_mint: skip(pubkey().size),
-    quote_mint: skip(pubkey().size),
-    base_vault: skip(pubkey().size),
-    quote_vault: skip(pubkey().size),
+    base_mint: pubkey(),
+    quote_mint: pubkey(),
+    base_vault: pubkey(),
+    quote_vault: pubkey(),
     creator: pubkey(),
     padding: skip(8 * u64().size)
 });
@@ -135,22 +151,24 @@ const CPMMStateStruct = define_decoder_struct({
 
 export class RaydiumMintMeta implements trade.IMintMeta {
     mint!: string;
+    quote_mint: string = SOL_MINT.toBase58();
     name: string = 'Unknown';
     symbol: string = 'Unknown';
     base_vault!: string;
     quote_vault!: string;
     pool!: string;
     config!: string;
+    global_config: string = RAYDIUM_LAUNCHPAD_GLOBAL_CONFIG.toBase58();
     creator!: string;
     sol_reserves: bigint = BigInt(0);
     token_reserves: bigint = BigInt(0);
     total_supply: bigint = BigInt(0);
-    usd_market_cap: number = 0;
     market_cap: number = 0;
     complete: boolean = false;
     observation_state: string | null = null;
     fee: number = 0.0125;
     token_program_id!: string;
+    token_decimals: number = TRADE_DEFAULT_TOKEN_DECIMALS;
 
     constructor(data: Partial<RaydiumMintMeta> = {}) {
         Object.assign(this, data);
@@ -168,8 +186,8 @@ export class RaydiumMintMeta implements trade.IMintMeta {
         return this.symbol;
     }
 
-    public get token_usd_mc(): number {
-        return this.usd_market_cap;
+    public get token_quote_mc(): number {
+        return this.market_cap;
     }
 
     public get migrated(): boolean {
@@ -184,14 +202,19 @@ export class RaydiumMintMeta implements trade.IMintMeta {
         return new PublicKey(this.mint);
     }
 
+    public get quote_mint_pubkey(): PublicKey {
+        return new PublicKey(this.quote_mint);
+    }
+
     public get token_program(): PublicKey {
         return new PublicKey(this.token_program_id);
     }
 
     public serialize(): trade.SerializedMintMeta {
         return {
-            token_usd_mc: this.token_usd_mc,
+            token_quote_mc: this.token_quote_mc,
             mint_pubkey: this.mint_pubkey.toBase58(),
+            quote_mint_pubkey: this.quote_mint_pubkey.toBase58(),
             token_program: this.token_program.toBase58(),
             migrated: this.migrated,
             platform_fee: this.platform_fee,
@@ -200,21 +223,23 @@ export class RaydiumMintMeta implements trade.IMintMeta {
             token_mint: this.token_mint,
 
             mint: this.mint,
+            quote_mint: this.quote_mint,
             name: this.name,
             symbol: this.symbol,
             base_vault: this.base_vault,
             quote_vault: this.quote_vault,
             pool: this.pool,
             config: this.config,
+            global_config: this.global_config,
             creator: this.creator,
             sol_reserves: this.sol_reserves.toString(),
             token_reserves: this.token_reserves.toString(),
             total_supply: this.total_supply.toString(),
-            usd_market_cap: this.usd_market_cap,
             market_cap: this.market_cap,
             complete: this.complete,
             observation_state: this.observation_state,
             fee: this.fee,
+            token_decimals: this.token_decimals,
             token_program_id: this.token_program_id
         };
     }
@@ -224,19 +249,21 @@ export class RaydiumMintMeta implements trade.IMintMeta {
             mint: data.mint as string,
             name: data.name as string,
             symbol: data.symbol as string,
+            quote_mint: normalize_quote_mint(data.quote_mint as string | undefined).toBase58(),
             base_vault: data.base_vault as string,
             quote_vault: data.quote_vault as string,
             pool: data.pool as string,
             config: data.config as string,
+            global_config: (data.global_config as string) ?? RAYDIUM_LAUNCHPAD_GLOBAL_CONFIG.toBase58(),
             creator: data.creator as string,
             sol_reserves: BigInt(data.sol_reserves as string),
             token_reserves: BigInt(data.token_reserves as string),
             total_supply: BigInt(data.total_supply as string),
-            usd_market_cap: data.usd_market_cap as number,
             market_cap: data.market_cap as number,
             complete: data.complete as boolean,
             observation_state: data.observation_state as string | null,
             fee: data.fee as number,
+            token_decimals: (data.token_decimals as number | undefined) ?? TRADE_DEFAULT_TOKEN_DECIMALS,
             token_program_id: data.token_program_id as string
         });
     }
@@ -258,7 +285,11 @@ export class RaydiumTrader implements trade.IProgramTrader {
         return RaydiumMintMeta.deserialize(data);
     }
 
-    public async get_trader_fees(trader: Keypair): Promise<RaydiumClaimableAsset[]> {
+    public get_compute_unit_limit(): number | undefined {
+        return this.compute_unit_limit;
+    }
+
+    public async get_trader_rewards(trader: Keypair): Promise<RaydiumClaimableAsset[]> {
         const pools = await trade.get_program_accounts_v2(RAYDIUM_CPMM_PROGRAM_ID, [
             { memcmp: { offset: CPMMStateStruct.get_offset('pool_creator'), bytes: trader.publicKey.toBase58() } },
             { memcmp: { offset: 0, bytes: base58.encode(RAYDIUM_CPMM_POOL_STATE_HEADER) } }
@@ -289,7 +320,7 @@ export class RaydiumTrader implements trade.IProgramTrader {
         return assets.flat();
     }
 
-    public async claim_trader_fees(
+    public async claim_trader_rewards(
         trader: Keypair,
         assets: RaydiumClaimableAsset[],
         priority?: PriorityLevel
@@ -360,7 +391,7 @@ export class RaydiumTrader implements trade.IProgramTrader {
     }
 
     public async buy_token(
-        sol_amount: number,
+        amount: TokenAmount,
         buyer: Keypair,
         mint_meta: RaydiumMintMeta,
         slippage: number = 0.05,
@@ -368,7 +399,7 @@ export class RaydiumTrader implements trade.IProgramTrader {
         protection_tip?: number,
         mev_protect: boolean = false
     ): Promise<String> {
-        const [instructions, ltas] = await this.buy_token_instructions(sol_amount, buyer, mint_meta, slippage);
+        const [instructions, ltas] = await this.buy_token_instructions(amount, buyer, mint_meta, slippage);
         return await trade.send_tx(
             instructions,
             [buyer],
@@ -381,18 +412,18 @@ export class RaydiumTrader implements trade.IProgramTrader {
     }
 
     public async buy_token_instructions(
-        sol_amount: number,
+        amount: TokenAmount,
         buyer: Keypair,
         mint_meta: RaydiumMintMeta,
         slippage: number = 0.05
     ): Promise<[TransactionInstruction[], AddressLookupTableAccount[]?]> {
-        trade.validate_trade_parameters(sol_amount, slippage);
+        trade.validate_trade_parameters(amount, slippage);
         const lta = await trade.get_ltas([RAYDIUM_LTA_ACCOUNT]);
         if (mint_meta.complete) {
-            const instructions = await this.get_buy_cpmm_instructions(sol_amount, buyer, mint_meta, slippage);
+            const instructions = await this.get_buy_cpmm_instructions(amount, buyer, mint_meta, slippage);
             return [instructions, lta];
         }
-        const instructions = await this.get_buy_instructions(sol_amount, buyer, mint_meta, slippage);
+        const instructions = await this.get_buy_instructions(amount, buyer, mint_meta, slippage);
         return [instructions, lta];
     }
 
@@ -434,19 +465,18 @@ export class RaydiumTrader implements trade.IProgramTrader {
     }
 
     public async buy_sell_instructions(
-        sol_amount: number,
+        amount: TokenAmount,
         trader: Keypair,
         mint_meta: RaydiumMintMeta,
         slippage: number = 0.05
     ): Promise<[TransactionInstruction[], TransactionInstruction[], AddressLookupTableAccount[]?]> {
-        trade.validate_trade_parameters(sol_amount, slippage);
-        const sol_amount_raw = common.sol_to_lamports(sol_amount);
-        const token_amount_raw = this.calc_token_amount_raw(sol_amount_raw, mint_meta);
+        trade.validate_trade_parameters(amount, slippage);
+        const amount_raw = BigInt(amount.amount);
+        const token_amount_raw = this.calc_token_amount_raw(amount_raw, mint_meta);
         const buy_instructions = mint_meta.complete
-            ? await this.get_buy_cpmm_instructions(sol_amount, trader, mint_meta, slippage, token_amount_raw)
-            : await this.get_buy_instructions(sol_amount, trader, mint_meta, slippage, token_amount_raw);
-        const lta = await trade.get_ltas([RAYDIUM_LTA_ACCOUNT]);
-        let [sell_instructions] = await this.sell_token_instructions(
+            ? await this.get_buy_cpmm_instructions(amount, trader, mint_meta, slippage, token_amount_raw)
+            : await this.get_buy_instructions(amount, trader, mint_meta, slippage, token_amount_raw);
+        const [sell_instructions, lta] = await this.sell_token_instructions(
             {
                 uiAmount: Number(token_amount_raw) / 10 ** TRADE_DEFAULT_TOKEN_DECIMALS,
                 amount: token_amount_raw.toString(),
@@ -460,7 +490,7 @@ export class RaydiumTrader implements trade.IProgramTrader {
     }
 
     public async buy_sell(
-        sol_amount: number,
+        amount: TokenAmount,
         trader: Keypair,
         mint_meta: RaydiumMintMeta,
         slippage: number = 0.05,
@@ -470,7 +500,7 @@ export class RaydiumTrader implements trade.IProgramTrader {
         mev_protect: boolean = false
     ): Promise<[String, String]> {
         const [buy_instructions, sell_instructions, ltas] = await this.buy_sell_instructions(
-            sol_amount,
+            amount,
             trader,
             mint_meta,
             slippage
@@ -512,7 +542,7 @@ export class RaydiumTrader implements trade.IProgramTrader {
     }
 
     public async buy_sell_bundle(
-        sol_amount: number,
+        amount: TokenAmount,
         trader: Keypair,
         mint_meta: RaydiumMintMeta,
         tip: number,
@@ -520,7 +550,7 @@ export class RaydiumTrader implements trade.IProgramTrader {
         priority?: PriorityLevel
     ): Promise<String> {
         const [buy_instructions, sell_instructions, ltas] = await this.buy_sell_instructions(
-            sol_amount,
+            amount,
             trader,
             mint_meta,
             slippage
@@ -535,10 +565,10 @@ export class RaydiumTrader implements trade.IProgramTrader {
         );
     }
 
-    public async get_mint_meta(mint: PublicKey, sol_price: number = 0): Promise<RaydiumMintMeta | undefined> {
+    public async get_mint_meta(mint: PublicKey): Promise<RaydiumMintMeta | undefined> {
         try {
-            let mint_meta = await this.default_mint_meta(mint, sol_price);
-            mint_meta = await this.update_mint_meta(mint_meta, sol_price);
+            let mint_meta = await this.default_mint_meta(mint);
+            mint_meta = await this.update_mint_meta(mint_meta);
             return mint_meta;
         } catch (error) {
             return undefined;
@@ -553,99 +583,45 @@ export class RaydiumTrader implements trade.IProgramTrader {
         );
     }
 
-    private async get_random_ungraduated_mints(count: number): Promise<RaydiumMintMeta[]> {
-        if (count <= 0) return [];
-        const limit = Math.min(100, Math.max(20, count * 3));
-        try {
-            const url = new URL(`${RAYDIUM_LAUNCHPAD_API_URL}/get/list`);
-            url.searchParams.set('sort', 'lastTrade');
-            url.searchParams.set('size', String(limit));
-            url.searchParams.set('mintType', 'default');
-            const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
-            const data = await response.json();
-            if (!response.ok || !data.success || !Array.isArray(data.data?.rows))
-                throw new Error('LaunchLab mint discovery failed.');
-            const candidates = data.data.rows
-                .filter((row: { mintB?: { address: string } }) => row.mintB?.address === SOL_MINT.toBase58())
-                .map((row: { mint: string }) => row.mint) as string[];
-            return trade.resolve_random_mints(candidates, count, async (mint) => {
-                const meta = await this.get_mint_meta(mint);
-                return meta && !meta.migrated && meta.sol_reserves > 0n && meta.token_reserves > 0n ? meta : undefined;
-            });
-        } catch (error) {
-            common.error(common.red(`Failed fetching LaunchLab mints: ${error}`));
-            return [];
-        }
-    }
-
-    private async get_random_graduated_mints(count: number): Promise<RaydiumMintMeta[]> {
-        if (count <= 0) return [];
-        const limit = Math.min(100, Math.max(20, count * 3));
-        const sol = SOL_MINT.toBase58();
-        try {
-            const url = new URL(`${RAYDIUM_API_URL}/pools/info/mint`);
-            url.searchParams.set('mint1', sol);
-            url.searchParams.set('poolType', 'standard');
-            url.searchParams.set('poolSortField', 'volume24h');
-            url.searchParams.set('sortType', 'desc');
-            url.searchParams.set('pageSize', String(limit));
-            url.searchParams.set('page', '1');
-            const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
-            const data = await response.json();
-            if (!response.ok || !data.success || !Array.isArray(data.data?.data))
-                throw new Error('CPMM mint discovery failed.');
-            const candidates = data.data.data
-                .filter(
-                    (pool: { programId: string; tvl: number }) =>
-                        pool.programId === RAYDIUM_CPMM_PROGRAM_ID.toBase58() && pool.tvl > 0
-                )
-                .flatMap((pool: { mintA: { address: string }; mintB: { address: string } }) =>
-                    pool.mintA.address === sol
-                        ? [pool.mintB.address]
-                        : pool.mintB.address === sol
-                          ? [pool.mintA.address]
-                          : []
-                ) as string[];
-            return trade.resolve_random_mints(candidates, count, async (mint) => {
-                const meta = await this.get_mint_meta(mint);
-                return meta && meta.migrated && meta.sol_reserves > 0n && meta.token_reserves > 0n ? meta : undefined;
-            });
-        } catch (error) {
-            common.error(common.red(`Failed fetching CPMM mints: ${error}`));
-            return [];
-        }
-    }
-
     public async create_token(
         mint: Keypair,
         creator: Keypair,
         token_name: string,
         token_symbol: string,
         meta_cid: string,
-        sol_amount: number = 0,
-        traders?: [Keypair, number][],
+        amount: TokenAmount = trade.get_sol_token_amount(0),
+        traders?: [Keypair, TokenAmount][],
         bundle_tip?: number,
         priority?: PriorityLevel,
         config?: object
     ): Promise<String> {
-        if (config) throw new Error(`${this.get_name()} token creation does not support config options yet`);
-        trade.validate_create_token_parameters(sol_amount, traders, bundle_tip);
-        let mint_meta = await this.default_mint_meta(mint.publicKey, 0, {
+        trade.validate_create_token_parameters(amount, traders, bundle_tip);
+        const { global_config, quote_mint, fundraising, fee, reserves, remaining_accounts } =
+            await this.get_create_settings(config as CreateOptions);
+        let mint_meta = await this.default_mint_meta(mint.publicKey, {
             name: token_name,
             symbol: token_symbol,
             creator: creator.publicKey.toBase58(),
             config: this.get_create_platform().toBase58(),
+            global_config: global_config.toBase58(),
+            quote_mint: quote_mint.toBase58(),
             token_program: TOKEN_PROGRAM_ID.toBase58()
         });
+        Object.assign(mint_meta, reserves, { fee });
         const create_instructions = await this.get_create_token_instructions(
             creator,
             token_name,
             token_symbol,
             meta_cid,
-            mint
+            mint,
+            quote_mint,
+            global_config,
+            fundraising,
+            remaining_accounts
         );
-        if (sol_amount > 0)
-            create_instructions.push(...(await this.get_buy_instructions(sol_amount, creator, mint_meta, 0.05)));
+        if (BigInt(amount.amount) > 0n)
+            create_instructions.push(...(await this.get_buy_instructions(amount, creator, mint_meta, 0.05)));
+
         const ltas = global.TRANSACTION_VERSION === 1 ? [] : await trade.get_ltas(this.get_lta_addresses());
         if (!traders)
             return trade.retry_send_tx(
@@ -657,11 +633,13 @@ export class RaydiumTrader implements trade.IProgramTrader {
                 ltas,
                 this.compute_unit_limit
             );
-        if (sol_amount > 0) mint_meta = this.update_mint_meta_reserves(mint_meta, sol_amount);
+
+        if (BigInt(amount.amount) > 0n) mint_meta = this.update_mint_meta_reserves(mint_meta, amount, 'buy');
+
         const buyers: trade.InitialBuy[] = [];
-        for (const [buyer, amount] of traders) {
-            buyers.push({ buyer, instructions: await this.get_buy_instructions(amount, buyer, mint_meta, 0.05) });
-            mint_meta = this.update_mint_meta_reserves(mint_meta, amount);
+        for (const [buyer, buy_amount] of traders) {
+            buyers.push({ buyer, instructions: await this.get_buy_instructions(buy_amount, buyer, mint_meta, 0.05) });
+            mint_meta = this.update_mint_meta_reserves(mint_meta, buy_amount, 'buy');
         }
         return trade.send_create_bundle({
             instructions: create_instructions,
@@ -676,103 +654,24 @@ export class RaydiumTrader implements trade.IProgramTrader {
         });
     }
 
-    protected get_create_platform(): PublicKey {
-        return RAYDIUM_LAUNCHPAD_PLATFORM_CONFIG;
-    }
-
-    protected async get_create_token_instructions(
-        creator: Keypair,
-        token_name: string,
-        token_symbol: string,
-        meta_cid: string,
-        mint: Keypair
-    ): Promise<TransactionInstruction[]> {
-        const pool = await this.calc_pool(mint.publicKey);
-        const [base_vault, quote_vault] = await this.calc_vault(mint.publicKey, pool);
-        const [metadata] = await PublicKey.findProgramAddress(
-            [METAPLEX_META_SEED, METAPLEX_PROGRAM_ID.toBytes(), mint.publicKey.toBytes()],
-            METAPLEX_PROGRAM_ID
-        );
-        return [
-            new TransactionInstruction({
-                programId: RAYDIUM_LAUNCHPAD_PROGRAM_ID,
-                data: this.create_data(token_name, token_symbol, `${IPFS}${meta_cid}`),
-                keys: [
-                    { pubkey: creator.publicKey, isSigner: true, isWritable: true },
-                    { pubkey: creator.publicKey, isSigner: false, isWritable: false },
-                    { pubkey: RAYDIUM_LAUNCHPAD_GLOBAL_CONFIG, isSigner: false, isWritable: false },
-                    { pubkey: this.get_create_platform(), isSigner: false, isWritable: false },
-                    { pubkey: RAYDIUM_LAUNCHPAD_AUTHORITY, isSigner: false, isWritable: false },
-                    { pubkey: pool, isSigner: false, isWritable: true },
-                    { pubkey: mint.publicKey, isSigner: true, isWritable: true },
-                    { pubkey: SOL_MINT, isSigner: false, isWritable: false },
-                    { pubkey: base_vault, isSigner: false, isWritable: true },
-                    { pubkey: quote_vault, isSigner: false, isWritable: true },
-                    { pubkey: metadata, isSigner: false, isWritable: true },
-                    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-                    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-                    { pubkey: METAPLEX_PROGRAM_ID, isSigner: false, isWritable: false },
-                    { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
-                    { pubkey: RENT_PROGRAM_ID, isSigner: false, isWritable: false },
-                    { pubkey: RAYDIUM_LAUNCHPAD_EVENT_AUTHORITY, isSigner: false, isWritable: false },
-                    { pubkey: RAYDIUM_LAUNCHPAD_PROGRAM_ID, isSigner: false, isWritable: false }
-                ]
-            })
-        ];
-    }
-
     public async create_token_metadata(meta: common.IPFSMetadata, image_path: string): Promise<string> {
         return await common.upload_metadata_ipfs(meta, image_path);
     }
 
-    private create_data(name: string, symbol: string, uri: string): Buffer {
-        const string = (value: string) => {
-            const data = Buffer.alloc(4 + Buffer.byteLength(value));
-            data.writeUInt32LE(Buffer.byteLength(value));
-            data.write(value, 4);
-            return data;
-        };
-        const { supply, total_sell, fundraising } = RAYDIUM_LAUNCHPAD_CREATE_PARAMS;
-        const curve = Buffer.alloc(26);
-        curve.writeUInt8(0);
-        curve.writeBigUInt64LE(supply, 1);
-        curve.writeBigUInt64LE(total_sell, 9);
-        curve.writeBigUInt64LE(fundraising, 17);
-        curve.writeUInt8(1, 25);
-        return Buffer.concat([
-            Buffer.from(RAYDIUM_LAUNCHPAD_CREATE_DISCRIMINATOR),
-            Buffer.from([TRADE_DEFAULT_TOKEN_DECIMALS]),
-            string(name),
-            string(symbol),
-            string(uri),
-            curve,
-            Buffer.alloc(25)
-        ]);
-    }
-
-    public update_mint_meta_reserves(mint_meta: RaydiumMintMeta, amount: number | TokenAmount): RaydiumMintMeta {
-        if (typeof amount === 'number') {
-            const sol_amount_raw = common.sol_to_lamports(amount);
-            const fee = this.calc_fee(sol_amount_raw, mint_meta.fee);
-            const n = mint_meta.sol_reserves * mint_meta.token_reserves;
-            mint_meta.sol_reserves = mint_meta.sol_reserves + (sol_amount_raw - fee);
-            mint_meta.token_reserves = n / mint_meta.sol_reserves + 1n;
-            return mint_meta;
-        } else if (typeof amount === 'object') {
-            const token_amount_raw = BigInt(amount.amount);
-            mint_meta.token_reserves = mint_meta.token_reserves + token_amount_raw;
-            const n = (token_amount_raw * mint_meta.sol_reserves) / mint_meta.token_reserves;
-            const fee = this.calc_fee(n, mint_meta.fee);
-            mint_meta.sol_reserves = mint_meta.sol_reserves - (n - fee);
-            return mint_meta;
-        }
-        throw new Error(`Invalid amount type: ${typeof amount}`);
+    public update_mint_meta_reserves(
+        mint_meta: RaydiumMintMeta,
+        amount: TokenAmount,
+        op: trade.TradeOp
+    ): RaydiumMintMeta {
+        const swap = this.calc_swap_amounts(BigInt(amount.amount), mint_meta, op);
+        mint_meta.sol_reserves += swap.quote_delta;
+        mint_meta.token_reserves += swap.base_delta;
+        return mint_meta;
     }
 
     public async subscribe_mint_meta(
         mint_meta: RaydiumMintMeta,
         callback: (mint_meta: RaydiumMintMeta) => void,
-        sol_price: number = 0,
         commitment: Commitment = COMMITMENT
     ): Promise<() => void> {
         let launchpad_sub: number | undefined;
@@ -812,34 +711,26 @@ export class RaydiumTrader implements trade.IProgramTrader {
                     state_slot !== token_1_slot
                 )
                     return;
-                const token_0_reserves =
-                    token_0_balance -
-                    state.protocol_fees_token_0 -
-                    state.fund_fees_token_0 -
-                    state.creator_fees_token_0;
-                const token_1_reserves =
-                    token_1_balance -
-                    state.protocol_fees_token_1 -
-                    state.fund_fees_token_1 -
-                    state.creator_fees_token_1;
+                const fields = this.cpmm_mint_fields(
+                    { ...state, ...this.calc_cpmm_reserves(state, token_0_balance, token_1_balance) },
+                    current_mint_meta.mint_pubkey
+                );
                 const metrics = this.get_token_metrics(
-                    token_0_reserves,
-                    token_1_reserves,
-                    current_mint_meta.total_supply
+                    fields.sol_reserves,
+                    fields.token_reserves,
+                    current_mint_meta.total_supply,
+                    fields.quote_decimals,
+                    fields.token_decimals
                 );
                 publish(
                     new RaydiumMintMeta({
                         ...current_mint_meta,
                         pool: pool.toBase58(),
-                        sol_reserves: token_0_reserves,
-                        token_reserves: token_1_reserves,
-                        base_vault: state.token_1_vault.toBase58(),
-                        quote_vault: state.token_0_vault.toBase58(),
+                        ...fields,
                         complete: true,
                         config: state.amm_config.toBase58(),
                         observation_state: state.observation_key.toBase58(),
-                        market_cap: metrics.mcap_sol,
-                        usd_market_cap: metrics.mcap_sol * sol_price
+                        market_cap: metrics.mcap_quote
                     }),
                     slot
                 );
@@ -906,18 +797,29 @@ export class RaydiumTrader implements trade.IProgramTrader {
             if (response.value) await process(response.value, response.context.slot);
         };
 
-        const pool = new PublicKey(mint_meta.pool);
-        const cpmm = await this.get_cpmm_from_mint(new PublicKey(mint_meta.mint));
+        const cpmm = mint_meta.migrated
+            ? { pubkey: new PublicKey(mint_meta.pool) }
+            : mint_meta.creator && !mint_meta.complete
+              ? null
+              : await this.get_cpmm_from_mint(
+                    mint_meta.mint_pubkey,
+                    mint_meta.creator ? mint_meta.quote_mint_pubkey : undefined
+                );
         if (cpmm) {
-            await subscribe_cpmm(cpmm);
+            await subscribe_cpmm(cpmm.pubkey);
         } else {
+            const pool = mint_meta.creator
+                ? new PublicKey(mint_meta.pool)
+                : (await this.get_launch_pool(mint_meta.mint_pubkey, new PublicKey(mint_meta.pool))).pubkey;
             const process_launchpad = async (info: AccountInfo<Uint8Array>, slot: bigint = 0n) => {
                 if (stopped || (slot && slot < latest_slot)) return;
                 const state = StateStruct.decode(info.data);
                 const metrics = this.get_token_metrics(
                     state.real_quote + state.virtual_quote,
                     state.virtual_base - state.real_base,
-                    state.supply
+                    state.supply,
+                    state.quote_decimals,
+                    state.base_decimals
                 );
                 publish(
                     new RaydiumMintMeta({
@@ -925,20 +827,25 @@ export class RaydiumTrader implements trade.IProgramTrader {
                         sol_reserves: state.real_quote + state.virtual_quote,
                         token_reserves: state.virtual_base - state.real_base,
                         total_supply: state.supply,
-                        complete: false,
+                        pool: pool.toBase58(),
+                        quote_mint: state.quote_mint.toBase58(),
+                        token_decimals: state.base_decimals,
+                        global_config: state.global_config.toBase58(),
+                        base_vault: state.base_vault.toBase58(),
+                        quote_vault: state.quote_vault.toBase58(),
+                        complete: state.status !== 0,
                         config: state.platform_config.toBase58(),
                         creator: state.creator.toBase58(),
-                        market_cap: metrics.mcap_sol,
-                        usd_market_cap: metrics.mcap_sol * sol_price
+                        market_cap: metrics.mcap_quote
                     }),
                     slot
                 );
                 if (state.status === 0 || cpmm_started) return;
-                const migrated = await this.get_cpmm_from_mint(new PublicKey(mint_meta.mint));
+                const migrated = await this.get_cpmm_from_mint(mint_meta.mint_pubkey, state.quote_mint);
                 if (!migrated || (slot && slot < latest_slot)) return;
                 unsubscribe(launchpad_sub);
                 launchpad_sub = undefined;
-                await subscribe_cpmm(migrated);
+                await subscribe_cpmm(migrated.pubkey);
             };
 
             launchpad_sub = global.CONNECTION.onAccountChange(
@@ -956,21 +863,39 @@ export class RaydiumTrader implements trade.IProgramTrader {
         };
     }
 
-    public async update_mint_meta(mint_meta: RaydiumMintMeta, sol_price: number = 0.0): Promise<RaydiumMintMeta> {
+    public async update_mint_meta(mint_meta: RaydiumMintMeta): Promise<RaydiumMintMeta> {
         try {
-            const cpmm_pool = await this.get_cpmm_from_mint(new PublicKey(mint_meta.mint));
+            const launch_pool =
+                !mint_meta.migrated && mint_meta.creator
+                    ? await this.get_launch_pool(mint_meta.mint_pubkey, new PublicKey(mint_meta.pool))
+                    : undefined;
+            const launch_state = launch_pool ? StateStruct.decode(launch_pool.account.data) : undefined;
+            const cpmm_pool = mint_meta.migrated
+                ? { pubkey: new PublicKey(mint_meta.pool), account: undefined }
+                : launch_state?.status === 0
+                  ? null
+                  : await this.get_cpmm_from_mint(mint_meta.mint_pubkey, launch_state?.quote_mint);
 
-            if (!cpmm_pool && !mint_meta.complete) {
-                const state = await this.get_state(new PublicKey(mint_meta.pool));
+            if (!cpmm_pool && (!mint_meta.complete || launch_state)) {
+                const pool =
+                    launch_pool ?? (await this.get_launch_pool(mint_meta.mint_pubkey, new PublicKey(mint_meta.pool)));
+                const state = launch_state ?? StateStruct.decode(pool.account.data);
                 const metrics = this.get_token_metrics(
                     state.real_quote + state.virtual_quote,
                     state.virtual_base - state.real_base,
-                    state.supply
+                    state.supply,
+                    state.quote_decimals,
+                    state.base_decimals
                 );
                 return new RaydiumMintMeta({
                     ...mint_meta,
-                    usd_market_cap: metrics.mcap_sol * sol_price,
-                    market_cap: metrics.mcap_sol,
+                    quote_mint: state.quote_mint.toString(),
+                    token_decimals: state.base_decimals,
+                    pool: pool.pubkey.toBase58(),
+                    global_config: state.global_config.toBase58(),
+                    base_vault: state.base_vault.toBase58(),
+                    quote_vault: state.quote_vault.toBase58(),
+                    market_cap: metrics.mcap_quote,
                     sol_reserves: state.real_quote + state.virtual_quote,
                     token_reserves: state.virtual_base - state.real_base,
                     total_supply: state.supply,
@@ -981,17 +906,20 @@ export class RaydiumTrader implements trade.IProgramTrader {
             }
 
             if (cpmm_pool) {
-                const state = await this.get_cpmm_state(cpmm_pool);
-                const metrics = this.get_token_metrics(state.token_0_reserves, state.token_1_reserves, state.supply);
+                const state = await this.get_cpmm_state(cpmm_pool.pubkey, mint_meta.mint_pubkey, cpmm_pool.account);
+                const fields = this.cpmm_mint_fields(state, mint_meta.mint_pubkey);
+                const metrics = this.get_token_metrics(
+                    fields.sol_reserves,
+                    fields.token_reserves,
+                    state.supply,
+                    fields.quote_decimals,
+                    fields.token_decimals
+                );
                 return new RaydiumMintMeta({
                     ...mint_meta,
-                    usd_market_cap: metrics.mcap_sol * sol_price,
-                    market_cap: metrics.mcap_sol,
-                    pool: cpmm_pool.toString(),
-                    sol_reserves: state.token_0_reserves,
-                    token_reserves: state.token_1_reserves,
-                    base_vault: state.token_1_vault.toString(),
-                    quote_vault: state.token_0_vault.toString(),
+                    market_cap: metrics.mcap_quote,
+                    pool: cpmm_pool.pubkey.toBase58(),
+                    ...fields,
                     total_supply: state.supply,
                     complete: true,
                     observation_state: state.observation_key.toString(),
@@ -1005,22 +933,30 @@ export class RaydiumTrader implements trade.IProgramTrader {
         }
     }
 
-    public async default_mint_meta(mint: PublicKey, sol_price: number = 0.0, data?: object): Promise<RaydiumMintMeta> {
+    public async default_mint_meta(mint: PublicKey, data?: object): Promise<RaydiumMintMeta> {
         const decoded = data as Record<string, unknown> | undefined;
         const meta = decoded
             ? {
                   token_name: typeof decoded.name === 'string' ? decoded.name : 'Unknown',
                   token_symbol: typeof decoded.symbol === 'string' ? decoded.symbol : 'Unknown',
+                  token_decimal: (decoded.token_decimals as number | undefined) ?? TRADE_DEFAULT_TOKEN_DECIMALS,
                   token_program:
                       typeof decoded.token_program === 'string'
                           ? new PublicKey(decoded.token_program)
                           : TOKEN_PROGRAM_ID
               }
             : await trade.get_token_meta(mint).catch(() => {
-                  return { token_name: 'Unknown', token_symbol: 'Unknown', token_program: TOKEN_PROGRAM_ID };
+                  return {
+                      token_name: 'Unknown',
+                      token_symbol: 'Unknown',
+                      token_program: TOKEN_PROGRAM_ID,
+                      token_decimal: TRADE_DEFAULT_TOKEN_DECIMALS
+                  };
               });
-        const pool = typeof decoded?.pool === 'string' ? new PublicKey(decoded.pool) : await this.calc_pool(mint);
-        const [derived_base_vault, derived_quote_vault] = await this.calc_vault(mint, pool);
+        const quote_mint = new PublicKey((decoded?.quote_mint as string | undefined) ?? SOL_MINT);
+        const pool =
+            typeof decoded?.pool === 'string' ? new PublicKey(decoded.pool) : await this.calc_pool(mint, quote_mint);
+        const [derived_base_vault, derived_quote_vault] = await this.calc_vault(mint, pool, quote_mint);
         const base_vault =
             typeof decoded?.base_vault === 'string' ? new PublicKey(decoded.base_vault) : derived_base_vault;
         const quote_vault =
@@ -1028,35 +964,316 @@ export class RaydiumTrader implements trade.IProgramTrader {
 
         return new RaydiumMintMeta({
             mint: mint.toString(),
+            quote_mint: quote_mint.toBase58(),
             symbol: meta.token_symbol,
             name: meta.token_name,
             pool: pool.toString(),
             config: typeof decoded?.config === 'string' ? decoded.config : undefined,
+            global_config:
+                typeof decoded?.global_config === 'string'
+                    ? decoded.global_config
+                    : RAYDIUM_LAUNCHPAD_GLOBAL_CONFIG.toBase58(),
             creator: typeof decoded?.creator === 'string' ? decoded.creator : undefined,
             base_vault: base_vault.toString(),
             quote_vault: quote_vault.toString(),
             ...this.mint_meta_defaults,
-            usd_market_cap: this.mint_meta_defaults.market_cap * sol_price,
-            token_program_id: meta.token_program.toString()
+            market_cap: quote_mint.equals(SOL_MINT) ? this.mint_meta_defaults.market_cap : 0,
+            token_program_id: meta.token_program.toString(),
+            token_decimals: meta.token_decimal
         });
     }
 
-    protected calc_token_amount_raw(sol_amount_raw: bigint, token: Partial<RaydiumMintMeta>): bigint {
-        if (!token.sol_reserves || !token.token_reserves || token.fee === undefined) return 0n;
-        if (sol_amount_raw <= 0) return 0n;
-
-        const fee = this.calc_fee(sol_amount_raw, token.fee);
-        const n = token.sol_reserves * token.token_reserves;
-        const new_sol_reserves = token.sol_reserves + (sol_amount_raw - fee);
-        const new_token_reserves = n / new_sol_reserves + 1n;
-        return token.token_reserves - new_token_reserves;
+    public async estimate_buy_output(
+        mint_meta: RaydiumMintMeta,
+        quote_amount: TokenAmount,
+        slippage: number
+    ): Promise<trade.OutputEstimate> {
+        const raw_amount = this.calc_token_amount_raw(BigInt(quote_amount.amount), mint_meta);
+        const minimum_raw_amount = trade.apply_slippage_down(raw_amount, slippage);
+        return {
+            expected: {
+                amount: raw_amount.toString(),
+                decimals: mint_meta.token_decimals,
+                uiAmount: Number(raw_amount) / 10 ** mint_meta.token_decimals
+            },
+            minimum: {
+                amount: minimum_raw_amount.toString(),
+                decimals: mint_meta.token_decimals,
+                uiAmount: Number(minimum_raw_amount) / 10 ** mint_meta.token_decimals
+            }
+        };
     }
 
-    protected calc_sol_amount_raw(token_amount_raw: bigint, token: Partial<RaydiumMintMeta>): bigint {
-        if (!token.sol_reserves || !token.token_reserves) return 0n;
-        if (token_amount_raw <= 0) return 0n;
+    public async estimate_sell_output(
+        mint_meta: RaydiumMintMeta,
+        token_amount: TokenAmount,
+        slippage: number
+    ): Promise<trade.OutputEstimate> {
+        const quote = await get_quote_info(mint_meta.quote_mint_pubkey);
+        const raw_amount = this.calc_quote_amount_raw(BigInt(token_amount.amount), mint_meta);
+        const minimum_raw_amount = trade.apply_slippage_down(raw_amount, slippage);
+        return {
+            expected: {
+                amount: raw_amount.toString(),
+                decimals: quote.decimals,
+                uiAmount: Number(raw_amount) / 10 ** mint_meta.token_decimals
+            },
+            minimum: {
+                amount: minimum_raw_amount.toString(),
+                decimals: quote.decimals,
+                uiAmount: Number(minimum_raw_amount) / 10 ** quote.decimals
+            }
+        };
+    }
 
-        return (token_amount_raw * token.sol_reserves) / (token.token_reserves + token_amount_raw);
+    private create_data(
+        name: string,
+        symbol: string,
+        uri: string,
+        fundraising = RAYDIUM_LAUNCHPAD_CREATE_PARAMS.fundraising
+    ): Buffer {
+        const string = (value: string) => {
+            const data = Buffer.alloc(4 + Buffer.byteLength(value));
+            data.writeUInt32LE(Buffer.byteLength(value));
+            data.write(value, 4);
+            return data;
+        };
+        const { supply, total_sell } = RAYDIUM_LAUNCHPAD_CREATE_PARAMS;
+        const curve = Buffer.alloc(26);
+        curve.writeUInt8(0);
+        curve.writeBigUInt64LE(supply, 1);
+        curve.writeBigUInt64LE(total_sell, 9);
+        curve.writeBigUInt64LE(fundraising, 17);
+        curve.writeUInt8(1, 25);
+        return Buffer.concat([
+            Buffer.from(RAYDIUM_LAUNCHPAD_CREATE_DISCRIMINATOR),
+            Buffer.from([TRADE_DEFAULT_TOKEN_DECIMALS]),
+            string(name),
+            string(symbol),
+            string(uri),
+            curve,
+            Buffer.alloc(25)
+        ]);
+    }
+
+    private async get_random_ungraduated_mints(count: number): Promise<RaydiumMintMeta[]> {
+        if (count <= 0) return [];
+        const limit = Math.min(100, Math.max(20, count * 3));
+        try {
+            const url = new URL(`${RAYDIUM_LAUNCHPAD_API_URL}/get/list`);
+            url.searchParams.set('sort', 'lastTrade');
+            url.searchParams.set('size', String(limit));
+            url.searchParams.set('mintType', 'default');
+            const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
+            const data = await response.json();
+            if (!response.ok || !data.success || !Array.isArray(data.data?.rows))
+                throw new Error('LaunchLab mint discovery failed.');
+            const candidates = data.data.rows
+                .filter((row: { mintB?: { address: string } }) => row.mintB?.address === SOL_MINT.toBase58())
+                .map((row: { mint: string }) => row.mint) as string[];
+            return trade.resolve_random_mints(candidates, count, async (mint) => {
+                const meta = await this.get_mint_meta(mint);
+                return meta && !meta.migrated && meta.sol_reserves > 0n && meta.token_reserves > 0n ? meta : undefined;
+            });
+        } catch (error) {
+            common.error(common.red(`Failed fetching LaunchLab mints: ${error}`));
+            return [];
+        }
+    }
+
+    protected get_create_platform(): PublicKey {
+        return RAYDIUM_LAUNCHPAD_PLATFORM_CONFIG;
+    }
+
+    private async calc_global_config(options: CreateOptions): Promise<PublicKey> {
+        if (options.global_config) return new PublicKey(options.global_config);
+        if (!options.quote_mint) return RAYDIUM_LAUNCHPAD_GLOBAL_CONFIG;
+        const [config] = await PublicKey.findProgramAddress(
+            [Buffer.from('global_config'), new PublicKey(options.quote_mint).toBytes(), new Uint8Array([0, 0, 0])],
+            RAYDIUM_LAUNCHPAD_PROGRAM_ID
+        );
+        return config;
+    }
+
+    private async get_create_settings(options: CreateOptions = {}) {
+        const global_config = await this.calc_global_config(options);
+        const platform = this.get_create_platform();
+        const [config_info, platform_info] = await global.CONNECTION.getMultipleAccountsInfo(
+            [global_config, platform],
+            COMMITMENT
+        );
+        if (!config_info?.owner.equals(RAYDIUM_LAUNCHPAD_PROGRAM_ID))
+            throw new Error('Invalid LaunchLab global config');
+        if (!platform_info?.owner.equals(RAYDIUM_LAUNCHPAD_PROGRAM_ID))
+            throw new Error('Invalid LaunchLab platform config');
+        const settings = LaunchConfigStruct.decode(config_info.data);
+        if (settings.curve_type !== 0) throw new Error('Only constant-product LaunchLab curves are supported');
+        const quote_mint = settings.quote_mint;
+        if (options.quote_mint && !new PublicKey(options.quote_mint).equals(quote_mint))
+            throw new Error('Quote mint does not match LaunchLab global config');
+        if (!quote_mint.equals(SOL_MINT) && options.fundraising === undefined)
+            throw new Error('Non-SOL LaunchLab creation requires config.fundraising in raw quote units');
+        const fundraising = BigInt(options.fundraising ?? RAYDIUM_LAUNCHPAD_CREATE_PARAMS.fundraising);
+        if (fundraising < settings.min_fundraising || fundraising <= settings.migrate_fee)
+            throw new Error('Invalid LaunchLab fundraising amount (raw quote units)');
+        const platform_data = Buffer.from(platform_info.data);
+        return {
+            global_config,
+            quote_mint,
+            fundraising,
+            fee:
+                Number(
+                    settings.trade_fee_rate + platform_data.readBigUInt64LE(104) + platform_data.readBigUInt64LE(720)
+                ) / 1_000_000,
+            reserves: this.calc_initial_reserves(fundraising, settings.migrate_fee),
+            remaining_accounts: await this.calc_create_remaining_accounts(platform, global_config, platform_data)
+        };
+    }
+
+    private calc_initial_reserves(fundraising: bigint, migrate_fee: bigint) {
+        const { supply, total_sell } = RAYDIUM_LAUNCHPAD_CREATE_PARAMS;
+        const remaining = supply - total_sell;
+        const raised = fundraising - migrate_fee;
+        const denominator = (raised * total_sell) / remaining - fundraising;
+        if (denominator <= 0n) throw new Error('Invalid LaunchLab initial curve');
+        return {
+            token_reserves: (raised * total_sell * total_sell) / remaining / denominator,
+            sol_reserves: (fundraising * fundraising) / denominator
+        };
+    }
+
+    private async calc_create_remaining_accounts(platform: PublicKey, global_config: PublicKey, data: Buffer) {
+        const seeds = [
+            [832, 'platform_allow_config'],
+            [833, 'platform_curve_rule']
+        ] as const;
+        return Promise.all(
+            seeds
+                .filter(([offset]) => data[offset])
+                .map(async ([, seed]) => {
+                    const [address] = await PublicKey.findProgramAddress(
+                        [Buffer.from(seed), platform.toBytes(), global_config.toBytes()],
+                        RAYDIUM_LAUNCHPAD_PROGRAM_ID
+                    );
+                    return address;
+                })
+        );
+    }
+
+    private async get_create_token_instructions(
+        creator: Keypair,
+        token_name: string,
+        token_symbol: string,
+        meta_cid: string,
+        mint: Keypair,
+        quote_mint: PublicKey = SOL_MINT,
+        global_config: PublicKey = RAYDIUM_LAUNCHPAD_GLOBAL_CONFIG,
+        fundraising: bigint = RAYDIUM_LAUNCHPAD_CREATE_PARAMS.fundraising,
+        remaining_accounts: PublicKey[] = []
+    ): Promise<TransactionInstruction[]> {
+        const pool = await this.calc_pool(mint.publicKey, quote_mint);
+        const [base_vault, quote_vault] = await this.calc_vault(mint.publicKey, pool, quote_mint);
+        const quote = await get_quote_info(quote_mint);
+        const [metadata] = await PublicKey.findProgramAddress(
+            [METAPLEX_META_SEED, METAPLEX_PROGRAM_ID.toBytes(), mint.publicKey.toBytes()],
+            METAPLEX_PROGRAM_ID
+        );
+        return [
+            new TransactionInstruction({
+                programId: RAYDIUM_LAUNCHPAD_PROGRAM_ID,
+                data: this.create_data(token_name, token_symbol, `${IPFS}${meta_cid}`, fundraising),
+                keys: [
+                    { pubkey: creator.publicKey, isSigner: true, isWritable: true },
+                    { pubkey: creator.publicKey, isSigner: false, isWritable: false },
+                    { pubkey: global_config, isSigner: false, isWritable: false },
+                    { pubkey: this.get_create_platform(), isSigner: false, isWritable: false },
+                    { pubkey: RAYDIUM_LAUNCHPAD_AUTHORITY, isSigner: false, isWritable: false },
+                    { pubkey: pool, isSigner: false, isWritable: true },
+                    { pubkey: mint.publicKey, isSigner: true, isWritable: true },
+                    { pubkey: quote_mint, isSigner: false, isWritable: false },
+                    { pubkey: base_vault, isSigner: false, isWritable: true },
+                    { pubkey: quote_vault, isSigner: false, isWritable: true },
+                    { pubkey: metadata, isSigner: false, isWritable: true },
+                    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+                    { pubkey: quote.token_program, isSigner: false, isWritable: false },
+                    { pubkey: METAPLEX_PROGRAM_ID, isSigner: false, isWritable: false },
+                    { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
+                    { pubkey: RENT_PROGRAM_ID, isSigner: false, isWritable: false },
+                    { pubkey: RAYDIUM_LAUNCHPAD_EVENT_AUTHORITY, isSigner: false, isWritable: false },
+                    { pubkey: RAYDIUM_LAUNCHPAD_PROGRAM_ID, isSigner: false, isWritable: false },
+                    ...remaining_accounts.map((pubkey) => ({ pubkey, isSigner: false, isWritable: false }))
+                ]
+            })
+        ];
+    }
+
+    private async get_random_graduated_mints(count: number): Promise<RaydiumMintMeta[]> {
+        if (count <= 0) return [];
+        const limit = Math.min(100, Math.max(20, count * 3));
+        const sol = SOL_MINT.toBase58();
+        try {
+            const url = new URL(`${RAYDIUM_API_URL}/pools/info/mint`);
+            url.searchParams.set('mint1', sol);
+            url.searchParams.set('poolType', 'standard');
+            url.searchParams.set('poolSortField', 'volume24h');
+            url.searchParams.set('sortType', 'desc');
+            url.searchParams.set('pageSize', String(limit));
+            url.searchParams.set('page', '1');
+            const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
+            const data = await response.json();
+            if (!response.ok || !data.success || !Array.isArray(data.data?.data))
+                throw new Error('CPMM mint discovery failed.');
+            const candidates = data.data.data
+                .filter(
+                    (pool: { programId: string; tvl: number }) =>
+                        pool.programId === RAYDIUM_CPMM_PROGRAM_ID.toBase58() && pool.tvl > 0
+                )
+                .flatMap((pool: { mintA: { address: string }; mintB: { address: string } }) =>
+                    pool.mintA.address === sol
+                        ? [pool.mintB.address]
+                        : pool.mintB.address === sol
+                          ? [pool.mintA.address]
+                          : []
+                ) as string[];
+            return trade.resolve_random_mints(candidates, count, async (mint) => {
+                const meta = await this.get_mint_meta(mint);
+                return meta && meta.migrated && meta.sol_reserves > 0n && meta.token_reserves > 0n ? meta : undefined;
+            });
+        } catch (error) {
+            common.error(common.red(`Failed fetching CPMM mints: ${error}`));
+            return [];
+        }
+    }
+
+    private calc_token_amount_raw(quote_amount_raw: bigint, token: Partial<RaydiumMintMeta>): bigint {
+        return this.calc_swap_amounts(quote_amount_raw, token, 'buy').output_amount;
+    }
+
+    private calc_quote_amount_raw(token_amount_raw: bigint, token: Partial<RaydiumMintMeta>): bigint {
+        return this.calc_swap_amounts(token_amount_raw, token, 'sell').output_amount;
+    }
+
+    private calc_swap_amounts(amount: bigint, token: Partial<RaydiumMintMeta>, op: trade.TradeOp) {
+        if (!token.sol_reserves || !token.token_reserves || token.fee === undefined || amount <= 0n)
+            return { output_amount: 0n, base_delta: 0n, quote_delta: 0n };
+        if (op === 'buy') {
+            const quote_delta = amount - this.calc_fee(amount, token.fee);
+            if (quote_delta <= 0n) return { output_amount: 0n, base_delta: 0n, quote_delta: 0n };
+            const output_amount =
+                token.token_reserves -
+                (token.sol_reserves * token.token_reserves) / (token.sol_reserves + quote_delta) -
+                1n;
+            return { output_amount, base_delta: -output_amount, quote_delta };
+        }
+        // CPMM charges input fees; LaunchLab charges fees from gross quote output.
+        const cpmm = Boolean(token.observation_state);
+        const base_delta = cpmm ? amount - this.calc_fee(amount, token.fee) : amount;
+        const gross_output = (base_delta * token.sol_reserves) / (token.token_reserves + base_delta);
+        return {
+            output_amount: cpmm ? gross_output : gross_output - this.calc_fee(gross_output, token.fee),
+            base_delta,
+            quote_delta: -gross_output
+        };
     }
 
     private calc_fee(amount: bigint, rate: number): bigint {
@@ -1064,48 +1281,48 @@ export class RaydiumTrader implements trade.IProgramTrader {
         return (amount * fee_rate + 999_999n) / 1_000_000n;
     }
 
-    protected swap_data(amount_in: bigint, minimum_amount_out: bigint, op: 'buy' | 'sell'): Buffer {
+    private swap_data(amount_in: bigint, minimum_amount_out: bigint, op: trade.TradeOp): Buffer {
         const discriminator = op === 'buy' ? RAYDIUM_LAUNCHPAD_BUY_DISCRIMINATOR : RAYDIUM_LAUNCHPAD_SELL_DISCRIMINATOR;
         const instruction_buf = Buffer.from(discriminator);
-        const sol_amount_buf = Buffer.alloc(8);
-        sol_amount_buf.writeBigUInt64LE(amount_in, 0);
+        const amount_buf = Buffer.alloc(8);
+        amount_buf.writeBigUInt64LE(amount_in, 0);
         const token_amount_buf = Buffer.alloc(8);
         token_amount_buf.writeBigUInt64LE(minimum_amount_out, 0);
         const share_fee_rate = Buffer.alloc(8);
         share_fee_rate.writeBigUInt64LE(0n, 0);
-        return Buffer.concat([instruction_buf, sol_amount_buf, token_amount_buf, share_fee_rate]);
+        return Buffer.concat([instruction_buf, amount_buf, token_amount_buf, share_fee_rate]);
     }
 
-    protected swap_cpmm_data(amount_in: bigint, minimum_amount_out: bigint): Buffer {
+    private swap_cpmm_data(amount_in: bigint, minimum_amount_out: bigint): Buffer {
         const instruction_buf = Buffer.from(RAYDIUM_CPMM_SWAP_DISCRIMINATOR);
-        const sol_amount_buf = Buffer.alloc(8);
-        sol_amount_buf.writeBigUInt64LE(amount_in, 0);
+        const amount_buf = Buffer.alloc(8);
+        amount_buf.writeBigUInt64LE(amount_in, 0);
         const token_amount_buf = Buffer.alloc(8);
         token_amount_buf.writeBigUInt64LE(minimum_amount_out, 0);
-        return Buffer.concat([instruction_buf, sol_amount_buf, token_amount_buf]);
+        return Buffer.concat([instruction_buf, amount_buf, token_amount_buf]);
     }
 
-    protected async calc_volume_accumulator(target: PublicKey): Promise<PublicKey> {
+    private async calc_volume_accumulator(target: PublicKey, quote_mint: PublicKey = SOL_MINT): Promise<PublicKey> {
         const [user_volume_accumulator] = await PublicKey.findProgramAddress(
-            [target.toBytes(), SOL_MINT.toBytes()],
+            [target.toBytes(), quote_mint.toBytes()],
             RAYDIUM_LAUNCHPAD_PROGRAM_ID
         );
         return user_volume_accumulator;
     }
 
-    private buy_exact_out_data(sol_amount: bigint, token_amount: bigint, slippage: number, cpmm: boolean): Buffer {
-        const max_sol_amount = trade.slippage_up(sol_amount, slippage);
+    private buy_exact_out_data(amount_raw: bigint, token_amount: bigint, slippage: number, cpmm: boolean): Buffer {
+        const max_amount_raw = trade.apply_slippage_up(amount_raw, slippage);
         const data = Buffer.alloc(cpmm ? 24 : 32);
         Buffer.from(
             cpmm ? RAYDIUM_CPMM_SWAP_EXACT_OUT_DISCRIMINATOR : RAYDIUM_LAUNCHPAD_BUY_EXACT_OUT_DISCRIMINATOR
         ).copy(data);
-        data.writeBigUInt64LE(cpmm ? max_sol_amount : token_amount, 8);
-        data.writeBigUInt64LE(cpmm ? token_amount : max_sol_amount, 16);
+        data.writeBigUInt64LE(cpmm ? max_amount_raw : token_amount, 8);
+        data.writeBigUInt64LE(cpmm ? token_amount : max_amount_raw, 16);
         return data;
     }
 
-    protected async get_buy_instructions(
-        sol_amount: number,
+    private async get_buy_instructions(
+        amount: TokenAmount,
         buyer: Keypair,
         mint_meta: Partial<RaydiumMintMeta>,
         slippage: number = 0.05,
@@ -1121,40 +1338,45 @@ export class RaydiumTrader implements trade.IProgramTrader {
         )
             throw new Error(`Incomplete mint meta data for buy instructions.`);
 
+        const amount_raw = BigInt(amount.amount);
         const mint = new PublicKey(mint_meta.mint);
+        const quote_mint = new PublicKey(mint_meta.quote_mint!);
+        const quote = await prepare_quote_account(
+            buyer,
+            quote_mint,
+            exact_out_amount === undefined ? amount_raw : trade.apply_slippage_up(amount_raw, slippage)
+        );
+        const token_program = new PublicKey(mint_meta.token_program_id ?? TOKEN_PROGRAM_ID);
         const quote_vault = new PublicKey(mint_meta.quote_vault);
         const base_vault = new PublicKey(mint_meta.base_vault);
         const pool = new PublicKey(mint_meta.pool);
         const config = new PublicKey(mint_meta.config);
         const creator = new PublicKey(mint_meta.creator);
 
-        const platform_volume_accumulator = await this.calc_volume_accumulator(config);
-        const creator_volume_accumulator = await this.calc_volume_accumulator(creator);
+        const platform_volume_accumulator = await this.calc_volume_accumulator(config, quote_mint);
+        const creator_volume_accumulator = await this.calc_volume_accumulator(creator, quote_mint);
 
-        const token_ata = await trade.calc_ata(buyer.publicKey, mint);
-        const wsol_ata = await trade.calc_ata(buyer.publicKey, SOL_MINT);
+        const token_ata = await trade.calc_ata(buyer.publicKey, mint, token_program);
+        const wsol_ata = quote.ata;
 
-        const sol_amount_raw = common.sol_to_lamports(sol_amount);
-        const token_amount_raw = trade.slippage_down(this.calc_token_amount_raw(sol_amount_raw, mint_meta), slippage);
+        const token_amount_raw = trade.apply_slippage_down(this.calc_token_amount_raw(amount_raw, mint_meta), slippage);
         const instruction_data =
             exact_out_amount === undefined
-                ? this.swap_data(sol_amount_raw, token_amount_raw, 'buy')
-                : this.buy_exact_out_data(sol_amount_raw, exact_out_amount, slippage, false);
+                ? this.swap_data(amount_raw, token_amount_raw, 'buy')
+                : this.buy_exact_out_data(amount_raw, exact_out_amount, slippage, false);
 
         return [
-            createAssociatedTokenAccountIdempotentInstruction(buyer, token_ata, buyer.publicKey, mint),
-            createAssociatedTokenAccountIdempotentInstruction(buyer, wsol_ata, buyer.publicKey, SOL_MINT),
-            SystemProgram.transfer({
-                fromPubkey: buyer.publicKey,
-                toPubkey: wsol_ata,
-                lamports: trade.slippage_up(sol_amount_raw, slippage)
-            }),
-            createSyncNativeInstruction(wsol_ata),
+            createAssociatedTokenAccountIdempotentInstruction(buyer, token_ata, buyer.publicKey, mint, token_program),
+            ...quote.setup,
             new TransactionInstruction({
                 keys: [
                     { pubkey: buyer.publicKey, isSigner: true, isWritable: true },
                     { pubkey: RAYDIUM_LAUNCHPAD_AUTHORITY, isSigner: false, isWritable: false },
-                    { pubkey: RAYDIUM_LAUNCHPAD_GLOBAL_CONFIG, isSigner: false, isWritable: false },
+                    {
+                        pubkey: new PublicKey(mint_meta.global_config ?? RAYDIUM_LAUNCHPAD_GLOBAL_CONFIG),
+                        isSigner: false,
+                        isWritable: false
+                    },
                     { pubkey: config, isSigner: false, isWritable: false },
                     { pubkey: pool, isSigner: false, isWritable: true },
                     { pubkey: token_ata, isSigner: false, isWritable: true },
@@ -1162,9 +1384,9 @@ export class RaydiumTrader implements trade.IProgramTrader {
                     { pubkey: base_vault, isSigner: false, isWritable: true },
                     { pubkey: quote_vault, isSigner: false, isWritable: true },
                     { pubkey: mint, isSigner: false, isWritable: false },
-                    { pubkey: SOL_MINT, isSigner: false, isWritable: false },
-                    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-                    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+                    { pubkey: quote_mint, isSigner: false, isWritable: false },
+                    { pubkey: token_program, isSigner: false, isWritable: false },
+                    { pubkey: quote.token_program, isSigner: false, isWritable: false },
                     { pubkey: RAYDIUM_LAUNCHPAD_EVENT_AUTHORITY, isSigner: false, isWritable: false },
                     { pubkey: RAYDIUM_LAUNCHPAD_PROGRAM_ID, isSigner: false, isWritable: false },
                     { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
@@ -1174,11 +1396,11 @@ export class RaydiumTrader implements trade.IProgramTrader {
                 programId: RAYDIUM_LAUNCHPAD_PROGRAM_ID,
                 data: instruction_data
             }),
-            createCloseAccountInstruction(wsol_ata, buyer.publicKey, buyer.publicKey)
+            ...quote.cleanup
         ];
     }
 
-    protected async get_sell_instructions(
+    private async get_sell_instructions(
         token_amount: TokenAmount,
         seller: Keypair,
         mint_meta: Partial<RaydiumMintMeta>,
@@ -1196,29 +1418,39 @@ export class RaydiumTrader implements trade.IProgramTrader {
         if (token_amount.amount === null) throw new Error(`Invalid token amount: ${token_amount.amount}`);
 
         const mint = new PublicKey(mint_meta.mint);
+        const quote_mint = new PublicKey(mint_meta.quote_mint!);
+        const quote = await prepare_quote_account(seller, quote_mint);
+        const token_program = new PublicKey(mint_meta.token_program_id ?? TOKEN_PROGRAM_ID);
         const quote_vault = new PublicKey(mint_meta.quote_vault);
         const base_vault = new PublicKey(mint_meta.base_vault);
         const pool = new PublicKey(mint_meta.pool);
         const config = new PublicKey(mint_meta.config);
         const creator = new PublicKey(mint_meta.creator);
 
-        const platform_volume_accumulator = await this.calc_volume_accumulator(config);
-        const creator_volume_accumulator = await this.calc_volume_accumulator(creator);
+        const platform_volume_accumulator = await this.calc_volume_accumulator(config, quote_mint);
+        const creator_volume_accumulator = await this.calc_volume_accumulator(creator, quote_mint);
 
         const token_amount_raw = BigInt(token_amount.amount);
-        const sol_amount_raw = trade.slippage_down(this.calc_sol_amount_raw(token_amount_raw, mint_meta), slippage);
+        const quote_amount_raw = trade.apply_slippage_down(
+            this.calc_quote_amount_raw(token_amount_raw, mint_meta),
+            slippage
+        );
 
-        const instruction_data = this.swap_data(token_amount_raw, sol_amount_raw, 'sell');
-        const token_ata = await trade.calc_ata(seller.publicKey, mint);
-        const wsol_ata = await trade.calc_ata(seller.publicKey, SOL_MINT);
+        const instruction_data = this.swap_data(token_amount_raw, quote_amount_raw, 'sell');
+        const token_ata = await trade.calc_ata(seller.publicKey, mint, token_program);
+        const wsol_ata = quote.ata;
 
         return [
-            createAssociatedTokenAccountIdempotentInstruction(seller, wsol_ata, seller.publicKey, SOL_MINT),
+            ...quote.setup,
             new TransactionInstruction({
                 keys: [
                     { pubkey: seller.publicKey, isSigner: true, isWritable: true },
                     { pubkey: RAYDIUM_LAUNCHPAD_AUTHORITY, isSigner: false, isWritable: false },
-                    { pubkey: RAYDIUM_LAUNCHPAD_GLOBAL_CONFIG, isSigner: false, isWritable: false },
+                    {
+                        pubkey: new PublicKey(mint_meta.global_config ?? RAYDIUM_LAUNCHPAD_GLOBAL_CONFIG),
+                        isSigner: false,
+                        isWritable: false
+                    },
                     { pubkey: config, isSigner: false, isWritable: false },
                     { pubkey: pool, isSigner: false, isWritable: true },
                     { pubkey: token_ata, isSigner: false, isWritable: true },
@@ -1226,9 +1458,9 @@ export class RaydiumTrader implements trade.IProgramTrader {
                     { pubkey: base_vault, isSigner: false, isWritable: true },
                     { pubkey: quote_vault, isSigner: false, isWritable: true },
                     { pubkey: mint, isSigner: false, isWritable: false },
-                    { pubkey: SOL_MINT, isSigner: false, isWritable: false },
-                    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-                    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+                    { pubkey: quote_mint, isSigner: false, isWritable: false },
+                    { pubkey: token_program, isSigner: false, isWritable: false },
+                    { pubkey: quote.token_program, isSigner: false, isWritable: false },
                     { pubkey: RAYDIUM_LAUNCHPAD_EVENT_AUTHORITY, isSigner: false, isWritable: false },
                     { pubkey: RAYDIUM_LAUNCHPAD_PROGRAM_ID, isSigner: false, isWritable: false },
                     { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
@@ -1238,12 +1470,12 @@ export class RaydiumTrader implements trade.IProgramTrader {
                 programId: RAYDIUM_LAUNCHPAD_PROGRAM_ID,
                 data: instruction_data
             }),
-            createCloseAccountInstruction(wsol_ata, seller.publicKey, seller.publicKey)
+            ...quote.cleanup
         ];
     }
 
-    protected async get_buy_cpmm_instructions(
-        sol_amount: number,
+    private async get_buy_cpmm_instructions(
+        amount: TokenAmount,
         buyer: Keypair,
         mint_meta: RaydiumMintMeta,
         slippage: number = 0.05,
@@ -1259,22 +1491,28 @@ export class RaydiumTrader implements trade.IProgramTrader {
         )
             throw new Error(`Incomplete mint meta data for buy instructions.`);
 
+        const amount_raw = BigInt(amount.amount);
         const mint = new PublicKey(mint_meta.mint);
+        const quote_mint = mint_meta.quote_mint_pubkey;
+        const quote = await prepare_quote_account(
+            buyer,
+            quote_mint,
+            exact_out_amount === undefined ? amount_raw : trade.apply_slippage_up(amount_raw, slippage)
+        );
         const pool = new PublicKey(mint_meta.pool);
         const observation_state = new PublicKey(mint_meta.observation_state);
         const quote_vault = new PublicKey(mint_meta.quote_vault);
         const base_vault = new PublicKey(mint_meta.base_vault);
         const config = new PublicKey(mint_meta.config);
 
-        const sol_amount_raw = common.sol_to_lamports(sol_amount);
-        const token_amount_raw = trade.slippage_down(this.calc_token_amount_raw(sol_amount_raw, mint_meta), slippage);
+        const token_amount_raw = trade.apply_slippage_down(this.calc_token_amount_raw(amount_raw, mint_meta), slippage);
 
         const instruction_data =
             exact_out_amount === undefined
-                ? this.swap_cpmm_data(sol_amount_raw, token_amount_raw)
-                : this.buy_exact_out_data(sol_amount_raw, exact_out_amount, slippage, true);
+                ? this.swap_cpmm_data(amount_raw, token_amount_raw)
+                : this.buy_exact_out_data(amount_raw, exact_out_amount, slippage, true);
         const token_ata = await trade.calc_ata(buyer.publicKey, mint, mint_meta.token_program);
-        const wsol_ata = await trade.calc_ata(buyer.publicKey, SOL_MINT);
+        const wsol_ata = quote.ata;
 
         return [
             createAssociatedTokenAccountIdempotentInstruction(
@@ -1284,13 +1522,7 @@ export class RaydiumTrader implements trade.IProgramTrader {
                 mint,
                 mint_meta.token_program
             ),
-            createAssociatedTokenAccountIdempotentInstruction(buyer, wsol_ata, buyer.publicKey, SOL_MINT),
-            SystemProgram.transfer({
-                fromPubkey: buyer.publicKey,
-                toPubkey: wsol_ata,
-                lamports: trade.slippage_up(sol_amount_raw, slippage)
-            }),
-            createSyncNativeInstruction(wsol_ata),
+            ...quote.setup,
             new TransactionInstruction({
                 keys: [
                     { pubkey: buyer.publicKey, isSigner: true, isWritable: true },
@@ -1301,20 +1533,20 @@ export class RaydiumTrader implements trade.IProgramTrader {
                     { pubkey: token_ata, isSigner: false, isWritable: true },
                     { pubkey: quote_vault, isSigner: false, isWritable: true },
                     { pubkey: base_vault, isSigner: false, isWritable: true },
-                    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+                    { pubkey: quote.token_program, isSigner: false, isWritable: false },
                     { pubkey: mint_meta.token_program, isSigner: false, isWritable: false },
-                    { pubkey: SOL_MINT, isSigner: false, isWritable: false },
+                    { pubkey: quote_mint, isSigner: false, isWritable: false },
                     { pubkey: mint, isSigner: false, isWritable: false },
                     { pubkey: observation_state, isSigner: false, isWritable: true }
                 ],
                 programId: RAYDIUM_CPMM_PROGRAM_ID,
                 data: instruction_data
             }),
-            createCloseAccountInstruction(wsol_ata, buyer.publicKey, buyer.publicKey)
+            ...quote.cleanup
         ];
     }
 
-    protected async get_sell_cpmm_instructions(
+    private async get_sell_cpmm_instructions(
         token_amount: TokenAmount,
         seller: Keypair,
         mint_meta: RaydiumMintMeta,
@@ -1332,6 +1564,8 @@ export class RaydiumTrader implements trade.IProgramTrader {
         if (token_amount.amount === null) throw new Error(`Invalid token amount: ${token_amount.amount}`);
 
         const mint = new PublicKey(mint_meta.mint);
+        const quote_mint = mint_meta.quote_mint_pubkey;
+        const quote = await prepare_quote_account(seller, quote_mint);
         const pool = new PublicKey(mint_meta.pool);
         const observation_state = new PublicKey(mint_meta.observation_state);
         const quote_vault = new PublicKey(mint_meta.quote_vault);
@@ -1341,17 +1575,17 @@ export class RaydiumTrader implements trade.IProgramTrader {
         const token_amount_raw = BigInt(token_amount.amount);
         const instruction_data = this.swap_cpmm_data(
             token_amount_raw,
-            trade.slippage_down(this.calc_sol_amount_raw(token_amount_raw, mint_meta), slippage)
+            trade.apply_slippage_down(this.calc_quote_amount_raw(token_amount_raw, mint_meta), slippage)
         );
         const token_ata = await trade.calc_ata(
             seller.publicKey,
             new PublicKey(mint_meta.mint),
             mint_meta.token_program
         );
-        const wsol_ata = await trade.calc_ata(seller.publicKey, SOL_MINT);
+        const wsol_ata = quote.ata;
 
         return [
-            createAssociatedTokenAccountIdempotentInstruction(seller, wsol_ata, seller.publicKey, SOL_MINT),
+            ...quote.setup,
             new TransactionInstruction({
                 keys: [
                     { pubkey: seller.publicKey, isSigner: true, isWritable: true },
@@ -1363,91 +1597,145 @@ export class RaydiumTrader implements trade.IProgramTrader {
                     { pubkey: base_vault, isSigner: false, isWritable: true },
                     { pubkey: quote_vault, isSigner: false, isWritable: true },
                     { pubkey: mint_meta.token_program, isSigner: false, isWritable: false },
-                    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+                    { pubkey: quote.token_program, isSigner: false, isWritable: false },
                     { pubkey: mint, isSigner: false, isWritable: false },
-                    { pubkey: SOL_MINT, isSigner: false, isWritable: false },
+                    { pubkey: quote_mint, isSigner: false, isWritable: false },
                     { pubkey: observation_state, isSigner: false, isWritable: true }
                 ],
                 programId: RAYDIUM_CPMM_PROGRAM_ID,
                 data: instruction_data
             }),
-            createCloseAccountInstruction(wsol_ata, seller.publicKey, seller.publicKey)
+            ...quote.cleanup
         ];
     }
 
-    protected async calc_vault(mint: PublicKey, pool: PublicKey): Promise<[PublicKey, PublicKey]> {
+    private async calc_vault(
+        mint: PublicKey,
+        pool: PublicKey,
+        quote_mint: PublicKey = SOL_MINT
+    ): Promise<[PublicKey, PublicKey]> {
         const [base_vault] = await PublicKey.findProgramAddress(
             [RAYDIUM_LAUNCHPAD_VAULT_SEED, pool.toBytes(), mint.toBytes()],
             RAYDIUM_LAUNCHPAD_PROGRAM_ID
         );
         const [quote_vault] = await PublicKey.findProgramAddress(
-            [RAYDIUM_LAUNCHPAD_VAULT_SEED, pool.toBytes(), SOL_MINT.toBytes()],
+            [RAYDIUM_LAUNCHPAD_VAULT_SEED, pool.toBytes(), quote_mint.toBytes()],
             RAYDIUM_LAUNCHPAD_PROGRAM_ID
         );
         return [base_vault, quote_vault];
     }
 
-    protected async calc_pool(base_mint: PublicKey): Promise<PublicKey> {
+    private async calc_pool(base_mint: PublicKey, quote_mint: PublicKey = SOL_MINT): Promise<PublicKey> {
         const [vault] = await PublicKey.findProgramAddress(
-            [RAYDIUM_LAUNCHPAD_POOL_SEED, base_mint.toBytes(), SOL_MINT.toBytes()],
+            [RAYDIUM_LAUNCHPAD_POOL_SEED, base_mint.toBytes(), quote_mint.toBytes()],
             RAYDIUM_LAUNCHPAD_PROGRAM_ID
         );
         return vault;
     }
 
-    protected get_token_metrics(quote_reserves: bigint, base_reserves: bigint, supply: bigint): trade.TokenMetrics {
-        const price_sol = this.calculate_curve_price(quote_reserves, base_reserves);
-        const mcap_sol = (price_sol * Number(supply)) / 10 ** TRADE_DEFAULT_TOKEN_DECIMALS;
-        return { price_sol, mcap_sol };
+    private get_token_metrics(
+        quote_reserves: bigint,
+        base_reserves: bigint,
+        supply: bigint,
+        quote_decimals = 9,
+        base_decimals = TRADE_DEFAULT_TOKEN_DECIMALS
+    ): trade.TokenMetrics {
+        if (base_reserves <= 0 || quote_reserves <= 0) throw new RangeError('Invalid curve reserves');
+        return quote_metrics(Number(quote_reserves) / Number(base_reserves), supply, quote_decimals, base_decimals);
     }
 
-    protected calculate_curve_price(quote_reserves: bigint, base_reserves: bigint): number {
-        if (base_reserves <= 0 || quote_reserves <= 0)
-            throw new RangeError('Curve state contains invalid virtual reserves');
+    private async get_cpmm_from_mint(mint: PublicKey, quote_mint?: PublicKey): Promise<trade.ProgramAccount | null> {
+        const pools = (
+            await Promise.all(
+                ['token_0_mint', 'token_1_mint'].map((field) =>
+                    trade.get_program_accounts_v2(RAYDIUM_CPMM_PROGRAM_ID, [
+                        { memcmp: { offset: CPMMStateStruct.get_offset(field), bytes: mint.toBase58() } },
+                        ...(quote_mint
+                            ? [
+                                  {
+                                      memcmp: {
+                                          offset: CPMMStateStruct.get_offset(
+                                              field === 'token_0_mint' ? 'token_1_mint' : 'token_0_mint'
+                                          ),
+                                          bytes: quote_mint.toBase58()
+                                      }
+                                  }
+                              ]
+                            : []),
+                        { memcmp: { offset: 0, bytes: base58.encode(RAYDIUM_CPMM_POOL_STATE_HEADER) } }
+                    ])
+                )
+            )
+        ).flat();
         return (
-            Number(quote_reserves) /
-            LAMPORTS_PER_SOL /
-            (Number(base_reserves) / Math.pow(10, TRADE_DEFAULT_TOKEN_DECIMALS))
+            pools.find(({ account }) => {
+                const state = CPMMStateStruct.decode(account.data);
+                return state.token_0_mint.equals(SOL_MINT) || state.token_1_mint.equals(SOL_MINT);
+            }) ??
+            pools[0] ??
+            null
         );
     }
 
-    protected async get_state(bond_curve_addr: PublicKey): Promise<State> {
-        const info = await global.CONNECTION.getAccountInfo(bond_curve_addr, COMMITMENT);
-        if (!info || !info.data) throw new Error('Unexpected curve state');
-        return StateStruct.decode(info.data);
-    }
-
-    protected async get_cpmm_from_mint(mint: PublicKey): Promise<PublicKey | null> {
-        const [cpmm] = await trade.get_program_accounts_v2(RAYDIUM_CPMM_PROGRAM_ID, [
-            { memcmp: { offset: CPMMStateStruct.get_offset('token_1_mint'), bytes: mint.toBase58() } },
-            { memcmp: { offset: CPMMStateStruct.get_offset('token_0_mint'), bytes: SOL_MINT.toBase58() } },
-            { memcmp: { offset: 0, bytes: base58.encode(RAYDIUM_CPMM_POOL_STATE_HEADER) } }
-        ]);
-        return cpmm?.pubkey ?? null;
-    }
-
-    protected async get_cpmm_state(cpmm_pool: PublicKey): Promise<CPMMState> {
-        const info = await global.CONNECTION.getAccountInfo(cpmm_pool);
+    private async get_cpmm_state(
+        cpmm_pool: PublicKey,
+        base_mint: PublicKey,
+        account?: trade.ProgramAccount['account']
+    ): Promise<CPMMState> {
+        const info = account ?? (await global.CONNECTION.getAccountInfo(cpmm_pool, COMMITMENT));
         if (!info || !info.data) throw new Error('Unexpected CPMM state');
 
         const state = CPMMStateStruct.decode(info.data);
-        const token_0_reserves = await trade.get_vault_balance(state.token_0_vault);
-        const token_1_reserves = await trade.get_vault_balance(state.token_1_vault);
-        const supply = await trade.get_token_supply(state.token_1_mint);
+        const [token_0_reserves, token_1_reserves, supply] = await Promise.all([
+            trade.get_vault_balance(state.token_0_vault),
+            trade.get_vault_balance(state.token_1_vault),
+            trade.get_token_supply(base_mint)
+        ]);
 
         return {
             ...state,
-            token_0_reserves:
-                token_0_reserves.balance -
-                state.protocol_fees_token_0 -
-                state.fund_fees_token_0 -
-                state.creator_fees_token_0,
-            token_1_reserves:
-                token_1_reserves.balance -
-                state.protocol_fees_token_1 -
-                state.fund_fees_token_1 -
-                state.creator_fees_token_1,
+            ...this.calc_cpmm_reserves(state, token_0_reserves.balance, token_1_reserves.balance),
             supply: supply.supply
         };
+    }
+
+    private calc_cpmm_reserves(
+        state: ReturnType<typeof CPMMStateStruct.decode>,
+        token_0_balance: bigint,
+        token_1_balance: bigint
+    ) {
+        return {
+            token_0_reserves:
+                token_0_balance - state.protocol_fees_token_0 - state.fund_fees_token_0 - state.creator_fees_token_0,
+            token_1_reserves:
+                token_1_balance - state.protocol_fees_token_1 - state.fund_fees_token_1 - state.creator_fees_token_1
+        };
+    }
+
+    private cpmm_mint_fields(state: Omit<CPMMState, 'supply'>, mint: PublicKey) {
+        const base_is_0 = state.token_0_mint.equals(mint);
+        if (!base_is_0 && !state.token_1_mint.equals(mint)) throw new Error('CPMM does not contain base mint');
+        return {
+            quote_mint: (base_is_0 ? state.token_1_mint : state.token_0_mint).toBase58(),
+            quote_decimals: base_is_0 ? state.mint_1_decimals : state.mint_0_decimals,
+            token_program_id: (base_is_0 ? state.token_0_program : state.token_1_program).toBase58(),
+            token_decimals: base_is_0 ? state.mint_0_decimals : state.mint_1_decimals,
+            base_vault: (base_is_0 ? state.token_0_vault : state.token_1_vault).toBase58(),
+            quote_vault: (base_is_0 ? state.token_1_vault : state.token_0_vault).toBase58(),
+            token_reserves: base_is_0 ? state.token_0_reserves : state.token_1_reserves,
+            sol_reserves: base_is_0 ? state.token_1_reserves : state.token_0_reserves
+        };
+    }
+
+    private async get_launch_pool(mint: PublicKey, hint: PublicKey): Promise<trade.ProgramAccount> {
+        const info = await global.CONNECTION.getAccountInfo(hint, COMMITMENT);
+        if (info?.owner.equals(RAYDIUM_LAUNCHPAD_PROGRAM_ID) && StateStruct.decode(info.data).base_mint.equals(mint))
+            return { pubkey: hint, account: info };
+        const [pool] = await trade.get_program_accounts_v2(RAYDIUM_LAUNCHPAD_PROGRAM_ID, [
+            { memcmp: { offset: StateStruct.get_offset('base_mint'), bytes: mint.toBase58() } },
+            { memcmp: { offset: 0, bytes: base58.encode(RAYDIUM_LAUNCHPAD_POOL_HEADER) } }
+        ]);
+        if (!pool) throw new Error('LaunchLab pool not found');
+        return pool;
     }
 }

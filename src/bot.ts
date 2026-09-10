@@ -918,7 +918,7 @@ async function main() {
             if (!drop_wallet) throw new InvalidArgumentError('Invalid index.');
             return drop_wallet.keypair;
         })
-        .option('--ap, --airdrop <percent>', 'Percent of tokens to be airdroped', (value) => {
+        .option('--ap, --airdrop <percent>', 'Percent of tokens to be airdropped', (value) => {
             const parsed_value = parseFloat(value);
             if (isNaN(parsed_value)) throw new InvalidArgumentError('Not a number.');
             if (parsed_value < 0 || parsed_value > 1.0) throw new InvalidArgumentError('Invalid range (0.0 - 1.0).');

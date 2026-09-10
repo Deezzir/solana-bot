@@ -1,6 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { clearLine, cursorTo } from 'readline';
-import { Keypair, PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
+import { Keypair, PublicKey } from '@solana/web3.js';
 import { createInterface } from 'readline';
 import { parse } from 'csv-parse/sync';
 import { IPFS, IPFS_API, IPFS_JWT, PUMP_API_URL, WALLETS_FILE_HEADERS, WALLETS_RESCUE_DIR_PATH } from '../constants';
@@ -82,13 +82,6 @@ export function safe_number(value: number | bigint): number {
     const result = Number(value);
     if (!Number.isSafeInteger(result)) throw new RangeError(`Integer exceeds the safe number range: ${value}`);
     return result;
-}
-
-export function sol_to_lamports(amount: number): bigint {
-    const lamports = Math.floor(amount * LAMPORTS_PER_SOL);
-    if (amount < 0 || !Number.isSafeInteger(lamports) || (amount > 0 && lamports === 0))
-        throw new RangeError('Invalid SOL amount.');
-    return BigInt(lamports);
 }
 
 export function rpc_bigint(value: number | bigint): bigint {

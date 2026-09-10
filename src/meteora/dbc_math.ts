@@ -1,3 +1,4 @@
+import { TradeOp } from '../common/trade_common';
 import { METEORA_DBC_PARAMS } from '../constants';
 import { BASIS_POINT_MAX, FEE_DENOMINATOR, ONE_Q64, ONE_Q128, pow_q64, DYNAMIC_FEE_SCALING_FACTOR } from './damm_math';
 
@@ -49,7 +50,8 @@ export function dbc_rate_limiter_active(state: DBCQuoteState): boolean {
     );
 }
 
-export function dbc_fee_numerator(state: DBCQuoteState, amount: bigint, buy: boolean): bigint {
+export function dbc_fee_numerator(state: DBCQuoteState, amount: bigint, op: TradeOp): bigint {
+    const buy = op === 'buy';
     const config = state.config;
     if (state.current_point < state.activation_point) throw new Error('DBC pool is not active yet.');
     let fee = config.cliff_fee_numerator;
@@ -95,9 +97,8 @@ function delta_bins(a: bigint, b: bigint, step: bigint): bigint {
     return (((upper * ONE_Q64) / lower - ONE_Q64) / step) * 2n;
 }
 
-export function quote_dbc_exact_in(state: DBCQuoteState, amount: bigint, op: 'buy' | 'sell') {
+export function quote_dbc_exact_in(state: DBCQuoteState, amount: bigint, op: TradeOp) {
     if (amount <= 0n) throw new Error('DBC swap amount must be positive.');
-    const buy = op === 'buy';
     const config = state.config;
     const next = { ...state };
     if (config.dynamic_fee_initialized) {
@@ -111,7 +112,8 @@ export function quote_dbc_exact_in(state: DBCQuoteState, amount: bigint, op: 'bu
                     : 0n;
         }
     }
-    const fee_numerator = dbc_fee_numerator(state, amount, buy);
+    const buy = op === 'buy';
+    const fee_numerator = dbc_fee_numerator(state, amount, op);
     const fee_on_input = buy && config.collect_fee_mode === 0;
     const fee = (value: bigint) => ceil_div(value * fee_numerator, FEE_DENOMINATOR);
     const input_amount = fee_on_input ? amount - fee(amount) : amount;

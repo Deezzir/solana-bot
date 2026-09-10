@@ -1,5 +1,5 @@
 import { parentPort, workerData } from 'worker_threads';
-import { Keypair, LAMPORTS_PER_SOL, Connection, PublicKey, TokenAmount } from '@solana/web3.js';
+import { Keypair, Connection, TokenAmount } from '@solana/web3.js';
 import * as common from './common';
 import * as snipe from './snipe_common';
 import * as trade from './trade_common';
@@ -13,7 +13,7 @@ import {
     SNIPE_RETRY_INTERVAL_MS,
     TransactionRelay
 } from '../constants';
-import { get_trader } from './get_trader';
+import { get_executor } from './get_trader';
 import { configure_rpc_rate_limiter, rpc_connection_config } from './rate_limit';
 
 type State =
@@ -24,15 +24,16 @@ type State =
 
 const CONFIG: snipe.WorkerConfig = workerData as snipe.WorkerConfig;
 const KEYPAIR: Keypair = await Keypair.fromSecretKey(new Uint8Array(CONFIG.secret));
+const EXECUTOR = get_executor(false, CONFIG.program);
 global.PROGRAM = CONFIG.program;
 global.TRANSACTION_RELAY = CONFIG.transaction_relay;
 global.TRANSACTION_VERSION = CONFIG.transaction_version;
 global.PRIORITY_FEE = undefined;
-const TRADER: trade.IProgramTrader = get_trader(CONFIG.program);
 configure_rpc_rate_limiter(CONFIG.rpc_rate_limit_state);
 global.CONNECTION = new Connection(HELIUS_RPC, rpc_connection_config({ commitment: COMMITMENT }));
 
 var MINT_METADATA: trade.IMintMeta;
+var USD_MARKET_CAP = 0;
 var CANCEL_SLEEP: (() => void) | null = null;
 var MESSAGE_BUFFER: string[] = [];
 var STATE: State = { mode: 'idle', buys: 0, sells: 0 };
@@ -137,7 +138,7 @@ const buy = async () => {
         let transactions = [];
         let count = SNIPE_TRADE_BATCH;
         while (count > 0 && STATE.mode === 'buy') {
-            const buy_promise = TRADER.buy_token(
+            const buy_promise = EXECUTOR.buy_token(
                 amount,
                 KEYPAIR,
                 MINT_METADATA,
@@ -224,7 +225,7 @@ const sell = async () => {
         let transactions = [];
         let sell_retry = SNIPE_TRADE_BATCH;
         while (sell_retry > 0 && STATE.mode === 'sell') {
-            const sell_promise = TRADER.sell_token(
+            const sell_promise = EXECUTOR.sell_token(
                 balance,
                 KEYPAIR,
                 MINT_METADATA,
@@ -248,7 +249,7 @@ const sell = async () => {
 
 const control_loop = async () =>
     new Promise<void>(async (resolve) => {
-        const should_sell = () => STATE.mode === 'sell' || MINT_METADATA.token_usd_mc >= CONFIG.mcap_threshold;
+        const should_sell = () => STATE.mode === 'sell' || USD_MARKET_CAP >= CONFIG.mcap_threshold;
         const should_buy = () =>
             STATE.mode === 'buy' &&
             (STATE.buys === 0 || !CONFIG.is_buy_once) &&
@@ -307,10 +308,10 @@ const control_loop = async () =>
     });
 
 async function main() {
-    const balance = (await trade.get_balance(KEYPAIR.publicKey, COMMITMENT)) / LAMPORTS_PER_SOL;
+    const balance = trade.lamports_to_sol(await trade.get_balance(KEYPAIR.publicKey, COMMITMENT));
     CONFIG.spend_limit = Math.min(balance, CONFIG.spend_limit) - SNIPE_MIN_BUY;
 
-    await trade.get_ltas(TRADER.get_lta_addresses());
+    await trade.get_ltas(EXECUTOR.trader.get_lta_addresses());
     await warm_sender_connection();
     SENDER_WARM_TIMER = setInterval(() => void warm_sender_connection(), 5000);
     SENDER_WARM_TIMER.unref();
@@ -331,11 +332,9 @@ async function main() {
                 if (STATE.mode !== 'buy') {
                     parentPort?.postMessage(`[Worker ${CONFIG.id}] Received buy command from the main thread`);
                     if (CANCEL_SLEEP !== null) CANCEL_SLEEP();
-                    const { mint, mint_meta, misc, sol_price, priority_fee } = msg.data;
+                    const { mint_meta, priority_fee } = msg.data;
                     global.PRIORITY_FEE = priority_fee;
-                    if (mint_meta !== undefined) MINT_METADATA = TRADER.deserialize_mint_meta(mint_meta);
-                    else if (mint !== undefined)
-                        MINT_METADATA = await TRADER.default_mint_meta(new PublicKey(mint), sol_price, misc);
+                    if (mint_meta !== undefined) MINT_METADATA = EXECUTOR.trader.deserialize_mint_meta(mint_meta);
                     STATE = {
                         mode: 'buy',
                         buy_amount,
@@ -361,7 +360,10 @@ async function main() {
                 }
                 break;
             case 'mint':
-                MINT_METADATA = TRADER.deserialize_mint_meta(msg.data);
+                MINT_METADATA = EXECUTOR.trader.deserialize_mint_meta(msg.data);
+                break;
+            case 'market_cap':
+                USD_MARKET_CAP = msg.data;
                 break;
             case 'priority_fee':
                 global.PRIORITY_FEE = msg.data;

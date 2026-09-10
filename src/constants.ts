@@ -21,7 +21,7 @@ export const COMMITMENT = 'confirmed';
 
 // COMMANDS CONSTANTS
 export const COMMANDS_INTERVAL_MS = 50;
-export const COMMANDS_SELL_SLIPPAGE = 0.1;
+export const COMMANDS_SELL_SLIPPAGE = 0.05;
 export const COMMANDS_BUY_SLIPPAGE = 0.05;
 
 // WALLET CONSTANTS
@@ -104,6 +104,7 @@ export const SENDER_MAX_MIN_TIP: number = 1000000 / LAMPORTS_PER_SOL;
 export const SENDER_MAX_BUNDLE_SIZE = 4;
 export const SENDER_MAX_MIN_PRIORITY_FEE = 5000;
 export const MAX_COMPUTE_UNIT_LIMIT = 1_400_000;
+export const EXECUTOR_JUPITER_COMPUTE_UNIT_ALLOWANCE = 300_000;
 export const MAX_TRANSACTION_SIGNATURES = 12;
 export const MAX_TRANSACTION_ACCOUNTS = 64;
 export const MAX_TRANSACTION_INSTRUCTIONS = 64;
@@ -111,7 +112,7 @@ export const MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES = 64 * 1024 * 1024;
 export const LOADED_ACCOUNTS_DATA_PAGE_SIZE_BYTES = 32 * 1024;
 export const COMPUTE_UNIT_BUFFER = 1.1;
 export const PROGRAM_COMPUTE_UNIT_LIMITS: Partial<Record<Program, number>> = {
-    pump: 250_000,
+    pump: 350_000,
     raydium: 300_000,
     bonk: 300_000,
     meteora: 400_000
@@ -223,6 +224,7 @@ export const PUMP_FEE_PERCENTAGE = 0.0125; // 1.25%
 export const PUMP_SWAP_PERCENTAGE = 0.0125; // 1.25%
 export const PUMP_LTA_ACCOUNT_EXTRA = new PublicKey('FNbKyKh4LjC1kSmhMahZ2gJPwt1anynVUdaCNmmuxzac');
 export const PUMP_LTA_ACCOUNT = new PublicKey('J5edBug5X1G1PoUgtnBjNUpcrhpeJiRKy7TWqs5Yvuk3');
+export const PUMP_QUOTE_LTA_ACCOUNT = new PublicKey('Hyif6eWb8x88RVrvjPfabsgRYnwkVnyByEXTVTXbUcyP');
 export const PUMP_PROGRAM_ID = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
 export const PUMP_FEE_PROGRAM_ID = new PublicKey('pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ');
 export const PUMP_FEE_CONFIG = new PublicKey('8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt');
@@ -271,6 +273,8 @@ export const PUMP_CLAIM_CASHBACK_DISCRIMINATOR = new Uint8Array([37, 58, 35, 126
 export const PUMP_CLAIM_TOKEN_INCENTIVES_DISCRIMINATOR = new Uint8Array([16, 4, 71, 28, 204, 1, 40, 27]);
 export const PUMP_STATE_HEADER = new Uint8Array([23, 183, 248, 55, 96, 216, 172, 96]);
 export const PUMP_AMM_STATE_HEADER = new Uint8Array([241, 154, 109, 4, 17, 177, 109, 188]);
+export const PUMP_GLOBAL_HEADER = new Uint8Array([167, 232, 232, 177, 200, 108, 114, 127]);
+export const PUMP_QUOTE_CONTROL_HEADER = new Uint8Array([56, 244, 35, 238, 193, 213, 162, 201]);
 export const PUMP_BONDING_SEED = new Uint8Array([98, 111, 110, 100, 105, 110, 103, 45, 99, 117, 114, 118, 101]);
 export const PUMP_CREATOR_VAULT_SEED = new Uint8Array([99, 114, 101, 97, 116, 111, 114, 45, 118, 97, 117, 108, 116]);
 export const PUMP_USER_VOLUME_ACCUMULATOR_SEED = new Uint8Array([
