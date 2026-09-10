@@ -1,6 +1,6 @@
 {
     "name": "solana-bot",
-    "version": "1.0.4",
+    "version": "1.0.5",
     "description": "Solana bot",
     "main": "./src/bot.ts",
     "bin": {
@@ -41,7 +41,7 @@
     },
     "dependencies": {
         "@solana-program/token": "^0.16.1",
-        "@solana-program/token-2022": "^0.16.1",
+        "@solana-program/token-2022": "^0.17.0",
         "@solana/web3.js": "3.0.0-rc.3",
         "bs58": "^6.0.0",
         "commander": "^15.0.0",
