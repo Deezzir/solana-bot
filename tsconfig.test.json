@@ -1,0 +1,10 @@
+{
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        "rootDir": ".",
+        "types": ["bun", "node"],
+        "noUnusedLocals": false,
+        "noUnusedParameters": false
+    },
+    "include": ["src/global.d.ts", "tests/**/*.ts"]
+}

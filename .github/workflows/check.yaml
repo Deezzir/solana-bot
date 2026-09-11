@@ -54,7 +54,11 @@ jobs:
               run: bun install --frozen-lockfile
             - name: Check formatting
               run: bun run lint
+            - name: Check test formatting
+              run: bun run lint:test
             - name: Check types
               run: bun run typecheck
+            - name: Check test types
+              run: bun run typecheck:test
             - name: Run tests
               run: bun run test
