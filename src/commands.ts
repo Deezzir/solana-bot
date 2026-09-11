@@ -20,7 +20,8 @@ import * as volume from './subcommands/volume';
 import * as token_drop from './subcommands/token_drop';
 import * as pnl from './subcommands/pnl';
 import * as mass_trade from './subcommands/mass_trade';
-import { get_trader, get_sniper, get_executor } from './common/get_trader';
+import { get_program_trader, get_sniper, create_executor } from './common/get_trader';
+import { Executor } from './common/executor';
 import { SubscriberType } from './common/subscriber';
 import { get_quote_name_by_mint } from './quote';
 
@@ -159,13 +160,13 @@ export async function claim_fees(
         [common.Program.Pump, common.Program.Meteora, common.Program.Raydium, common.Program.Bonk],
         'Reward claims'
     );
-    const trader = get_trader();
+    const executor = create_executor();
     let total_sol_raw = 0n;
     let failed = 0;
     for (const wallet of wallets) {
         try {
             const prefix = `${wallet.keypair.publicKey.toString().padEnd(44, ' ')} ${wallet.name} (${wallet.id})`;
-            const assets = await trader.get_trader_rewards(wallet.keypair);
+            const assets = await executor.get_trader_rewards(wallet.keypair);
             const log_assets = (status: 'available' | 'claimed') => {
                 for (const asset of assets) {
                     const is_sol = asset.mint.equals(SOL_MINT);
@@ -180,7 +181,7 @@ export async function claim_fees(
                 continue;
             }
             if (assets.length === 0) continue;
-            const signature = await trader.claim_trader_rewards(wallet.keypair, assets, priority);
+            const signature = await executor.claim_trader_rewards(wallet.keypair, assets, priority);
             log_assets('claimed');
             common.log(common.green(`${prefix}: signature ${signature}`));
         } catch (error) {
@@ -196,10 +197,10 @@ export async function claim_fees(
 }
 
 export async function create_token_metadata(json: common.IPFSMetadata, image_path: string) {
-    const trader = get_trader();
+    const executor = create_executor();
     common.log(common.yellow('Uploading metadata...'));
     common.log(JSON.stringify(json, null, 2));
-    const cid = await trader.create_token_metadata(json, image_path);
+    const cid = await executor.create_token_metadata(json, image_path);
     common.log(`CID: ${common.bold(cid)}`);
 }
 
@@ -223,7 +224,7 @@ export async function create_token(
     common.log('Creating a token...\n');
     dev_buy = dev_buy || 0;
 
-    const executor = get_executor(true);
+    const executor = create_executor({ enable_funding: true });
     const balance = trade.lamports_to_sol(await trade.get_balance(dev.keypair.publicKey, COMMITMENT));
     const meta = await common.fetch_ipfs_json(meta_cid);
 
@@ -268,7 +269,7 @@ export async function promote(times: number, meta_cid: string, dev: Keypair): Pr
     require_program([common.Program.Pump, common.Program.Bonk], 'Token promotion');
     common.log(common.yellow(`Creating ${times} tokens with CID ${meta_cid}...\n`));
 
-    const trader = get_trader();
+    const trader = get_program_trader();
     const balance = trade.lamports_to_sol(await trade.get_balance(dev.publicKey, COMMITMENT));
     const meta = await common.fetch_ipfs_json(meta_cid);
 
@@ -568,8 +569,8 @@ export async function sell_token_once(
 ): Promise<void> {
     slippage = slippage || COMMANDS_SELL_SLIPPAGE;
     percent ??= 1.0;
-    const executor = get_executor(true);
-    const mint_meta = await executor.trader.get_mint_meta(mint);
+    const executor = create_executor({ enable_funding: true });
+    const mint_meta = await executor.get_mint_meta(mint);
     if (!mint_meta) throw new Error(`Mint metadata not found for program: ${global.PROGRAM}.`);
 
     common.log(common.yellow(`Selling the token by the mint ${mint.toString()}...`));
@@ -609,8 +610,8 @@ export async function buy_token_once(
     priority: PriorityLevel = PriorityLevel.DEFAULT
 ): Promise<void> {
     slippage = slippage || COMMANDS_BUY_SLIPPAGE;
-    const executor = get_executor(true);
-    const mint_meta = await executor.trader.get_mint_meta(mint);
+    const executor = create_executor({ enable_funding: true });
+    const mint_meta = await executor.get_mint_meta(mint);
     if (!mint_meta) throw new Error(`Mint metadata not found for program: ${global.PROGRAM}.`);
 
     common.log(common.yellow(`Buying ${amount} SOL of the token with mint ${mint.toString()}...`));
@@ -650,10 +651,10 @@ export async function warmup(
         [common.Program.Pump, common.Program.Bonk, common.Program.Raydium, common.Program.Meteora],
         'Warmup'
     );
-    const get_random_mints = async (trader: trade.IProgramTrader, count: number) => {
+    const get_random_mints = async (executor: Executor, count: number) => {
         const mints = new Map<string, trade.IMintMeta>();
         for (let attempt = 0; attempt < TRADE_RETRIES && mints.size < count; attempt++) {
-            for (const mint of await trader.get_random_mints(count)) mints.set(mint.token_mint, mint);
+            for (const mint of await executor.get_random_mints(count)) mints.set(mint.token_mint, mint);
             if (mints.size < count && attempt + 1 < TRADE_RETRIES) await common.sleep(2000);
         }
         if (!mints.size) throw new Error('No tradable mints found after repeated discovery attempts.');
@@ -674,12 +675,12 @@ export async function warmup(
 
     const token_counts = Array.from({ length: wallets.length }, () => Math.floor(Math.random() * (max - min) + min));
     if (token_counts.length !== wallets.length) throw new Error();
-    const executor = get_executor(true);
+    const executor = create_executor({ enable_funding: true });
 
     for (const [i, wallet] of wallets.entries()) {
         const buyer = wallet.keypair;
 
-        const mints = await get_random_mints(executor.trader, token_counts[i]);
+        const mints = await get_random_mints(executor, token_counts[i]);
         common.log(
             common.yellow(
                 `\nWarming up ${buyer.publicKey.toString().padEnd(44, ' ')} ${wallet.name} (${wallet.id}) with ${token_counts[i]} tokens...`
@@ -829,12 +830,12 @@ export async function buy_token(
     if ((min && !max) || (!min && max)) throw new Error('Both min and max should be provided.');
     if (max && min && max < min) throw new Error('Invalid min and max values.');
 
-    const executor = get_executor(true);
+    const executor = create_executor({ enable_funding: true });
     const entries: [common.Wallet, number][] = wallets.map((w) => [
         w,
         amount || common.uniform_random(min ?? 0, max ?? 0)
     ]);
-    let mint_meta = await executor.trader.get_mint_meta(mint);
+    let mint_meta = await executor.get_mint_meta(mint);
     if (!mint_meta) throw new Error(`Mint metadata not found for program: ${global.PROGRAM}.`);
     common.log(common.yellow(`Buying the tokens by the mint ${mint.toString()}...`));
 
@@ -859,8 +860,8 @@ export async function sell_token(
     if (protection_tip && bundle_tip) throw new Error('Protection tip and bundle tip cannot be used together.');
     if (mev_protect && bundle_tip) throw new Error('MEV protection and bundle tip cannot be used together.');
     if (wallets.length === 0) throw new Error('No wallets available.');
-    const executor = get_executor(true);
-    let mint_meta = await executor.trader.get_mint_meta(mint);
+    const executor = create_executor({ enable_funding: true });
+    let mint_meta = await executor.get_mint_meta(mint);
     if (!mint_meta) throw new Error(`Mint metadata not found for program: ${global.PROGRAM}.`);
 
     common.log(common.yellow(`Selling all the tokens from the accounts by the mint ${mint.toString()}...`));
@@ -1166,7 +1167,7 @@ export async function start_volume(
     json_config?: object,
     wallets: common.Wallet[] = []
 ): Promise<void> {
-    const executor = get_executor(true);
+    const executor = create_executor({ enable_funding: true });
     const volume_config = await volume.setup_config(json_config);
     const volume_type_name = volume.VolumeType[volume_config.type];
     const natural = volume_config.type === volume.VolumeType.Natural;
@@ -1175,7 +1176,7 @@ export async function start_volume(
     if (simulate) {
         const sol_price = await common.fetch_sol_price();
         common.log(common.yellow(`Simulating the ${volume_type_name} Volume Bot...\n`));
-        const results = await volume.simulate(sol_price, volume_config, executor.trader, wallets);
+        const results = await volume.simulate(sol_price, volume_config, executor, wallets);
 
         common.log(common.bold('Simulation Results:'));
         common.log(`SOL price: $${common.format_currency(sol_price)}`);

@@ -36,7 +36,7 @@ export async function bundle_buy(
                     mint_meta,
                     slippage
                 );
-                mint_meta = executor.trader.update_mint_meta_reserves(mint_meta, funding.quote_amount, 'buy');
+                mint_meta = executor.update_mint_meta_reserves(mint_meta, funding.quote_amount, 'buy');
                 instructions.push(buy_instructions);
                 signers.push([buyer]);
                 for (const lta of buy_ltas || []) {
@@ -58,7 +58,7 @@ export async function bundle_buy(
                 })
         );
         await common.sleep(trade.get_bundle_interval_ms());
-        mint_meta = await executor.trader.update_mint_meta(mint_meta);
+        mint_meta = await executor.update_mint_meta(mint_meta);
     }
     await Promise.allSettled(bundles);
     if (failed > 0) throw new Error(`${failed} bundle buy operation(s) failed.`);
@@ -116,7 +116,7 @@ export async function bundle_sell(
                     mint_meta,
                     slippage
                 );
-                mint_meta = executor.trader.update_mint_meta_reserves(mint_meta, token_amount, 'sell');
+                mint_meta = executor.update_mint_meta_reserves(mint_meta, token_amount, 'sell');
                 instructions.push(sell_instructions);
                 signers.push([seller]);
                 for (const lta of sell_ltas || []) {
@@ -138,7 +138,7 @@ export async function bundle_sell(
                 })
         );
         await common.sleep(trade.get_bundle_interval_ms());
-        mint_meta = await executor.trader.update_mint_meta(mint_meta);
+        mint_meta = await executor.update_mint_meta(mint_meta);
     }
     await Promise.allSettled(bundles);
     if (failed > 0) throw new Error(`${failed} bundle sell operation(s) failed.`);
@@ -180,7 +180,7 @@ export async function seq_buy(
                 const message = error instanceof Error ? error.message : String(error);
                 common.error(common.red(`Transaction failed for ${wallet.name} (${wallet.id}): ${message}`));
             }
-            mint_meta = await executor.trader.update_mint_meta(mint_meta);
+            mint_meta = await executor.update_mint_meta(mint_meta);
         } catch (error) {
             failed++;
             common.error(common.red(`Failed to buy the token for ${wallet.name}: ${error}`));
@@ -231,7 +231,7 @@ export async function seq_sell(
                 const message = error instanceof Error ? error.message : String(error);
                 common.error(common.red(`Transaction failed for ${wallet.name} (${wallet.id}): ${message}`));
             }
-            mint_meta = await executor.trader.update_mint_meta(mint_meta);
+            mint_meta = await executor.update_mint_meta(mint_meta);
         } catch (error) {
             failed++;
             common.error(common.red(`Failed to sell the token for ${wallet.name}: ${error}`));

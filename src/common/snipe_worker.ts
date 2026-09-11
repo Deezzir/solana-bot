@@ -13,7 +13,7 @@ import {
     SNIPE_RETRY_INTERVAL_MS,
     TransactionRelay
 } from '../constants';
-import { get_executor } from './get_trader';
+import { create_executor } from './get_trader';
 import { configure_rpc_rate_limiter, rpc_connection_config } from './rate_limit';
 
 type State =
@@ -24,7 +24,7 @@ type State =
 
 const CONFIG: snipe.WorkerConfig = workerData as snipe.WorkerConfig;
 const KEYPAIR: Keypair = await Keypair.fromSecretKey(new Uint8Array(CONFIG.secret));
-const EXECUTOR = get_executor(false, CONFIG.program);
+const EXECUTOR = create_executor({ enable_funding: false, program: CONFIG.program });
 global.PROGRAM = CONFIG.program;
 global.TRANSACTION_RELAY = CONFIG.transaction_relay;
 global.TRANSACTION_VERSION = CONFIG.transaction_version;
@@ -311,7 +311,7 @@ async function main() {
     const balance = trade.lamports_to_sol(await trade.get_balance(KEYPAIR.publicKey, COMMITMENT));
     CONFIG.spend_limit = Math.min(balance, CONFIG.spend_limit) - SNIPE_MIN_BUY;
 
-    await trade.get_ltas(EXECUTOR.trader.get_lta_addresses());
+    await trade.get_ltas(EXECUTOR.get_lta_addresses());
     await warm_sender_connection();
     SENDER_WARM_TIMER = setInterval(() => void warm_sender_connection(), 5000);
     SENDER_WARM_TIMER.unref();
@@ -334,7 +334,7 @@ async function main() {
                     if (CANCEL_SLEEP !== null) CANCEL_SLEEP();
                     const { mint_meta, priority_fee } = msg.data;
                     global.PRIORITY_FEE = priority_fee;
-                    if (mint_meta !== undefined) MINT_METADATA = EXECUTOR.trader.deserialize_mint_meta(mint_meta);
+                    if (mint_meta !== undefined) MINT_METADATA = EXECUTOR.deserialize_mint_meta(mint_meta);
                     STATE = {
                         mode: 'buy',
                         buy_amount,
@@ -360,7 +360,7 @@ async function main() {
                 }
                 break;
             case 'mint':
-                MINT_METADATA = EXECUTOR.trader.deserialize_mint_meta(msg.data);
+                MINT_METADATA = EXECUTOR.deserialize_mint_meta(msg.data);
                 break;
             case 'market_cap':
                 USD_MARKET_CAP = msg.data;

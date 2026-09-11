@@ -10,11 +10,16 @@ import { SubscriberType } from './subscriber';
 import { PROGRAM_COMPUTE_UNIT_LIMITS } from '../constants';
 import { Executor } from './executor';
 
+type ExecutorOptions = {
+    enable_funding?: boolean;
+    program?: Program;
+};
+
 export function get_program_compute_unit_limit(program: Program = global.PROGRAM): number | undefined {
     return PROGRAM_COMPUTE_UNIT_LIMITS[program];
 }
 
-export function get_trader(program: Program = global.PROGRAM): IProgramTrader {
+export function get_program_trader(program: Program = global.PROGRAM): IProgramTrader {
     switch (program) {
         case Program.Pump: {
             return PumpTrader;
@@ -37,13 +42,13 @@ export function get_trader(program: Program = global.PROGRAM): IProgramTrader {
     }
 }
 
-export function get_executor(enable_funding: boolean, program: Program = global.PROGRAM): Executor {
-    const trader = get_trader(program);
+export function create_executor({ enable_funding = false, program = global.PROGRAM }: ExecutorOptions = {}): Executor {
+    const trader = get_program_trader(program);
     return new Executor(trader, enable_funding);
 }
 
 export function get_sniper(subscriber_type: SubscriberType, program: Program = global.PROGRAM): ISniper {
-    const trader = get_trader(program);
+    const trader = get_program_trader(program);
     switch (program) {
         case Program.Pump: {
             return new PumpRunner(trader, subscriber_type);

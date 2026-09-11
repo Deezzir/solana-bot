@@ -23,7 +23,6 @@ import {
     SENDER_MAX_MIN_PRIORITY_FEE,
     MAX_COMPUTE_UNIT_LIMIT,
     MAX_TRANSACTION_SIGNATURES,
-    PROGRAM_COMPUTE_UNIT_LIMITS,
     COMPUTE_UNIT_BUFFER,
     TransactionRelay,
     COMMITMENT
@@ -73,7 +72,7 @@ export async function execute_fast(
     const target_file = common.setup_rescue_file();
     if (!target_file) throw new Error('Failed to create the volume rescue file.');
     common.log(`Recovery wallets: ${target_file}`);
-    const mint_meta = await executor.trader.get_mint_meta(volume_config.mint);
+    const mint_meta = await executor.get_mint_meta(volume_config.mint);
     if (!mint_meta) throw new Error('Failed to fetch mint metadata.');
     if (
         calc_buy_amount(
@@ -81,7 +80,7 @@ export async function execute_fast(
             VOLUME_TRADE_SLIPPAGE,
             mint_meta.platform_fee,
             volume_config.bundle_tip,
-            Math.min(volume_config.wallet_cnt, get_trade_wallet_limit(executor.trader))
+            Math.min(volume_config.wallet_cnt, get_trade_wallet_limit(executor))
         ) <= 0n
     )
         throw new Error('Minimum wallet funding is insufficient for the trade, fees, tip and account rent.');
@@ -117,7 +116,7 @@ export async function execute_fast(
             await buy_sell_bundles(
                 keypairs_with_amounts,
                 executor,
-                await executor.trader.update_mint_meta(mint_meta),
+                await executor.update_mint_meta(mint_meta),
                 volume_config.bundle_tip,
                 lta
             );
@@ -159,7 +158,7 @@ export async function execute_natural(
         buy_at?: number;
         position?: Position;
     }[] = (await get_natural_wallets(wallets, config)).map(({ wallet }) => ({ wallet, last_used: 0 }));
-    let mint_meta = await executor.trader.get_mint_meta(config.mint);
+    let mint_meta = await executor.get_mint_meta(config.mint);
     if (!mint_meta) throw new Error('Failed to fetch mint metadata.');
     const interval = config.delay * 1000;
     const hold_min = config.hold_min ?? VOLUME_NATURAL_DEFAULTS.hold_min;
@@ -218,7 +217,7 @@ export async function execute_natural(
                 const bought = BigInt(fill.amount.amount);
                 const amount = available < bought ? available : bought;
                 if (amount > 0n) {
-                    mint_meta = await executor.trader.update_mint_meta(mint_meta);
+                    mint_meta = await executor.update_mint_meta(mint_meta);
                     const signature = await executor.sell_token(
                         { amount: amount.toString(), decimals: fill.amount.decimals, uiAmount: null },
                         seller.wallet.keypair,
@@ -256,7 +255,7 @@ export async function execute_natural(
                     continue;
                 }
                 const amount = common.uniform_random(config.min_sol_amount, trade.lamports_to_sol(maximum));
-                mint_meta = await executor.trader.update_mint_meta(mint_meta);
+                mint_meta = await executor.update_mint_meta(mint_meta);
                 const signature = await executor.buy_token(
                     amount,
                     buyer.wallet.keypair,
@@ -393,7 +392,7 @@ export async function execute_bump(
     volume_config: VolumeConfig,
     executor: Executor
 ): Promise<common.Wallet[]> {
-    let mint_meta = await executor.trader.get_mint_meta(volume_config.mint);
+    let mint_meta = await executor.get_mint_meta(volume_config.mint);
     if (!mint_meta) throw new Error('Failed to fetch mint metadata.');
     const budget = estimate_bump_cost(volume_config, mint_meta.platform_fee);
     const balance = await trade.get_balance(funder.publicKey, COMMITMENT);
@@ -420,7 +419,7 @@ export async function execute_bump(
     await fund_bundles([[wallet, budget.funding_amount]], funder, volume_config.bundle_tip);
 
     for (let exec = 0; exec < volume_config.executions; exec++) {
-        mint_meta = await executor.trader.update_mint_meta(mint_meta);
+        mint_meta = await executor.update_mint_meta(mint_meta);
         const amount = common.uniform_random(volume_config.min_sol_amount, volume_config.max_sol_amount);
         const cycle_cost = estimate_bump_cost(volume_config, mint_meta.platform_fee).cycle_cost;
         const required =
@@ -462,10 +461,10 @@ export async function execute_bump(
 export async function simulate(
     sol_price: number,
     volume_config: VolumeConfig,
-    trader: trade.IProgramTrader,
+    executor: Executor,
     wallets: common.Wallet[] = []
 ) {
-    const mint_meta = await trader.get_mint_meta(volume_config.mint);
+    const mint_meta = await executor.get_mint_meta(volume_config.mint);
     if (!mint_meta) throw new Error('Failed to fetch mint metadata.');
 
     switch (volume_config.type) {
@@ -528,7 +527,7 @@ export async function simulate(
                         VOLUME_TRADE_SLIPPAGE,
                         mint_meta.platform_fee,
                         volume_config.bundle_tip,
-                        Math.min(volume_config.wallet_cnt, get_trade_wallet_limit(trader))
+                        Math.min(volume_config.wallet_cnt, get_trade_wallet_limit(executor))
                     );
                     if (amount <= 0n)
                         throw new Error('Wallet funding is insufficient for the trade, fees, tip and account rent.');
@@ -769,7 +768,7 @@ async function buy_sell_bundles(
     if (wallets.length === 0) throw new Error('No wallets to buy/sell');
     const harvest_fees = await has_transfer_fee(mint_meta);
     const version = global.TRANSACTION_VERSION ?? 0;
-    const wallet_limit = Math.min(wallets.length, get_trade_wallet_limit(executor.trader));
+    const wallet_limit = Math.min(wallets.length, get_trade_wallet_limit(executor));
     for (const wallet_group of common.chunks(wallets, wallet_limit * trade.get_bundle_size())) {
         const entries: WalletTrade[] = [];
         const ltas = new Map<string, AddressLookupTableAccount>();
@@ -822,7 +821,7 @@ async function buy_sell_bundles(
             );
             common.log(common.green(`Trade Bundle completed, signature: ${signature}`));
             await common.sleep(trade.get_bundle_interval_ms());
-            mint_meta = await executor.trader.update_mint_meta(mint_meta);
+            mint_meta = await executor.update_mint_meta(mint_meta);
         }
     }
 }
@@ -1101,8 +1100,8 @@ function validate_json_config(json: unknown): VolumeConfig {
 
 const get_minimum_bundle_tip = trade.get_minimum_bundle_tip;
 
-function get_trade_wallet_limit(trader: trade.IProgramTrader): number {
-    const units = PROGRAM_COMPUTE_UNIT_LIMITS[trader.get_name() as common.Program];
+function get_trade_wallet_limit(executor: Executor): number {
+    const units = executor.get_compute_unit_limit();
     return units ? Math.max(1, Math.floor(MAX_COMPUTE_UNIT_LIMIT / (2 * units * COMPUTE_UNIT_BUFFER))) : 1;
 }
 

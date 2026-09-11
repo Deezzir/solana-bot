@@ -1,7 +1,5 @@
-import dotenv from 'dotenv';
 import { LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js';
 import type { Program } from './common/common';
-dotenv.config({ path: './.env', quiet: true });
 
 function get_env_variable(var_name: string, default_value: string = ''): any {
     const variable = process.env[var_name] || default_value;

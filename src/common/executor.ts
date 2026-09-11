@@ -10,6 +10,9 @@ import {
 import {
     IProgramTrader,
     IMintMeta,
+    SerializedMintMeta,
+    TradeOp,
+    ClaimableAsset,
     get_balance,
     get_token_balance,
     sol_to_lamports,
@@ -20,6 +23,7 @@ import {
     CompileTransactionError
 } from './trade_common';
 import { quote_jupiter, swap_jupiter_instructions } from '../jupiter/swap_jupiter';
+import { IPFSMetadata } from './common';
 
 type BuyFunding = {
     status: 'ready' | 'needs_funding' | 'insufficient';
@@ -30,9 +34,49 @@ type BuyFunding = {
 
 export class Executor {
     constructor(
-        public readonly trader: IProgramTrader,
+        private readonly trader: IProgramTrader,
         private enable_funding: boolean = false
     ) {}
+
+    public get_lta_addresses(): PublicKey[] {
+        return this.trader.get_lta_addresses();
+    }
+
+    public get_compute_unit_limit(): number | undefined {
+        return this.trader.get_compute_unit_limit();
+    }
+
+    public deserialize_mint_meta(data: SerializedMintMeta): IMintMeta {
+        return this.trader.deserialize_mint_meta(data);
+    }
+
+    public get_mint_meta(mint: PublicKey): Promise<IMintMeta | undefined> {
+        return this.trader.get_mint_meta(mint);
+    }
+
+    public update_mint_meta(mint_meta: IMintMeta): Promise<IMintMeta> {
+        return this.trader.update_mint_meta(mint_meta);
+    }
+
+    public update_mint_meta_reserves(mint_meta: IMintMeta, amount: TokenAmount, op: TradeOp): IMintMeta {
+        return this.trader.update_mint_meta_reserves(mint_meta, amount, op);
+    }
+
+    public get_random_mints(count: number): Promise<IMintMeta[]> {
+        return this.trader.get_random_mints(count);
+    }
+
+    public create_token_metadata(meta: IPFSMetadata, image_path: string): Promise<string> {
+        return this.trader.create_token_metadata(meta, image_path);
+    }
+
+    public get_trader_rewards(trader: Keypair): Promise<ClaimableAsset[]> {
+        return this.trader.get_trader_rewards(trader);
+    }
+
+    public claim_trader_rewards(trader: Keypair, assets: ClaimableAsset[], priority?: PriorityLevel): Promise<String> {
+        return this.trader.claim_trader_rewards(trader, assets, priority);
+    }
 
     public async buy_token(
         sol_amount: number,
