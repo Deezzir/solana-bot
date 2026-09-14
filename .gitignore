@@ -148,6 +148,7 @@ drop*
 keys_back
 .rescue
 *.json
+!tsconfig.test.json
 *.png
 Tokens
 tk
