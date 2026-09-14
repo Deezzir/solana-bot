@@ -8,15 +8,9 @@ import {
 } from '@solana/web3.js';
 import * as common from '../common/common';
 import * as trade from '../common/trade_common';
-import {
-    COMMITMENT,
-    PriorityLevel,
-    SOL_MINT,
-    TRADE_DEFAULT_TOKEN_DECIMALS,
-    TRADE_RAYDIUM_SWAP_TAX
-} from '../constants';
+import { COMMITMENT, SOL_MINT, TRADE_DEFAULT_TOKEN_DECIMALS, TRADE_RAYDIUM_SWAP_TAX } from '../constants';
 import { TOKEN_PROGRAM_ID } from '../common/token';
-import { quote_jupiter, swap_jupiter, swap_jupiter_instructions } from './swap_jupiter';
+import { quote_jupiter, swap_jupiter_instructions } from './swap_jupiter';
 
 class JupiterMintMeta implements trade.IMintMeta {
     mint!: string;
@@ -117,7 +111,7 @@ export class Trader implements trade.IProgramTrader {
         return new JupiterMintMeta().deserialize(data);
     }
 
-    public async get_trader_rewards(_trader: Keypair): Promise<trade.ClaimableAsset[]> {
+    public async get_rewards(_trader: Keypair): Promise<trade.ClaimableAsset[]> {
         return [];
     }
 
@@ -125,25 +119,11 @@ export class Trader implements trade.IProgramTrader {
         return undefined;
     }
 
-    public async claim_trader_rewards(
+    public async claim_rewards_instructions(
         _trader: Keypair,
-        _assets: trade.ClaimableAsset[],
-        _priority?: PriorityLevel
-    ): Promise<String> {
+        _assets: trade.ClaimableAsset[]
+    ): Promise<TransactionInstruction[]> {
         throw new Error('Not supported');
-    }
-
-    public async buy_token(
-        amount: TokenAmount,
-        buyer: Keypair,
-        mint_meta: JupiterMintMeta,
-        slippage: number = 0.05,
-        priority?: PriorityLevel,
-        protection_tip?: number,
-        mev_protect: boolean = false
-    ): Promise<String> {
-        const mint = new PublicKey(mint_meta.mint);
-        return await swap_jupiter(amount, buyer, SOL_MINT, mint, slippage, priority, protection_tip, mev_protect);
     }
 
     public async buy_token_instructions(
@@ -155,28 +135,6 @@ export class Trader implements trade.IProgramTrader {
         const mint = new PublicKey(mint_meta.mint);
         const quote = await quote_jupiter(amount, SOL_MINT, mint, slippage);
         return await swap_jupiter_instructions(buyer, quote);
-    }
-
-    public async sell_token(
-        token_amount: TokenAmount,
-        seller: Keypair,
-        mint_meta: JupiterMintMeta,
-        slippage: number = 0.05,
-        priority: PriorityLevel,
-        protection_tip?: number,
-        mev_protect: boolean = false
-    ): Promise<String> {
-        const mint = new PublicKey(mint_meta.mint);
-        return await swap_jupiter(
-            token_amount,
-            seller,
-            mint,
-            SOL_MINT,
-            slippage,
-            priority,
-            protection_tip,
-            mev_protect
-        );
     }
 
     public async sell_token_instructions(
@@ -229,78 +187,6 @@ export class Trader implements trade.IProgramTrader {
         return [buy_instructions, sell_instructions, [...ltas, ...(sell_ltas ?? [])]];
     }
 
-    public async buy_sell(
-        amount: TokenAmount,
-        trader: Keypair,
-        mint_meta: JupiterMintMeta,
-        slippage: number = 0.05,
-        interval_ms?: number,
-        priority?: PriorityLevel,
-        protection_tip?: number,
-        mev_protect: boolean = false
-    ): Promise<[String, String]> {
-        const [buy_instructions, sell_instructions, ltas] = await this.buy_sell_instructions(
-            amount,
-            trader,
-            mint_meta,
-            slippage
-        );
-
-        if (interval_ms && interval_ms > 0) {
-            const buy_signature = await trade.send_tx(
-                buy_instructions,
-                [trader],
-                priority,
-                protection_tip,
-                mev_protect,
-                ltas
-            );
-            await common.sleep(interval_ms);
-            const sell_signature = await trade.retry_send_tx(
-                sell_instructions,
-                [trader],
-                priority,
-                protection_tip,
-                mev_protect,
-                ltas
-            );
-            return [buy_signature, sell_signature];
-        }
-
-        const signature = await trade.send_tx(
-            [...buy_instructions, ...sell_instructions],
-            [trader],
-            priority,
-            protection_tip,
-            mev_protect,
-            ltas
-        );
-        return [signature, signature];
-    }
-
-    public async buy_sell_bundle(
-        amount: TokenAmount,
-        trader: Keypair,
-        mint_meta: JupiterMintMeta,
-        tip: number,
-        slippage: number = 0.05,
-        priority?: PriorityLevel
-    ): Promise<String> {
-        const [buy_instructions, sell_instructions, ltas] = await this.buy_sell_instructions(
-            amount,
-            trader,
-            mint_meta,
-            slippage
-        );
-        return await trade.send_bundle(
-            [buy_instructions, sell_instructions],
-            [[trader], [trader]],
-            tip,
-            priority,
-            ltas
-        );
-    }
-
     public async get_mint_meta(mint: PublicKey): Promise<JupiterMintMeta | undefined> {
         try {
             return await this.default_mint_meta(mint);
@@ -313,17 +199,13 @@ export class Trader implements trade.IProgramTrader {
         throw new Error('Not supported');
     }
 
-    public async create_token(
+    public async create_token_instructions(
         _mint: Keypair,
         _creator: Keypair,
         _token_name: string,
         _token_symbol: string,
-        _meta_cid: string,
-        _amount: TokenAmount = trade.get_sol_token_amount(0),
-        _traders?: [Keypair, TokenAmount][],
-        _bundle_tip?: number,
-        _priority?: PriorityLevel
-    ): Promise<String> {
+        _meta_cid: string
+    ): Promise<trade.CreateTokenInstructions> {
         throw new Error('Not supported');
     }
 

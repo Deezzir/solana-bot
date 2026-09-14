@@ -44,6 +44,7 @@ type BotConfig = {
     priority_level: PriorityLevel;
     protection_tip: number;
     mev_protect: boolean;
+    funding: boolean;
     token_name: string | undefined;
     token_ticker: string | undefined;
     mint: PublicKey | undefined;
@@ -66,6 +67,7 @@ export type WorkerConfig = {
     priority_level: PriorityLevel;
     transaction_relay: TransactionRelay;
     transaction_version: 0 | 1;
+    funding: boolean;
     rpc_rate_limit_state: SharedArrayBuffer;
 };
 
@@ -532,6 +534,7 @@ export abstract class SniperBase implements ISniper {
                 priority_level: this.bot_config.priority_level,
                 protection_tip: this.bot_config.protection_tip,
                 mev_protect: this.bot_config.mev_protect,
+                funding: this.bot_config.funding,
                 transaction_relay: global.TRANSACTION_RELAY,
                 transaction_version: global.TRANSACTION_VERSION,
                 rpc_rate_limit_state: this.rpc_rate_limit_state
@@ -694,7 +697,8 @@ export abstract class SniperBase implements ISniper {
             buy_slippage,
             priority_level,
             protection_tip,
-            mev_protect
+            mev_protect,
+            funding
         } = json;
         if (mint === undefined && token_name === undefined && token_ticker === undefined) {
             throw new Error('Missing mint or token name and token ticker.');
@@ -778,9 +782,13 @@ export abstract class SniperBase implements ISniper {
         if (mev_protect && (!protection_tip || protection_tip <= 0)) {
             throw new Error('mev_protect requires a protection tip to be greater than 0.');
         }
+        if (funding !== undefined && typeof funding !== 'boolean') {
+            throw new Error('funding must be a boolean');
+        }
 
         if (!('is_buy_once' in json)) json.is_buy_once = false;
         if (!('mev_protect' in json)) json.mev_protect = false;
+        if (!('funding' in json)) json.funding = false;
         if (!('trade_interval' in json)) json.trade_interval = 0;
         if (!('start_interval' in json)) json.start_interval = 0;
         if (!('mcap_threshold' in json)) json.mcap_threshold = Infinity;
@@ -920,6 +928,12 @@ export abstract class SniperBase implements ISniper {
                     name: 'is_buy_once',
                     message: 'Do you want to buy only once?',
                     default: false
+                },
+                {
+                    type: 'confirm',
+                    name: 'funding',
+                    message: 'Do you want to enable token funding?',
+                    default: false
                 }
             ]);
 
@@ -1021,6 +1035,7 @@ export abstract class SniperBase implements ISniper {
             priority_level: bot_config.priority_level.toString(),
             protection_tip: bot_config.protection_tip ? `${bot_config.protection_tip} SOL` : 'N/A',
             mev_protect: bot_config.mev_protect ? 'Yes' : 'No',
+            funding: bot_config.funding ? 'Yes' : 'No',
             spend_limit: bot_config.spend_limit === Infinity ? 'N/A' : `${bot_config.spend_limit} SOL`,
             min_buy: bot_config.min_buy ? `${bot_config.min_buy} SOL` : 'N/A',
             max_buy: bot_config.max_buy ? `${bot_config.max_buy} SOL` : 'N/A',

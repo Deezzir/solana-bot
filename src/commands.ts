@@ -20,7 +20,7 @@ import * as volume from './subcommands/volume';
 import * as token_drop from './subcommands/token_drop';
 import * as pnl from './subcommands/pnl';
 import * as mass_trade from './subcommands/mass_trade';
-import { get_program_trader, get_sniper, create_executor } from './common/get_trader';
+import { get_sniper, create_executor } from './common/get_trader';
 import { Executor } from './common/executor';
 import { SubscriberType } from './common/subscriber';
 import { get_quote_name_by_mint } from './quote';
@@ -166,7 +166,7 @@ export async function claim_fees(
     for (const wallet of wallets) {
         try {
             const prefix = `${wallet.keypair.publicKey.toString().padEnd(44, ' ')} ${wallet.name} (${wallet.id})`;
-            const assets = await executor.get_trader_rewards(wallet.keypair);
+            const assets = await executor.get_rewards(wallet.keypair);
             const log_assets = (status: 'available' | 'claimed') => {
                 for (const asset of assets) {
                     const is_sol = asset.mint.equals(SOL_MINT);
@@ -181,7 +181,7 @@ export async function claim_fees(
                 continue;
             }
             if (assets.length === 0) continue;
-            const signature = await executor.claim_trader_rewards(wallet.keypair, assets, priority);
+            const signature = await executor.claim_rewards(wallet.keypair, assets, priority);
             log_assets('claimed');
             common.log(common.green(`${prefix}: signature ${signature}`));
         } catch (error) {
@@ -224,7 +224,7 @@ export async function create_token(
     common.log('Creating a token...\n');
     dev_buy = dev_buy || 0;
 
-    const executor = create_executor({ enable_funding: true });
+    const executor = create_executor();
     const balance = trade.lamports_to_sol(await trade.get_balance(dev.keypair.publicKey, COMMITMENT));
     const meta = await common.fetch_ipfs_json(meta_cid);
 
@@ -269,7 +269,7 @@ export async function promote(times: number, meta_cid: string, dev: Keypair): Pr
     require_program([common.Program.Pump, common.Program.Bonk], 'Token promotion');
     common.log(common.yellow(`Creating ${times} tokens with CID ${meta_cid}...\n`));
 
-    const trader = get_program_trader();
+    const executor = create_executor();
     const balance = trade.lamports_to_sol(await trade.get_balance(dev.publicKey, COMMITMENT));
     const meta = await common.fetch_ipfs_json(meta_cid);
 
@@ -282,10 +282,10 @@ export async function promote(times: number, meta_cid: string, dev: Keypair): Pr
     while (times > 0) {
         const mint = await Keypair.generate();
         transactions.push(
-            trader
+            executor
                 .create_token(mint, dev, meta.name, meta.symbol, meta_cid)
-                .then(([sig, mint]) =>
-                    common.log(common.green(`Signature: ${sig.toString().padEnd(88, ' ')} | Mint: ${mint}`))
+                .then((sig) =>
+                    common.log(common.green(`Signature: ${sig.toString().padEnd(88, ' ')} | Mint: ${mint.publicKey}`))
                 )
                 .catch((error) => {
                     failed++;
@@ -569,7 +569,7 @@ export async function sell_token_once(
 ): Promise<void> {
     slippage = slippage || COMMANDS_SELL_SLIPPAGE;
     percent ??= 1.0;
-    const executor = create_executor({ enable_funding: true });
+    const executor = create_executor();
     const mint_meta = await executor.get_mint_meta(mint);
     if (!mint_meta) throw new Error(`Mint metadata not found for program: ${global.PROGRAM}.`);
 
@@ -610,7 +610,7 @@ export async function buy_token_once(
     priority: PriorityLevel = PriorityLevel.DEFAULT
 ): Promise<void> {
     slippage = slippage || COMMANDS_BUY_SLIPPAGE;
-    const executor = create_executor({ enable_funding: true });
+    const executor = create_executor();
     const mint_meta = await executor.get_mint_meta(mint);
     if (!mint_meta) throw new Error(`Mint metadata not found for program: ${global.PROGRAM}.`);
 
@@ -675,7 +675,7 @@ export async function warmup(
 
     const token_counts = Array.from({ length: wallets.length }, () => Math.floor(Math.random() * (max - min) + min));
     if (token_counts.length !== wallets.length) throw new Error();
-    const executor = create_executor({ enable_funding: true });
+    const executor = create_executor();
 
     for (const [i, wallet] of wallets.entries()) {
         const buyer = wallet.keypair;
@@ -830,7 +830,7 @@ export async function buy_token(
     if ((min && !max) || (!min && max)) throw new Error('Both min and max should be provided.');
     if (max && min && max < min) throw new Error('Invalid min and max values.');
 
-    const executor = create_executor({ enable_funding: true });
+    const executor = create_executor();
     const entries: [common.Wallet, number][] = wallets.map((w) => [
         w,
         amount || common.uniform_random(min ?? 0, max ?? 0)
@@ -860,7 +860,7 @@ export async function sell_token(
     if (protection_tip && bundle_tip) throw new Error('Protection tip and bundle tip cannot be used together.');
     if (mev_protect && bundle_tip) throw new Error('MEV protection and bundle tip cannot be used together.');
     if (wallets.length === 0) throw new Error('No wallets available.');
-    const executor = create_executor({ enable_funding: true });
+    const executor = create_executor();
     let mint_meta = await executor.get_mint_meta(mint);
     if (!mint_meta) throw new Error(`Mint metadata not found for program: ${global.PROGRAM}.`);
 
@@ -1167,7 +1167,7 @@ export async function start_volume(
     json_config?: object,
     wallets: common.Wallet[] = []
 ): Promise<void> {
-    const executor = create_executor({ enable_funding: true });
+    const executor = create_executor();
     const volume_config = await volume.setup_config(json_config);
     const volume_type_name = volume.VolumeType[volume_config.type];
     const natural = volume_config.type === volume.VolumeType.Natural;

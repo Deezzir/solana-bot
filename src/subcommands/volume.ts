@@ -56,7 +56,7 @@ type Position = {
     sell_signature?: string;
 };
 
-type WalletTrade = { keypair: Keypair; instructions: TransactionInstruction[] };
+type WalletTrade = { keypair: Keypair; instructions: TransactionInstruction[][] };
 
 export enum VolumeType {
     Fast = 'Fast',
@@ -80,7 +80,8 @@ export async function execute_fast(
             VOLUME_TRADE_SLIPPAGE,
             mint_meta.platform_fee,
             volume_config.bundle_tip,
-            Math.min(volume_config.wallet_cnt, get_trade_wallet_limit(executor))
+            trade.get_bundle_size(),
+            trade.get_bundle_size()
         ) <= 0n
     )
         throw new Error('Minimum wallet funding is insufficient for the trade, fees, tip and account rent.');
@@ -437,14 +438,23 @@ export async function execute_bump(
             mint_meta,
             VOLUME_TRADE_SLIPPAGE
         );
-        const instructions = [...buy_instructions, ...sell_instructions];
-        if (exec + 1 === volume_config.executions) instructions.push(...close_instructions);
+        const tip_instruction = trade.create_tip_instruction(wallet.publicKey, volume_config.bundle_tip);
+        const instructions = pack_wallet_trade(
+            [...buy_instructions, ...sell_instructions],
+            exec + 1 === volume_config.executions ? close_instructions : [],
+            wallet.publicKey,
+            ltas,
+            tip_instruction
+        );
         const signature = await trade.send_bundle(
-            [instructions],
-            [[wallet]],
+            instructions,
+            instructions.map(() => [wallet]),
             volume_config.bundle_tip,
             undefined,
-            ltas
+            ltas,
+            undefined,
+            global.TRANSACTION_VERSION ?? 0,
+            { tip_account: tip_instruction.keys[1].pubkey }
         );
         common.log(
             common.green(`Bump ${exec + 1}/${volume_config.executions} | ${amount.toFixed(6)} SOL | ${signature}`)
@@ -527,7 +537,8 @@ export async function simulate(
                         VOLUME_TRADE_SLIPPAGE,
                         mint_meta.platform_fee,
                         volume_config.bundle_tip,
-                        Math.min(volume_config.wallet_cnt, get_trade_wallet_limit(executor))
+                        trade.get_bundle_size(),
+                        trade.get_bundle_size()
                     );
                     if (amount <= 0n)
                         throw new Error('Wallet funding is insufficient for the trade, fees, tip and account rent.');
@@ -536,7 +547,7 @@ export async function simulate(
                 }
             }
             common.log(
-                'Cost estimates allow one trading transaction per wallet and include retained ALT rent. Variable priority fees, price impact and other setup rent are excluded.\n'
+                'Cost estimates reserve a full trading bundle per wallet and include retained ALT rent. Variable priority fees, price impact and other setup rent are excluded.\n'
             );
             const total_fee_sol = trade.lamports_to_sol(total_fee);
             const total_volume_sol = trade.lamports_to_sol(total_volume);
@@ -560,7 +571,10 @@ function estimate_bump_cost(config: VolumeConfig, platform_fee: number) {
     const priority_fee = minimum_priority_fee();
     const amount = trade.sol_to_lamports(config.max_sol_amount);
     const tip = trade.sol_to_lamports(config.bundle_tip);
-    const cycle_cost = tip + signature_fee + priority_fee + calc_platform_fee(amount, platform_fee) * 2n;
+    const cycle_cost =
+        tip +
+        BigInt(trade.get_bundle_size()) * (signature_fee + priority_fee) +
+        calc_platform_fee(amount, platform_fee) * 2n;
     const fund_collect_cost = tip * 2n + signature_fee * 3n + priority_fee * 2n;
     const funding_amount =
         trade.apply_slippage_up(amount, VOLUME_TRADE_SLIPPAGE) +
@@ -587,7 +601,7 @@ async function validate_funder(funder: Keypair, volume_config: VolumeConfig): Pr
 
 async function estimate_fast_execution_cost(config: VolumeConfig): Promise<bigint> {
     const funding_txs = Math.ceil(config.wallet_cnt / VOLUME_MAX_WALLETS_PER_FUND_TX);
-    const trading_txs = config.wallet_cnt;
+    const trading_txs = config.wallet_cnt * trade.get_bundle_size();
     const collection_txs =
         (global.TRANSACTION_VERSION ?? 0) === 1
             ? Math.ceil(config.wallet_cnt / (MAX_TRANSACTION_SIGNATURES - 1))
@@ -596,7 +610,7 @@ async function estimate_fast_execution_cost(config: VolumeConfig): Promise<bigin
         (total, count) => total + Math.ceil(count / trade.get_bundle_size()),
         0
     );
-    let signatures = funding_txs + config.wallet_cnt * 2 + collection_txs;
+    let signatures = funding_txs + trading_txs + config.wallet_cnt + collection_txs;
     let transactions = funding_txs + trading_txs + collection_txs;
     let rent = 0n;
     if ((global.TRANSACTION_VERSION ?? 0) === 0) {
@@ -629,13 +643,14 @@ function calc_buy_amount(
     slippage: number,
     platform_fee: number,
     bundle_tip: number = 0,
-    signature_count: number = 1
+    signature_count: number = 1,
+    transaction_count: number = 1
 ): bigint {
     return (
         (amount * 10000n) / (10000n + BigInt(Math.floor(slippage * 10000))) -
         calc_platform_fee(amount, platform_fee) * 2n -
         BigInt(signature_count) * BigInt(VOLUME_SIGNATURE_FEE_LAMPORTS) -
-        minimum_priority_fee() -
+        BigInt(transaction_count) * minimum_priority_fee() -
         trade.sol_to_lamports(bundle_tip) -
         trade.sol_to_lamports(VOLUME_WALLET_RENT_RESERVE_SOL)
     );
@@ -769,17 +784,20 @@ async function buy_sell_bundles(
     const harvest_fees = await has_transfer_fee(mint_meta);
     const version = global.TRANSACTION_VERSION ?? 0;
     const wallet_limit = Math.min(wallets.length, get_trade_wallet_limit(executor));
+    const bundle_size = trade.get_bundle_size();
     for (const wallet_group of common.chunks(wallets, wallet_limit * trade.get_bundle_size())) {
         const entries: WalletTrade[] = [];
         const ltas = new Map<string, AddressLookupTableAccount>();
         if (lta) ltas.set(lta.key.toBase58(), lta);
+        const tip_account = trade.create_tip_instruction(wallet_group[0][0].publicKey, bundle_tip).keys[1].pubkey;
         for (const [keypair, amount] of wallet_group) {
             const adjusted_amount = calc_buy_amount(
                 amount,
                 VOLUME_TRADE_SLIPPAGE,
                 mint_meta.platform_fee,
                 bundle_tip,
-                wallet_limit
+                bundle_size,
+                bundle_size
             );
             if (adjusted_amount <= 0n)
                 throw new Error('Wallet funding is insufficient for the trade, fees, tip and account rent.');
@@ -789,29 +807,33 @@ async function buy_sell_bundles(
                 mint_meta,
                 VOLUME_TRADE_SLIPPAGE
             );
-            const instructions = [
-                ...buy_instrs,
-                ...sell_instrs,
-                ...(await get_token_close_instructions(keypair.publicKey, mint_meta, harvest_fees))
-            ];
             for (const table of trade_ltas ?? []) ltas.set(table.key.toBase58(), table);
+            const instructions = pack_wallet_trade(
+                [...buy_instrs, ...sell_instrs],
+                await get_token_close_instructions(keypair.publicKey, mint_meta, harvest_fees),
+                keypair.publicKey,
+                [...ltas.values()],
+                trade.create_tip_instruction(keypair.publicKey, bundle_tip, undefined, tip_account)
+            );
             entries.push({ keypair, instructions });
         }
         const tables = [...ltas.values()];
-        const tip_account = trade.create_tip_instruction(entries[0].keypair.publicKey, bundle_tip).keys[1].pubkey;
-        const transactions = trade.pack_tx_groups(
-            entries,
-            (entry) => entry.instructions,
-            (entry) => entry.keypair.publicKey,
-            version,
-            tables,
-            (payer) => [trade.create_tip_instruction(payer, bundle_tip, undefined, tip_account)],
-            wallet_limit
-        );
-        for (const bundle of common.chunks(transactions, trade.get_bundle_size())) {
+        while (entries.length > 0) {
+            const instructions: TransactionInstruction[][] = [];
+            const signers: Keypair[][] = [];
+            for (let wallet_index = 0; wallet_index < entries.length;) {
+                const entry = entries[wallet_index];
+                if (instructions.length + entry.instructions.length > bundle_size) {
+                    wallet_index++;
+                    continue;
+                }
+                instructions.push(...entry.instructions);
+                signers.push(...entry.instructions.map(() => [entry.keypair]));
+                entries.splice(wallet_index, 1);
+            }
             const signature = await trade.send_bundle(
-                bundle.map((entries) => entries.flatMap((entry) => entry.instructions)),
-                bundle.map((entries) => entries.map((entry) => entry.keypair)),
+                instructions,
+                signers,
                 bundle_tip,
                 undefined,
                 tables,
@@ -824,6 +846,30 @@ async function buy_sell_bundles(
             mint_meta = await executor.update_mint_meta(mint_meta);
         }
     }
+}
+
+function pack_wallet_trade(
+    groups: TransactionInstruction[][],
+    cleanup: TransactionInstruction[],
+    payer: PublicKey,
+    ltas: AddressLookupTableAccount[] | undefined,
+    tip: TransactionInstruction
+): TransactionInstruction[][] {
+    const version = global.TRANSACTION_VERSION ?? 0;
+    const pack = (items: TransactionInstruction[][], max_items = Infinity) =>
+        trade
+            .pack_tx_groups(items, (instructions) => instructions, payer, version, ltas, [tip], max_items)
+            .map((batch) => batch.flat());
+    const instructions =
+        groups.length > 2
+            ? [
+                  ...pack(groups.slice(0, -1), 1),
+                  ...pack([groups[groups.length - 1], ...(cleanup.length ? [cleanup] : [])])
+              ]
+            : pack([...groups, ...(cleanup.length ? [cleanup] : [])]);
+    if (instructions.length > trade.get_bundle_size())
+        throw new Error('Wallet buy/sell cycle does not fit in one atomic bundle.');
+    return instructions;
 }
 
 async function has_transfer_fee(mint_meta: trade.IMintMeta): Promise<boolean> {

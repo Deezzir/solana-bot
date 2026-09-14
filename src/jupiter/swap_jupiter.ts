@@ -1,6 +1,6 @@
 import { AddressLookupTableAccount, Keypair, PublicKey, TokenAmount, TransactionInstruction } from '@solana/web3.js';
-import { JUPITER_API_URL, PriorityLevel } from '../constants';
-import { get_ltas, send_tx, validate_trade_parameters } from '../common/trade_common';
+import { JUPITER_API_URL } from '../constants';
+import { get_ltas, validate_trade_parameters } from '../common/trade_common';
 
 type JupiterQuote = {
     inputMint: string;
@@ -59,21 +59,6 @@ async function jupiter_request<T>(path: string, init: RequestInit = {}): Promise
     if (!response.ok || payload.error || payload.errorCode)
         throw new Error(payload.error || `Jupiter ${path} request failed with HTTP ${response.status}.`);
     return payload as T;
-}
-
-export async function swap_jupiter(
-    amount: TokenAmount,
-    seller: Keypair,
-    from: PublicKey,
-    to: PublicKey,
-    slippage: number = 0.05,
-    priority?: PriorityLevel,
-    protection_tip?: number,
-    mev_protect: boolean = false
-): Promise<String> {
-    const quote = await quote_jupiter(amount, from, to, slippage);
-    const [instructions, lta_accounts] = await swap_jupiter_instructions(seller, quote);
-    return await send_tx(instructions, [seller], priority, protection_tip, mev_protect, lta_accounts);
 }
 
 export async function quote_jupiter(

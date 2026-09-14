@@ -166,24 +166,6 @@ export interface IProgramTrader {
     get_name(): string;
     get_lta_addresses(): PublicKey[];
     deserialize_mint_meta(data: SerializedMintMeta): IMintMeta;
-    buy_token(
-        quote_amount: TokenAmount,
-        buyer: Keypair,
-        mint_meta: IMintMeta,
-        slippage: number,
-        priority?: PriorityLevel,
-        protection_tip?: number,
-        mev_protect?: boolean
-    ): Promise<String>;
-    sell_token(
-        token_amount: TokenAmount,
-        seller: Keypair,
-        mint_meta: Partial<IMintMeta>,
-        slippage: number,
-        priority?: PriorityLevel,
-        protection_tip?: number,
-        mev_protect?: boolean
-    ): Promise<String>;
     buy_token_instructions(
         quote_amount: TokenAmount,
         buyer: Keypair,
@@ -202,36 +184,15 @@ export interface IProgramTrader {
         mint_meta: IMintMeta,
         slippage: number
     ): Promise<[TransactionInstruction[], TransactionInstruction[], AddressLookupTableAccount[]?]>;
-    buy_sell_bundle(
-        quote_amount: TokenAmount,
-        trader: Keypair,
-        mint_meta: IMintMeta,
-        tip: number,
-        slippage: number,
-        priority?: PriorityLevel
-    ): Promise<String>;
-    buy_sell(
-        quote_amount: TokenAmount,
-        trader: Keypair,
-        mint_meta: IMintMeta,
-        slippage: number,
-        interval_ms?: number,
-        priority?: PriorityLevel,
-        protection_tip?: number,
-        mev_protect?: boolean
-    ): Promise<[String, String]>;
-    create_token(
+    create_token_instructions(
         mint: Keypair,
         creator: Keypair,
         token_name: string,
         token_symbol: string,
         meta_cid: string,
-        amount?: TokenAmount,
-        traders?: [Keypair, TokenAmount][],
-        bundle_tip?: number,
-        priority?: PriorityLevel,
-        config?: object
-    ): Promise<String>;
+        config?: object,
+        creator_buy?: boolean
+    ): Promise<CreateTokenInstructions>;
     create_token_metadata(meta: common.IPFSMetadata, image_path: string): Promise<string>;
     get_random_mints(count: number): Promise<IMintMeta[]>;
     get_mint_meta(mint: PublicKey): Promise<IMintMeta | undefined>;
@@ -243,8 +204,8 @@ export interface IProgramTrader {
     ): Promise<() => void>;
     update_mint_meta_reserves(mint_meta: IMintMeta, amount: TokenAmount, op: TradeOp): IMintMeta;
     default_mint_meta(mint: PublicKey, data?: object): Promise<IMintMeta>;
-    get_trader_rewards(trader: Keypair): Promise<ClaimableAsset[]>;
-    claim_trader_rewards(trader: Keypair, assets: ClaimableAsset[], priority?: PriorityLevel): Promise<String>;
+    get_rewards(trader: Keypair): Promise<ClaimableAsset[]>;
+    claim_rewards_instructions(trader: Keypair, assets: ClaimableAsset[]): Promise<TransactionInstruction[]>;
     estimate_buy_output(mint_meta: IMintMeta, quote_amount: TokenAmount, slippage: number): Promise<OutputEstimate>;
     estimate_sell_output(mint_meta: IMintMeta, token_amount: TokenAmount, slippage: number): Promise<OutputEstimate>;
     get_compute_unit_limit(): number | undefined;
@@ -300,7 +261,11 @@ type JitoBundleSubmission = {
 
 type JitoBundleStatus = 'Invalid' | 'Pending' | 'Failed' | 'Landed';
 
-export type InitialBuy = { buyer: Keypair; instructions: TransactionInstruction[] };
+export type CreateTokenInstructions = {
+    instructions: TransactionInstruction[];
+    mint_meta: IMintMeta;
+    ltas: AddressLookupTableAccount[];
+};
 
 // Transaction errors
 
@@ -2121,74 +2086,7 @@ export async function generate_trade_lta(
     }
 }
 
-// Token creation bundles
-
-export async function send_create_bundle({
-    instructions,
-    creator,
-    mint,
-    buyers,
-    tip,
-    priority,
-    alts,
-    token_program,
-    wallet_compute_units
-}: {
-    instructions: TransactionInstruction[];
-    creator: Keypair;
-    mint: Keypair;
-    buyers: InitialBuy[];
-    tip: number;
-    priority?: PriorityLevel;
-    alts: AddressLookupTableAccount[];
-    token_program: PublicKey;
-    wallet_compute_units: number;
-}): Promise<String> {
-    const version = global.TRANSACTION_VERSION ?? 0;
-    const generated =
-        version === 0
-            ? await generate_trade_lta(
-                  creator,
-                  buyers.map(({ buyer }) => buyer),
-                  mint.publicKey,
-                  token_program
-              )
-            : undefined;
-    try {
-        const tables = generated ? [generated, ...alts] : alts;
-        const tip_instruction = create_tip_instruction(creator.publicKey, tip);
-        const tip_account = tip_instruction.keys[1].pubkey;
-        const groups = pack_tx_groups(
-            buyers,
-            (buy) => buy.instructions,
-            (buy) => buy.buyer.publicKey,
-            version,
-            tables,
-            (payer) => [create_tip_instruction(payer, tip, undefined, tip_account)],
-            Math.min(TRADE_MAX_WALLETS_PER_CREATE_TX, Math.floor(MAX_COMPUTE_UNIT_LIMIT / wallet_compute_units))
-        );
-        if (groups.length + 1 > get_bundle_size())
-            throw new Error('Initial buys do not fit in one atomic create bundle. Reduce the buyer count.');
-        return await retry_send_bundle(
-            [instructions, ...groups.map((group) => group.flatMap((buy) => buy.instructions))],
-            [[creator, mint], ...groups.map((group) => group.map(({ buyer }) => buyer))],
-            tip,
-            priority,
-            tables,
-            MAX_COMPUTE_UNIT_LIMIT,
-            undefined,
-            { tip_account }
-        );
-    } finally {
-        if (generated) {
-            await deactivate_ltas(creator, [generated])
-                .then(() =>
-                    common.log(`ALT ${generated.key} deactivated; reclaim its rent with close-ltas after cooldown.`)
-                )
-                .catch((error) => common.warn(`Could not deactivate ALT ${generated.key}: ${error}`));
-        }
-    }
-}
+// Quote-related utilities and functions
 
 const quote_cache = new Map<string, { mint: PublicKey; token_program: PublicKey; decimals: number }>();
 

@@ -24,7 +24,7 @@ type State =
 
 const CONFIG: snipe.WorkerConfig = workerData as snipe.WorkerConfig;
 const KEYPAIR: Keypair = await Keypair.fromSecretKey(new Uint8Array(CONFIG.secret));
-const EXECUTOR = create_executor({ enable_funding: false, program: CONFIG.program });
+const EXECUTOR = create_executor({ enable_funding: CONFIG.funding, program: CONFIG.program });
 global.PROGRAM = CONFIG.program;
 global.TRANSACTION_RELAY = CONFIG.transaction_relay;
 global.TRANSACTION_VERSION = CONFIG.transaction_version;

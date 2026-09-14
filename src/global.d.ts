@@ -11,6 +11,7 @@ declare global {
     var TRANSACTION_RELAY: TransactionRelay;
     var TRANSACTION_VERSION: 0 | 1;
     var PRIORITY_FEE: number | undefined;
+    var FUNDING: boolean;
 }
 
 export {};

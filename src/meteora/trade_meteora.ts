@@ -36,7 +36,6 @@ import {
     METEORA_LTA_ACCOUNT,
     METEORA_SWAP_DISCRIMINATOR,
     METEORA_SWAP2_DISCRIMINATOR,
-    PriorityLevel,
     SOL_MINT,
     TOKEN_METADATA_MAX_BYTES,
     PROGRAM_COMPUTE_UNIT_LIMITS
@@ -421,7 +420,7 @@ export class Trader implements trade.IProgramTrader {
         return MeteoraMintMeta.deserialize(data);
     }
 
-    public async get_trader_rewards(trader: Keypair): Promise<MeteoraClaimableAsset[]> {
+    public async get_rewards(trader: Keypair): Promise<MeteoraClaimableAsset[]> {
         const pools = await trade.get_program_accounts_v2(METEORA_DBC_PROGRAM_ID, [
             { memcmp: { offset: DBCStateStruct.get_offset('creator'), bytes: trader.publicKey.toBase58() } },
             { memcmp: { offset: 0, bytes: base58.encode(METEORA_DBC_STATE_HEADER) } }
@@ -472,11 +471,10 @@ export class Trader implements trade.IProgramTrader {
         return [...assets.flat(), ...(await this.get_damm_v2_position_rewards(trader))];
     }
 
-    public async claim_trader_rewards(
+    public async claim_rewards_instructions(
         trader: Keypair,
-        assets: MeteoraClaimableAsset[],
-        priority?: PriorityLevel
-    ): Promise<String> {
+        assets: MeteoraClaimableAsset[]
+    ): Promise<TransactionInstruction[]> {
         if (assets.length === 0) throw new Error(`No assets were provided`);
 
         const created_atas = new Set<string>();
@@ -633,57 +631,7 @@ export class Trader implements trade.IProgramTrader {
         }
 
         if (instructions.length === 0) throw new Error('Invalid assets were provided, no tx was derived');
-        return await trade.send_tx(
-            instructions,
-            [trader],
-            priority,
-            undefined,
-            false,
-            undefined,
-            METEORA_COMPUTE_UNIT_LIMIT
-        );
-    }
-
-    public async buy_token(
-        amount: TokenAmount,
-        buyer: Keypair,
-        mint_meta: MeteoraMintMeta,
-        slippage: number,
-        priority?: PriorityLevel,
-        protection_tip?: number,
-        mev_protect: boolean = false
-    ): Promise<String> {
-        const [instructions, ltas] = await this.buy_token_instructions(amount, buyer, mint_meta, slippage);
-        return await trade.send_tx(
-            instructions,
-            [buyer],
-            priority,
-            protection_tip,
-            mev_protect,
-            ltas,
-            METEORA_COMPUTE_UNIT_LIMIT
-        );
-    }
-
-    public async sell_token(
-        token_amount: TokenAmount,
-        seller: Keypair,
-        mint_meta: MeteoraMintMeta,
-        slippage: number,
-        priority?: PriorityLevel,
-        protection_tip?: number,
-        mev_protect: boolean = false
-    ): Promise<String> {
-        const [instructions, ltas] = await this.sell_token_instructions(token_amount, seller, mint_meta, slippage);
-        return await trade.send_tx(
-            instructions,
-            [seller],
-            priority,
-            protection_tip,
-            mev_protect,
-            ltas,
-            METEORA_COMPUTE_UNIT_LIMIT
-        );
+        return instructions;
     }
 
     public async buy_token_instructions(
@@ -767,95 +715,15 @@ export class Trader implements trade.IProgramTrader {
         return [buy_instructions, sell_instructions, lta];
     }
 
-    public async buy_sell_bundle(
-        amount: TokenAmount,
-        trader: Keypair,
-        mint_meta: MeteoraMintMeta,
-        tip: number,
-        slippage: number,
-        priority?: PriorityLevel
-    ): Promise<String> {
-        const [buy_instructions, sell_instructions, lta] = await this.buy_sell_instructions(
-            amount,
-            trader,
-            mint_meta,
-            slippage
-        );
-        return await trade.send_bundle(
-            [buy_instructions, sell_instructions],
-            [[trader], [trader]],
-            tip,
-            priority,
-            lta,
-            METEORA_COMPUTE_UNIT_LIMIT
-        );
-    }
-
-    public async buy_sell(
-        amount: TokenAmount,
-        trader: Keypair,
-        mint_meta: MeteoraMintMeta,
-        slippage: number,
-        interval_ms?: number,
-        priority?: PriorityLevel,
-        protection_tip?: number,
-        mev_protect: boolean = false
-    ): Promise<[String, String]> {
-        const [buy_instructions, sell_instructions, ltas] = await this.buy_sell_instructions(
-            amount,
-            trader,
-            mint_meta,
-            slippage
-        );
-
-        if (interval_ms && interval_ms > 0) {
-            const buy_signature = await trade.send_tx(
-                buy_instructions,
-                [trader],
-                priority,
-                protection_tip,
-                mev_protect,
-                ltas,
-                METEORA_COMPUTE_UNIT_LIMIT
-            );
-            await common.sleep(interval_ms);
-            const sell_signature = await trade.retry_send_tx(
-                sell_instructions,
-                [trader],
-                priority,
-                protection_tip,
-                mev_protect,
-                ltas,
-                METEORA_COMPUTE_UNIT_LIMIT
-            );
-            return [buy_signature, sell_signature];
-        }
-
-        const signature = await trade.send_tx(
-            [...buy_instructions, ...sell_instructions],
-            [trader],
-            priority,
-            protection_tip,
-            mev_protect,
-            ltas,
-            METEORA_COMPUTE_UNIT_LIMIT
-        );
-        return [signature, signature];
-    }
-
-    public async create_token(
+    public async create_token_instructions(
         mint: Keypair,
         creator: Keypair,
         token_name: string,
         token_symbol: string,
         meta_cid: string,
-        amount: TokenAmount = trade.get_sol_token_amount(0),
-        traders?: [Keypair, TokenAmount][],
-        bundle_tip?: number,
-        priority?: PriorityLevel,
-        config?: object
-    ): Promise<String> {
-        trade.validate_create_token_parameters(amount, traders, bundle_tip);
+        config?: object,
+        creator_buy: boolean = false
+    ): Promise<trade.CreateTokenInstructions> {
         const config_address = config && 'config' in config ? config.config : undefined;
         if (typeof config_address !== 'string')
             throw new Error('Meteora creation requires a DBC config address in config.config.');
@@ -873,7 +741,7 @@ export class Trader implements trade.IProgramTrader {
             throw new Error('New DBC pools require a linear or exponential fee scheduler.');
         if (config_data.migration_option !== 1) throw new Error('New DBC pools require DAMM v2 migration.');
 
-        let mint_meta = await this.create_mint_meta(
+        const mint_meta = await this.create_mint_meta(
             mint.publicKey,
             config_pubkey,
             config_data,
@@ -890,40 +758,9 @@ export class Trader implements trade.IProgramTrader {
             mint_meta
         );
 
-        if (BigInt(amount.amount) > 0n)
-            create_instructions.push(...(await this.get_buy_dbc_instructions(amount, creator, mint_meta, 0.05)));
-
+        if (!creator_buy) mint_meta.dbc_data!.quote.first_swap_with_min_fee = false;
         const ltas = global.TRANSACTION_VERSION === 1 ? [] : await trade.get_ltas(this.get_lta_addresses());
-        if (!traders)
-            return trade.retry_send_tx(
-                create_instructions,
-                [creator, mint],
-                priority,
-                undefined,
-                false,
-                ltas,
-                METEORA_COMPUTE_UNIT_LIMIT
-            );
-
-        if (BigInt(amount.amount) > 0n) mint_meta = this.update_mint_meta_reserves(mint_meta, amount, 'buy');
-        mint_meta.dbc_data!.quote.first_swap_with_min_fee = false;
-
-        const buyers: trade.InitialBuy[] = [];
-        for (const [buyer, amount] of traders) {
-            buyers.push({ buyer, instructions: await this.get_buy_dbc_instructions(amount, buyer, mint_meta, 0.05) });
-            mint_meta = this.update_mint_meta_reserves(mint_meta, amount, 'buy');
-        }
-        return trade.send_create_bundle({
-            instructions: create_instructions,
-            creator,
-            mint,
-            buyers,
-            tip: bundle_tip!,
-            priority,
-            alts: ltas,
-            token_program: mint_meta.token_program,
-            wallet_compute_units: METEORA_COMPUTE_UNIT_LIMIT!
-        });
+        return { instructions: create_instructions, mint_meta, ltas };
     }
 
     public create_token_metadata(meta: common.IPFSMetadata, image_path: string): Promise<string> {

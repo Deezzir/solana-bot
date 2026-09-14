@@ -17,7 +17,6 @@ import {
     METAPLEX_PROGRAM_ID,
     RENT_PROGRAM_ID,
     RAYDIUM_API_URL,
-    PriorityLevel,
     RAYDIUM_CPMM_AUTHORITY,
     RAYDIUM_CPMM_CREATOR_FEE_CLAIM_DISCRIMINATOR,
     RAYDIUM_CPMM_POOL_STATE_HEADER,
@@ -289,7 +288,7 @@ export class RaydiumTrader implements trade.IProgramTrader {
         return this.compute_unit_limit;
     }
 
-    public async get_trader_rewards(trader: Keypair): Promise<RaydiumClaimableAsset[]> {
+    public async get_rewards(trader: Keypair): Promise<RaydiumClaimableAsset[]> {
         const pools = await trade.get_program_accounts_v2(RAYDIUM_CPMM_PROGRAM_ID, [
             { memcmp: { offset: CPMMStateStruct.get_offset('pool_creator'), bytes: trader.publicKey.toBase58() } },
             { memcmp: { offset: 0, bytes: base58.encode(RAYDIUM_CPMM_POOL_STATE_HEADER) } }
@@ -320,11 +319,10 @@ export class RaydiumTrader implements trade.IProgramTrader {
         return assets.flat();
     }
 
-    public async claim_trader_rewards(
+    public async claim_rewards_instructions(
         trader: Keypair,
-        assets: RaydiumClaimableAsset[],
-        priority?: PriorityLevel
-    ): Promise<String> {
+        assets: RaydiumClaimableAsset[]
+    ): Promise<TransactionInstruction[]> {
         if (assets.length === 0) throw new Error(`No assets were provided`);
 
         const instructions: TransactionInstruction[] = [];
@@ -379,36 +377,7 @@ export class RaydiumTrader implements trade.IProgramTrader {
         }
 
         if (instructions.length === 0) throw new Error('Invalid assets were provided, no tx was derived');
-        return await trade.send_tx(
-            instructions,
-            [trader],
-            priority,
-            undefined,
-            false,
-            undefined,
-            this.compute_unit_limit
-        );
-    }
-
-    public async buy_token(
-        amount: TokenAmount,
-        buyer: Keypair,
-        mint_meta: RaydiumMintMeta,
-        slippage: number = 0.05,
-        priority?: PriorityLevel,
-        protection_tip?: number,
-        mev_protect: boolean = false
-    ): Promise<String> {
-        const [instructions, ltas] = await this.buy_token_instructions(amount, buyer, mint_meta, slippage);
-        return await trade.send_tx(
-            instructions,
-            [buyer],
-            priority,
-            protection_tip,
-            mev_protect,
-            ltas,
-            this.compute_unit_limit
-        );
+        return instructions;
     }
 
     public async buy_token_instructions(
@@ -425,27 +394,6 @@ export class RaydiumTrader implements trade.IProgramTrader {
         }
         const instructions = await this.get_buy_instructions(amount, buyer, mint_meta, slippage);
         return [instructions, lta];
-    }
-
-    public async sell_token(
-        token_amount: TokenAmount,
-        seller: Keypair,
-        mint_meta: RaydiumMintMeta,
-        slippage: number = 0.05,
-        priority: PriorityLevel,
-        protection_tip?: number,
-        mev_protect: boolean = false
-    ): Promise<String> {
-        const [instructions, ltas] = await this.sell_token_instructions(token_amount, seller, mint_meta, slippage);
-        return await trade.send_tx(
-            instructions,
-            [seller],
-            priority,
-            protection_tip,
-            mev_protect,
-            ltas,
-            this.compute_unit_limit
-        );
     }
 
     public async sell_token_instructions(
@@ -489,82 +437,6 @@ export class RaydiumTrader implements trade.IProgramTrader {
         return [buy_instructions, sell_instructions, lta];
     }
 
-    public async buy_sell(
-        amount: TokenAmount,
-        trader: Keypair,
-        mint_meta: RaydiumMintMeta,
-        slippage: number = 0.05,
-        interval_ms?: number,
-        priority?: PriorityLevel,
-        protection_tip?: number,
-        mev_protect: boolean = false
-    ): Promise<[String, String]> {
-        const [buy_instructions, sell_instructions, ltas] = await this.buy_sell_instructions(
-            amount,
-            trader,
-            mint_meta,
-            slippage
-        );
-
-        if (interval_ms && interval_ms > 0) {
-            const buy_signature = await trade.send_tx(
-                buy_instructions,
-                [trader],
-                priority,
-                protection_tip,
-                mev_protect,
-                ltas,
-                this.compute_unit_limit
-            );
-            await common.sleep(interval_ms);
-            const sell_signature = await trade.retry_send_tx(
-                sell_instructions,
-                [trader],
-                priority,
-                protection_tip,
-                mev_protect,
-                ltas,
-                this.compute_unit_limit
-            );
-            return [buy_signature, sell_signature];
-        }
-
-        const signature = await trade.send_tx(
-            [...buy_instructions, ...sell_instructions],
-            [trader],
-            priority,
-            protection_tip,
-            mev_protect,
-            ltas,
-            this.compute_unit_limit
-        );
-        return [signature, signature];
-    }
-
-    public async buy_sell_bundle(
-        amount: TokenAmount,
-        trader: Keypair,
-        mint_meta: RaydiumMintMeta,
-        tip: number,
-        slippage: number = 0.05,
-        priority?: PriorityLevel
-    ): Promise<String> {
-        const [buy_instructions, sell_instructions, ltas] = await this.buy_sell_instructions(
-            amount,
-            trader,
-            mint_meta,
-            slippage
-        );
-        return await trade.send_bundle(
-            [buy_instructions, sell_instructions],
-            [[trader], [trader]],
-            tip,
-            priority,
-            ltas,
-            this.compute_unit_limit
-        );
-    }
-
     public async get_mint_meta(mint: PublicKey): Promise<RaydiumMintMeta | undefined> {
         try {
             let mint_meta = await this.default_mint_meta(mint);
@@ -583,22 +455,17 @@ export class RaydiumTrader implements trade.IProgramTrader {
         );
     }
 
-    public async create_token(
+    public async create_token_instructions(
         mint: Keypair,
         creator: Keypair,
         token_name: string,
         token_symbol: string,
         meta_cid: string,
-        amount: TokenAmount = trade.get_sol_token_amount(0),
-        traders?: [Keypair, TokenAmount][],
-        bundle_tip?: number,
-        priority?: PriorityLevel,
         config?: object
-    ): Promise<String> {
-        trade.validate_create_token_parameters(amount, traders, bundle_tip);
+    ): Promise<trade.CreateTokenInstructions> {
         const { global_config, quote_mint, fundraising, fee, reserves, remaining_accounts } =
             await this.get_create_settings(config as CreateOptions);
-        let mint_meta = await this.default_mint_meta(mint.publicKey, {
+        const mint_meta = await this.default_mint_meta(mint.publicKey, {
             name: token_name,
             symbol: token_symbol,
             creator: creator.publicKey.toBase58(),
@@ -619,39 +486,8 @@ export class RaydiumTrader implements trade.IProgramTrader {
             fundraising,
             remaining_accounts
         );
-        if (BigInt(amount.amount) > 0n)
-            create_instructions.push(...(await this.get_buy_instructions(amount, creator, mint_meta, 0.05)));
-
         const ltas = global.TRANSACTION_VERSION === 1 ? [] : await trade.get_ltas(this.get_lta_addresses());
-        if (!traders)
-            return trade.retry_send_tx(
-                create_instructions,
-                [creator, mint],
-                priority,
-                undefined,
-                false,
-                ltas,
-                this.compute_unit_limit
-            );
-
-        if (BigInt(amount.amount) > 0n) mint_meta = this.update_mint_meta_reserves(mint_meta, amount, 'buy');
-
-        const buyers: trade.InitialBuy[] = [];
-        for (const [buyer, buy_amount] of traders) {
-            buyers.push({ buyer, instructions: await this.get_buy_instructions(buy_amount, buyer, mint_meta, 0.05) });
-            mint_meta = this.update_mint_meta_reserves(mint_meta, buy_amount, 'buy');
-        }
-        return trade.send_create_bundle({
-            instructions: create_instructions,
-            creator,
-            mint,
-            buyers,
-            tip: bundle_tip!,
-            priority,
-            alts: ltas,
-            token_program: mint_meta.token_program,
-            wallet_compute_units: this.compute_unit_limit!
-        });
+        return { instructions: create_instructions, mint_meta, ltas };
     }
 
     public async create_token_metadata(meta: common.IPFSMetadata, image_path: string): Promise<string> {

@@ -42,7 +42,10 @@ export function get_program_trader(program: Program = global.PROGRAM): IProgramT
     }
 }
 
-export function create_executor({ enable_funding = false, program = global.PROGRAM }: ExecutorOptions = {}): Executor {
+export function create_executor({
+    enable_funding = global.FUNDING,
+    program = global.PROGRAM
+}: ExecutorOptions = {}): Executor {
     const trader = get_program_trader(program);
     return new Executor(trader, enable_funding);
 }

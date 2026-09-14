@@ -46,7 +46,6 @@ import {
     PUMP_AMM_BUY_EXACT_OUT_DISCRIMINATOR,
     PUMP_SELL_DISCRIMINATOR,
     PUMP_SWAP_PERCENTAGE,
-    PriorityLevel,
     PUMP_CREATE_V1_DISCRIMINATOR,
     PUMP_IPFS_API_URL,
     PUMP_AMM_STATE_HEADER,
@@ -289,7 +288,7 @@ export class Trader implements trade.IProgramTrader {
         return PumpMintMeta.deserialize(data);
     }
 
-    public async get_trader_rewards(trader: Keypair): Promise<PumpClaimableAsset[]> {
+    public async get_rewards(trader: Keypair): Promise<PumpClaimableAsset[]> {
         const [creator_vault, creator_vault_ata] = await this.calc_creator_vault(trader.publicKey);
         const [creator_vault_info, creator_vault_rent, amm_pools] = await Promise.all([
             global.CONNECTION.getAccountInfo(creator_vault, COMMITMENT),
@@ -393,11 +392,10 @@ export class Trader implements trade.IProgramTrader {
         return assets;
     }
 
-    public async claim_trader_rewards(
+    public async claim_rewards_instructions(
         trader: Keypair,
-        assets: PumpClaimableAsset[],
-        priority?: PriorityLevel
-    ): Promise<String> {
+        assets: PumpClaimableAsset[]
+    ): Promise<TransactionInstruction[]> {
         if (assets.length === 0) throw new Error(`No assets were provided`);
 
         const instructions: TransactionInstruction[] = [];
@@ -539,40 +537,11 @@ export class Trader implements trade.IProgramTrader {
         }
 
         if (instructions.length === 0) throw new Error('Invalid assets were provided, no tx was derived');
-        return await trade.send_tx(
-            instructions,
-            [trader],
-            priority,
-            undefined,
-            false,
-            undefined,
-            PUMP_COMPUTE_UNIT_LIMIT
-        );
+        return instructions;
     }
 
     public get_compute_unit_limit(): number | undefined {
         return PUMP_COMPUTE_UNIT_LIMIT;
-    }
-
-    public async buy_token(
-        amount: TokenAmount,
-        buyer: Keypair,
-        mint_meta: PumpMintMeta,
-        slippage: number = 0.05,
-        priority?: PriorityLevel,
-        protection_tip?: number,
-        mev_protect: boolean = false
-    ): Promise<String> {
-        const [instructions, ltas] = await this.buy_token_instructions(amount, buyer, mint_meta, slippage);
-        return await trade.send_tx(
-            instructions,
-            [buyer],
-            priority,
-            protection_tip,
-            mev_protect,
-            ltas,
-            PUMP_COMPUTE_UNIT_LIMIT
-        );
     }
 
     public async buy_token_instructions(
@@ -589,27 +558,6 @@ export class Trader implements trade.IProgramTrader {
         }
         const instructions = await this.get_buy_instructions(amount, buyer, mint_meta, slippage);
         return [instructions, lta];
-    }
-
-    public async sell_token(
-        token_amount: TokenAmount,
-        seller: Keypair,
-        mint_meta: PumpMintMeta,
-        slippage: number = 0.05,
-        priority: PriorityLevel,
-        protection_tip?: number,
-        mev_protect: boolean = false
-    ): Promise<String> {
-        const [instructions, ltas] = await this.sell_token_instructions(token_amount, seller, mint_meta, slippage);
-        return await trade.send_tx(
-            instructions,
-            [seller],
-            priority,
-            protection_tip,
-            mev_protect,
-            ltas,
-            PUMP_COMPUTE_UNIT_LIMIT
-        );
     }
 
     public async sell_token_instructions(
@@ -671,24 +619,19 @@ export class Trader implements trade.IProgramTrader {
         );
     }
 
-    public async create_token(
+    public async create_token_instructions(
         mint: Keypair,
         creator: Keypair,
         token_name: string,
         token_symbol: string,
         meta_cid: string,
-        amount: TokenAmount = trade.get_sol_token_amount(0),
-        traders?: [Keypair, TokenAmount][],
-        bundle_tip?: number,
-        priority?: PriorityLevel,
         config?: object
-    ): Promise<String> {
+    ): Promise<trade.CreateTokenInstructions> {
         let version: 'v1' | 'v2' = 'v2';
         let is_mayhem: boolean = false;
         let is_cashback: boolean = false;
         const quote_mint = new PublicKey((config as { quote_mint?: string } | undefined)?.quote_mint ?? SOL_MINT);
 
-        trade.validate_create_token_parameters(amount, traders, bundle_tip);
         if (config) {
             if ('version' in config) {
                 if (typeof config.version !== 'number' || config.version < 1 || config.version > 2) {
@@ -717,7 +660,7 @@ export class Trader implements trade.IProgramTrader {
         if (!quote_mint.equals(SOL_MINT) && (version === 'v1' || is_mayhem))
             throw new Error('Non-SOL Pump creation requires v2 without mayhem.');
 
-        let mint_meta = await this.default_mint_meta(mint.publicKey, {
+        const mint_meta = await this.default_mint_meta(mint.publicKey, {
             name: token_name,
             symbol: token_symbol,
             creator: creator.publicKey,
@@ -752,40 +695,8 @@ export class Trader implements trade.IProgramTrader {
             version,
             quote_mint
         );
-        if (BigInt(amount.amount) > 0n) {
-            const buy_instructions = await this.get_buy_instructions(amount, creator, mint_meta, 0.05);
-            create_instructions.push(...buy_instructions);
-        }
-
         const ltas = global.TRANSACTION_VERSION === 1 ? [] : await trade.get_ltas(this.get_lta_addresses());
-        if (!traders)
-            return await trade.retry_send_tx(
-                create_instructions,
-                [creator, mint],
-                priority,
-                undefined,
-                false,
-                ltas,
-                PUMP_COMPUTE_UNIT_LIMIT
-            );
-
-        mint_meta = this.update_mint_meta_reserves(mint_meta, amount, 'buy');
-        const buyers: trade.InitialBuy[] = [];
-        for (const [buyer, amount] of traders) {
-            buyers.push({ buyer, instructions: await this.get_buy_instructions(amount, buyer, mint_meta, 0.05) });
-            mint_meta = this.update_mint_meta_reserves(mint_meta, amount, 'buy');
-        }
-        return trade.send_create_bundle({
-            instructions: create_instructions,
-            creator,
-            mint,
-            buyers,
-            tip: bundle_tip!,
-            priority,
-            alts: ltas,
-            token_program: mint_meta.token_program,
-            wallet_compute_units: PUMP_COMPUTE_UNIT_LIMIT!
-        });
+        return { instructions: create_instructions, mint_meta, ltas };
     }
 
     public async default_mint_meta(mint: PublicKey, data?: object): Promise<PumpMintMeta> {
@@ -850,82 +761,6 @@ export class Trader implements trade.IProgramTrader {
             is_mayhem: meta.is_mayhem,
             is_cashback: meta.is_cashback
         });
-    }
-
-    public async buy_sell_bundle(
-        amount: TokenAmount,
-        trader: Keypair,
-        mint_meta: PumpMintMeta,
-        tip: number,
-        slippage: number = 0.05,
-        priority?: PriorityLevel
-    ): Promise<String> {
-        const [buy_instructions, sell_instructions, lta] = await this.buy_sell_instructions(
-            amount,
-            trader,
-            mint_meta,
-            slippage
-        );
-        return await trade.send_bundle(
-            [buy_instructions, sell_instructions],
-            [[trader], [trader]],
-            tip,
-            priority,
-            lta,
-            PUMP_COMPUTE_UNIT_LIMIT
-        );
-    }
-
-    public async buy_sell(
-        amount: TokenAmount,
-        trader: Keypair,
-        mint_meta: PumpMintMeta,
-        slippage: number = 0.05,
-        interval_ms?: number,
-        priority?: PriorityLevel,
-        protection_tip?: number,
-        mev_protect: boolean = false
-    ): Promise<[String, String]> {
-        const [buy_instructions, sell_instructions, ltas] = await this.buy_sell_instructions(
-            amount,
-            trader,
-            mint_meta,
-            slippage
-        );
-
-        if (interval_ms && interval_ms > 0) {
-            const buy_signature = await trade.send_tx(
-                buy_instructions,
-                [trader],
-                priority,
-                protection_tip,
-                mev_protect,
-                ltas,
-                PUMP_COMPUTE_UNIT_LIMIT
-            );
-            await common.sleep(interval_ms);
-            const sell_signature = await trade.retry_send_tx(
-                sell_instructions,
-                [trader],
-                priority,
-                protection_tip,
-                mev_protect,
-                ltas,
-                PUMP_COMPUTE_UNIT_LIMIT
-            );
-            return [buy_signature, sell_signature];
-        }
-
-        const signature = await trade.send_tx(
-            [...buy_instructions, ...sell_instructions],
-            [trader],
-            priority,
-            protection_tip,
-            mev_protect,
-            ltas,
-            PUMP_COMPUTE_UNIT_LIMIT
-        );
-        return [signature, signature];
     }
 
     public update_mint_meta_reserves(mint_meta: PumpMintMeta, amount: TokenAmount, op: trade.TradeOp): PumpMintMeta {

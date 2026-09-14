@@ -13,16 +13,17 @@ export async function bundle_buy(
     bundle_tip: number,
     priority: PriorityLevel
 ): Promise<void> {
-    const wallet_bundles = common.chunks(entries, trade.get_bundle_size());
+    const bundle_size = trade.get_bundle_size();
     const bundles: Promise<void>[] = [];
-    const ltas: AddressLookupTableAccount[] = [];
     let failed = 0;
+    let wallet_index = 0;
 
-    for (const wallet_bundle of wallet_bundles) {
+    while (wallet_index < entries.length) {
         const instructions: TransactionInstruction[][] = [];
         const signers: Keypair[][] = [];
-        for (const entry of wallet_bundle) {
-            const [wallet, amount] = entry;
+        const ltas: AddressLookupTableAccount[] = [];
+        for (; wallet_index < entries.length && instructions.length < bundle_size; wallet_index++) {
+            const [wallet, amount] = entries[wallet_index];
             const buyer = wallet.keypair;
             try {
                 const funding = await executor.has_enough_balances(amount, buyer.publicKey, mint_meta, slippage);
@@ -36,9 +37,12 @@ export async function bundle_buy(
                     mint_meta,
                     slippage
                 );
+                if (buy_instructions.length > bundle_size)
+                    throw new Error(`Wallet requires more than ${bundle_size} transactions in one bundle.`);
+                if (instructions.length + buy_instructions.length > bundle_size) break;
                 mint_meta = executor.update_mint_meta_reserves(mint_meta, funding.quote_amount, 'buy');
-                instructions.push(buy_instructions);
-                signers.push([buyer]);
+                instructions.push(...buy_instructions);
+                signers.push(...buy_instructions.map(() => [buyer]));
                 for (const lta of buy_ltas || []) {
                     if (!ltas.some((existing) => existing.key.equals(lta.key))) ltas.push(lta);
                 }
@@ -95,15 +99,17 @@ export async function bundle_sell(
         .filter((wallet) => wallet !== null)
         .sort((a, b) => b!.token_amount.uiAmount! - a!.token_amount.uiAmount!);
 
-    const wallet_bundles = common.chunks(wallets_with_balance, trade.get_bundle_size());
+    const bundle_size = trade.get_bundle_size();
     const bundles: Promise<void>[] = [];
-    const ltas: AddressLookupTableAccount[] = [];
     let failed = 0;
+    let wallet_index = 0;
 
-    for (const wallet_bundle of wallet_bundles) {
+    while (wallet_index < wallets_with_balance.length) {
         const instructions: TransactionInstruction[][] = [];
         const signers: Keypair[][] = [];
-        for (const wallet of wallet_bundle) {
+        const ltas: AddressLookupTableAccount[] = [];
+        for (; wallet_index < wallets_with_balance.length && instructions.length < bundle_size; wallet_index++) {
+            const wallet = wallets_with_balance[wallet_index];
             const seller = wallet.keypair;
             const token_amount = trade.get_token_amount_by_percent(wallet.token_amount, percent);
             try {
@@ -116,9 +122,12 @@ export async function bundle_sell(
                     mint_meta,
                     slippage
                 );
+                if (sell_instructions.length > bundle_size)
+                    throw new Error(`Wallet requires more than ${bundle_size} transactions in one bundle.`);
+                if (instructions.length + sell_instructions.length > bundle_size) break;
                 mint_meta = executor.update_mint_meta_reserves(mint_meta, token_amount, 'sell');
-                instructions.push(sell_instructions);
-                signers.push([seller]);
+                instructions.push(...sell_instructions);
+                signers.push(...sell_instructions.map(() => [seller]));
                 for (const lta of sell_ltas || []) {
                     if (!ltas.some((existing) => existing.key.equals(lta.key))) ltas.push(lta);
                 }
