@@ -105,7 +105,7 @@ export enum TradeDirection {
     BtoA
 }
 
-enum CollectFeeMode {
+export enum CollectFeeMode {
     BothToken,
     OnlyB,
     Compounding
@@ -984,4 +984,10 @@ export function damm_fee_numerator(
         pool.init_sqrt_price,
         pool.sqrt_price
     );
+}
+
+export function damm_u256_le(data: Buffer): bigint {
+    let value = 0n;
+    for (let i = 31; i >= 0; i--) value = (value << 8n) + BigInt(data[i]);
+    return value;
 }

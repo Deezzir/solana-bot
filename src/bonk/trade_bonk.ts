@@ -11,13 +11,13 @@ import {
     RAYDIUM_LAUNCHPAD_API_URL,
     PROGRAM_COMPUTE_UNIT_LIMITS
 } from '../constants';
-import { RaydiumMintMeta, RaydiumTrader } from '../raydium/trade_raydium';
+import { RaydiumMintMeta, RaydiumProvider } from '../raydium/trade_raydium';
 import { readFileSync } from 'fs';
 import { basename } from 'path';
 
 const BONK_COMPUTE_UNIT_LIMIT = PROGRAM_COMPUTE_UNIT_LIMITS[common.Program.Bonk];
 
-export class BonkTrader extends RaydiumTrader {
+export class BonkProvider extends RaydiumProvider {
     protected override readonly compute_unit_limit = BONK_COMPUTE_UNIT_LIMIT;
     protected override readonly mint_meta_defaults = BONK_DEFAULT_MINT_META;
 

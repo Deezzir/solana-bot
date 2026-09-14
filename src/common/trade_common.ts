@@ -22,6 +22,8 @@ import {
 } from '@solana/web3.js';
 import {
     decode_token_account,
+    decode_mint_account,
+    createSyncNativeInstruction,
     TOKEN_2022_PROGRAM_ID,
     TOKEN_PROGRAM_ID,
     createAssociatedTokenAccountIdempotentInstruction,
@@ -73,6 +75,7 @@ import {
 import * as common from './common';
 import bs58 from 'bs58';
 import { rate_limit_request } from './rate_limit';
+import { get_quote_by_mint } from '../quote';
 
 // Types and interfaces
 
@@ -93,7 +96,7 @@ export type RawParsedTransaction = StringPublicKeys<ParsedTransactionWithMeta>;
 type RawInstruction = RawParsedTransaction['transaction']['message']['instructions'][number];
 
 export type SerializedMintMeta = {
-    token_usd_mc: number;
+    token_quote_mc: number;
     mint_pubkey: string;
     token_program: string;
     migrated: boolean;
@@ -135,10 +138,11 @@ export interface IMintMeta {
     readonly token_name: string;
     readonly token_symbol: string;
     readonly token_mint: string;
-    readonly token_usd_mc: number;
+    readonly token_quote_mc: number;
     readonly migrated: boolean;
     readonly platform_fee: number;
     readonly mint_pubkey: PublicKey;
+    readonly quote_mint_pubkey: PublicKey;
     readonly token_program: PublicKey;
 
     serialize(): SerializedMintMeta;
@@ -151,30 +155,32 @@ export interface ClaimableAsset {
     source: 'creator_reward' | 'position_reward' | 'cashback_reward' | 'token_incentive_reward';
 }
 
-export interface IProgramTrader {
+export type TradeOp = 'buy' | 'sell';
+
+export type OutputEstimate = {
+    expected: TokenAmount;
+    minimum: TokenAmount;
+};
+
+export type SellInstructions = {
+    instructions: TransactionInstruction[];
+    ltas?: AddressLookupTableAccount[];
+    minimum_quote_output: TokenAmount;
+};
+
+export type BuySellInstructions = {
+    buy: TransactionInstruction[];
+    sell: TransactionInstruction[];
+    ltas?: AddressLookupTableAccount[];
+    minimum_quote_output: TokenAmount;
+};
+
+export interface IProgramProvider {
     get_name(): string;
     get_lta_addresses(): PublicKey[];
     deserialize_mint_meta(data: SerializedMintMeta): IMintMeta;
-    buy_token(
-        sol_amount: number,
-        buyer: Keypair,
-        mint_meta: IMintMeta,
-        slippage: number,
-        priority?: PriorityLevel,
-        protection_tip?: number,
-        mev_protect?: boolean
-    ): Promise<String>;
-    sell_token(
-        token_amount: TokenAmount,
-        seller: Keypair,
-        mint_meta: Partial<IMintMeta>,
-        slippage: number,
-        priority?: PriorityLevel,
-        protection_tip?: number,
-        mev_protect?: boolean
-    ): Promise<String>;
     buy_token_instructions(
-        sol_amount: number,
+        quote_amount: TokenAmount,
         buyer: Keypair,
         mint_meta: IMintMeta,
         slippage: number
@@ -184,57 +190,38 @@ export interface IProgramTrader {
         seller: Keypair,
         mint_meta: IMintMeta,
         slippage: number
-    ): Promise<[TransactionInstruction[], AddressLookupTableAccount[]?]>;
+    ): Promise<SellInstructions>;
     buy_sell_instructions(
-        sol_amount: number,
+        quote_amount: TokenAmount,
         trader: Keypair,
         mint_meta: IMintMeta,
         slippage: number
-    ): Promise<[TransactionInstruction[], TransactionInstruction[], AddressLookupTableAccount[]?]>;
-    buy_sell_bundle(
-        sol_amount: number,
-        trader: Keypair,
-        mint_meta: IMintMeta,
-        tip: number,
-        slippage: number,
-        priority?: PriorityLevel
-    ): Promise<String>;
-    buy_sell(
-        sol_amount: number,
-        trader: Keypair,
-        mint_meta: IMintMeta,
-        slippage: number,
-        interval_ms?: number,
-        priority?: PriorityLevel,
-        protection_tip?: number,
-        mev_protect?: boolean
-    ): Promise<[String, String]>;
-    create_token(
+    ): Promise<BuySellInstructions>;
+    create_token_instructions(
         mint: Keypair,
         creator: Keypair,
         token_name: string,
         token_symbol: string,
         meta_cid: string,
-        sol_amount?: number,
-        traders?: [Keypair, number][],
-        bundle_tip?: number,
-        priority?: PriorityLevel,
-        config?: object
-    ): Promise<String>;
+        config?: object,
+        creator_buy?: boolean
+    ): Promise<CreateTokenInstructions>;
     create_token_metadata(meta: common.IPFSMetadata, image_path: string): Promise<string>;
     get_random_mints(count: number): Promise<IMintMeta[]>;
-    get_mint_meta(mint: PublicKey, sol_price?: number): Promise<IMintMeta | undefined>;
-    update_mint_meta(mint_meta: IMintMeta, sol_price?: number): Promise<IMintMeta>;
+    get_mint_meta(mint: PublicKey): Promise<IMintMeta | undefined>;
+    update_mint_meta(mint_meta: IMintMeta): Promise<IMintMeta>;
     subscribe_mint_meta(
         mint_meta: IMintMeta,
         callback: (mint_meta: IMintMeta) => void,
-        sol_price?: number,
         commitment?: Commitment
     ): Promise<() => void>;
-    update_mint_meta_reserves(mint_meta: IMintMeta, amount: number | TokenAmount): IMintMeta;
-    default_mint_meta(mint: PublicKey, sol_price?: number, data?: object): Promise<IMintMeta>;
-    get_trader_fees(trader: Keypair): Promise<ClaimableAsset[]>;
-    claim_trader_fees(trader: Keypair, assets: ClaimableAsset[], priority?: PriorityLevel): Promise<String>;
+    update_mint_meta_reserves(mint_meta: IMintMeta, amount: TokenAmount, op: TradeOp): IMintMeta;
+    default_mint_meta(mint: PublicKey, data?: object): Promise<IMintMeta>;
+    get_rewards(trader: Keypair): Promise<ClaimableAsset[]>;
+    claim_rewards_instructions(trader: Keypair, assets: ClaimableAsset[]): Promise<TransactionInstruction[]>;
+    estimate_buy_output(mint_meta: IMintMeta, quote_amount: TokenAmount, slippage: number): Promise<OutputEstimate>;
+    estimate_sell_output(mint_meta: IMintMeta, token_amount: TokenAmount, slippage: number): Promise<OutputEstimate>;
+    get_compute_unit_limit(): number | undefined;
 }
 
 type PriorityOptions = {
@@ -259,8 +246,8 @@ export type MintAsset = {
 };
 
 export type TokenMetrics = {
-    price_sol: number;
-    mcap_sol: number;
+    price_quote: number;
+    mcap_quote: number;
 };
 
 export type TxBalanceChanges = {
@@ -287,7 +274,11 @@ type JitoBundleSubmission = {
 
 type JitoBundleStatus = 'Invalid' | 'Pending' | 'Failed' | 'Landed';
 
-export type InitialBuy = { buyer: Keypair; instructions: TransactionInstruction[] };
+export type CreateTokenInstructions = {
+    instructions: TransactionInstruction[];
+    mint_meta: IMintMeta;
+    ltas: AddressLookupTableAccount[];
+};
 
 // Transaction errors
 
@@ -313,6 +304,8 @@ class TransactionSimulationError extends Error {
         this.name = 'TransactionSimulationError';
     }
 }
+
+export class CompileTransactionError extends Error {}
 
 // RPC requests and transaction decoding
 
@@ -473,9 +466,24 @@ export async function sample_mint_sources<T extends IMintMeta>(
 
 // Trade validation and amount calculations
 
+function validate_trade_amount(amount: TokenAmount | number, allow_zero: boolean): void {
+    if (typeof amount === 'number') {
+        const raw_amount = sol_to_lamports(amount);
+        if (!allow_zero && raw_amount === 0n) throw new RangeError('Buy amount must be positive.');
+    } else {
+        if (!/^\d+$/.test(amount.amount)) throw new RangeError('Token amount must be an unsigned integer.');
+        const raw_amount = BigInt(amount.amount);
+        if (!allow_zero && raw_amount === 0n) throw new RangeError('Token amount must be positive.');
+        if (raw_amount < 0n || raw_amount > 18_446_744_073_709_551_615n)
+            throw new RangeError('Token amount must be a positive u64 integer.');
+        if (!Number.isInteger(amount.decimals) || amount.decimals < 0 || amount.decimals > 255)
+            throw new RangeError('Token decimals must be an integer between 0 and 255.');
+    }
+}
+
 export function validate_create_token_parameters(
-    sol_amount: number,
-    traders?: [Keypair, number][],
+    amount: TokenAmount | number,
+    traders?: [Keypair, TokenAmount | number][],
     bundle_tip?: number
 ): void {
     if ((traders !== undefined) !== (bundle_tip !== undefined))
@@ -486,11 +494,14 @@ export function validate_create_token_parameters(
     );
     if (traders && (traders.length < 1 || traders.length > max_wallets))
         throw new Error(`Initial buyer count must be between 1 and ${max_wallets}.`);
-    common.sol_to_lamports(sol_amount);
-    if (bundle_tip !== undefined && common.sol_to_lamports(bundle_tip) === 0n)
-        throw new Error('Bundle tip must be positive.');
-    for (const [, amount] of traders ?? [])
-        if (common.sol_to_lamports(amount) === 0n) throw new Error('Initial buy amounts must be positive.');
+    validate_trade_amount(amount, true);
+    if (bundle_tip !== undefined && sol_to_lamports(bundle_tip) === 0n) throw new Error('Bundle tip must be positive.');
+    for (const [, amount] of traders ?? []) validate_trade_amount(amount, false);
+}
+
+export function validate_trade_parameters(amount: number | TokenAmount, slippage: number): void {
+    validate_slippage(slippage);
+    validate_trade_amount(amount, false);
 }
 
 function validate_slippage(slippage: number): void {
@@ -498,54 +509,50 @@ function validate_slippage(slippage: number): void {
         throw new RangeError(`Slippage must be greater than 0 and less than ${TRADE_MAX_SLIPPAGE}.`);
 }
 
-export function slippage_up(amount: bigint, slippage: number): bigint {
+export function apply_slippage_up(amount: bigint, slippage: number): bigint {
     return amount + (amount * BigInt(Math.floor(slippage * 10000))) / 10000n;
 }
 
-export function slippage_down(amount: bigint, slippage: number): bigint {
+export function apply_slippage_down(amount: bigint, slippage: number): bigint {
     return amount - (amount * BigInt(Math.floor(slippage * 10000))) / 10000n;
 }
 
-export function validate_trade_parameters(amount: number | TokenAmount, slippage: number): void {
-    validate_slippage(slippage);
-    if (typeof amount === 'number') {
-        if (common.sol_to_lamports(amount) === 0n) throw new RangeError('Buy amount must be positive.');
-    } else {
-        if (!/^\d+$/.test(amount.amount)) throw new RangeError('Token amount must be an unsigned integer.');
-        const raw_amount = BigInt(amount.amount);
-        if (raw_amount <= 0n || raw_amount > 18_446_744_073_709_551_615n)
-            throw new RangeError('Token amount must be a positive u64 integer.');
-        if (!Number.isInteger(amount.decimals) || amount.decimals < 0 || amount.decimals > 255)
-            throw new RangeError('Token decimals must be an integer between 0 and 255.');
-    }
+export function sol_to_lamports(amount: number): bigint {
+    const lamports = Math.floor(amount * LAMPORTS_PER_SOL);
+    if (amount < 0 || !Number.isSafeInteger(lamports) || (amount > 0 && lamports === 0))
+        throw new RangeError('Invalid SOL amount.');
+    return BigInt(lamports);
+}
+
+export function lamports_to_sol(amount: bigint): number {
+    return Number(amount) / LAMPORTS_PER_SOL;
 }
 
 export function get_sol_token_amount(amount: number): TokenAmount {
-    return {
-        uiAmount: amount,
-        amount: common.sol_to_lamports(amount).toString(),
-        decimals: Math.log10(LAMPORTS_PER_SOL)
-    } as TokenAmount;
+    return get_token_amount(amount, Math.log10(LAMPORTS_PER_SOL));
 }
 
 export function get_token_amount(amount: number, decimals: number): TokenAmount {
-    if (decimals < 0 || decimals > 18) throw new Error(`Invalid decimals: ${decimals} `);
+    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 18) throw new Error(`Invalid decimals: ${decimals}`);
+    const raw_amount = Math.floor(amount * 10 ** decimals);
+    if (amount < 0 || !Number.isSafeInteger(raw_amount) || (amount > 0 && raw_amount === 0))
+        throw new RangeError('Invalid token amount.');
     return {
-        uiAmount: amount,
-        amount: (amount * 10 ** decimals).toString(),
-        decimals: decimals
-    } as TokenAmount;
+        uiAmount: raw_amount / 10 ** decimals,
+        amount: BigInt(raw_amount).toString(),
+        decimals
+    };
 }
 
 export function get_token_amount_by_percent(token_amount: TokenAmount, percent: number): TokenAmount {
-    if (percent < 0.0 || percent > 1.0) throw new Error(`Invalid percent: ${percent} `);
-    if (token_amount.uiAmount === null) throw new Error(`Invalid token amount.`);
+    if (!Number.isFinite(percent) || percent < 0.0 || percent > 1.0) throw new Error(`Invalid percent: ${percent}`);
     if (percent === 1.0) return token_amount;
+    const raw_amount = (BigInt(token_amount.amount) * BigInt(Math.floor(percent * 10000))) / 10000n;
     return {
-        uiAmount: Math.floor(token_amount.uiAmount * percent),
-        amount: ((BigInt(token_amount.amount) * BigInt(Math.floor(percent * 10000))) / BigInt(10000)).toString(),
+        uiAmount: Number(raw_amount) / 10 ** token_amount.decimals,
+        amount: raw_amount.toString(),
         decimals: token_amount.decimals
-    } as TokenAmount;
+    };
 }
 
 // Balances, token metadata and transaction history
@@ -608,7 +615,7 @@ export async function get_balance_change(signature: string, address: PublicKey):
         if (balance_index !== undefined && balance_index !== -1) {
             const pre_balance = tx_details?.meta?.preBalances[balance_index] ?? 0n;
             const post_balance = tx_details?.meta?.postBalances[balance_index] ?? 0n;
-            return common.safe_number(pre_balance - post_balance) / LAMPORTS_PER_SOL;
+            return lamports_to_sol(pre_balance - post_balance);
         }
         return 0;
     } catch (err) {
@@ -636,8 +643,8 @@ export function calc_token_balance_changes(
         (change) => change.owner === account.toString() && (!mint || change.mint === mint)
     );
 
-    const pre_sol_balance = common.safe_number(tx.meta.preBalances[change_sol_index]) / LAMPORTS_PER_SOL;
-    const post_sol_balance = common.safe_number(tx.meta.postBalances[change_sol_index]) / LAMPORTS_PER_SOL;
+    const pre_sol_balance = lamports_to_sol(tx.meta.preBalances[change_sol_index]);
+    const post_sol_balance = lamports_to_sol(tx.meta.postBalances[change_sol_index]);
 
     let pre_token_balance = 0.0;
     let post_token_balance = 0.0;
@@ -664,16 +671,16 @@ export function calc_token_balance_changes(
         }
         break;
     }
-    const tips =
+    const tips = lamports_to_sol(
         tips_instructions.reduce(
-            (sum: number, cur: ParsedInstruction) => sum + common.safe_number(cur.parsed.info.lamports),
-            0
-        ) / LAMPORTS_PER_SOL;
+            (sum: bigint, cur: ParsedInstruction) => sum + common.rpc_bigint(cur.parsed.info.lamports),
+            0n
+        )
+    );
 
     let tx_fees = 0;
     if (tx.version === 1) {
-        tx_fees =
-            common.safe_number(tx.transaction.message.transactionConfig?.priorityFeeLamports ?? 0) / LAMPORTS_PER_SOL;
+        tx_fees = lamports_to_sol(tx.transaction.message.transactionConfig?.priorityFeeLamports ?? 0n);
     } else {
         const compute_budget_data = tx.transaction.message.instructions
             .filter((instr): instr is PartiallyDecodedInstruction => {
@@ -820,8 +827,8 @@ export async function get_vault_balance(vault: PublicKey): Promise<{ balance: bi
     return fetch_promise;
 }
 
-export async function get_balance(pubkey: PublicKey, commitment: Commitment = 'finalized'): Promise<number> {
-    return common.safe_number(await global.CONNECTION.getBalance(pubkey, { commitment }));
+export async function get_balance(pubkey: PublicKey, commitment: Commitment = 'finalized'): Promise<bigint> {
+    return global.CONNECTION.getBalance(pubkey, { commitment });
 }
 
 export async function get_token_balance(
@@ -1027,7 +1034,7 @@ export function create_tip_instruction(
         toPubkey:
             tip_account ??
             (provider === TransactionRelay.Sender ? get_random_sender_tip_account() : get_random_jito_tip_account()),
-        lamports: common.sol_to_lamports(tip)
+        lamports: sol_to_lamports(tip)
     });
 }
 
@@ -1295,12 +1302,12 @@ function compile_tx(
     }
 ): VersionedTransaction {
     if (instructions.length === 0 || instructions.length > MAX_TRANSACTION_INSTRUCTIONS)
-        throw new Error('Transaction instruction limit exceeded.');
+        throw new CompileTransactionError('Transaction instruction limit exceeded.');
     if (
         version === 1 &&
         instructions.some((instruction) => instruction.programId.equals(ComputeBudgetProgram.programId))
     )
-        throw new Error('V1 transactions must configure resources through the message config.');
+        throw new CompileTransactionError('V1 transactions must configure resources through the message config.');
     const transaction_message = new TransactionMessage({
         payerKey: payer,
         recentBlockhash: recent_blockhash,
@@ -1317,11 +1324,12 @@ function compile_tx(
               )
             : 0);
     if (account_count > MAX_TRANSACTION_ACCOUNTS || message.header.numRequiredSignatures > MAX_TRANSACTION_SIGNATURES)
-        throw new Error('Transaction account or signer limit exceeded.');
+        throw new CompileTransactionError('Transaction account or signer limit exceeded.');
 
     const transaction = new VersionedTransaction(message);
     const max_bytes = version === 1 ? 4096 : 1232;
-    if (transaction.serialize().length > max_bytes) throw new Error(`Transaction exceeds ${max_bytes} bytes.`);
+    if (transaction.serialize().length > max_bytes)
+        throw new CompileTransactionError(`Transaction exceeds ${max_bytes} bytes.`);
     return transaction;
 }
 
@@ -1659,12 +1667,11 @@ async function check_transaction_status(
 // SOL and token transfers, burns and account cleanup
 
 export async function send_lamports(
-    lamports: number,
+    lamports: bigint,
     sender: Keypair,
     receiver: PublicKey,
     priority?: PriorityLevel
 ): Promise<String> {
-    lamports = Math.floor(lamports);
     let instructions = [
         SystemProgram.transfer({
             fromPubkey: sender.publicKey,
@@ -1679,7 +1686,7 @@ export async function send_lamports(
     if (priority && version === 1) {
         if (lamports <= 5000) throw new Error(`Spend cap of ${lamports} lamports is insufficient to cover fees.`);
         const simulation_instructions = [
-            SystemProgram.transfer({ fromPubkey: sender.publicKey, toPubkey: receiver, lamports: lamports - 5000 })
+            SystemProgram.transfer({ fromPubkey: sender.publicKey, toPubkey: receiver, lamports: lamports - 5000n })
         ];
         const limits = await estimate_resource_limits_v1(simulation_instructions, sender.publicKey, ctx);
         const fee = await get_priority_fee_v1(
@@ -1701,7 +1708,7 @@ export async function send_lamports(
             SystemProgram.transfer({
                 fromPubkey: sender.publicKey,
                 toPubkey: receiver,
-                lamports: lamports - 5000
+                lamports: lamports - 5000n
             })
         ];
         const units = await estimate_compute_unit_limit(simulation_instructions, [sender], ctx);
@@ -1715,7 +1722,7 @@ export async function send_lamports(
             },
             ctx
         );
-        const transfer_lamports = lamports - 5000 - Math.ceil((fees * units) / 10 ** 6);
+        const transfer_lamports = lamports - 5000n - BigInt(Math.ceil((fees * units) / 10 ** 6));
         if (transfer_lamports <= 0)
             throw new Error(`Spend cap of ${lamports} lamports is insufficient to cover transaction fees.`);
         instructions = [
@@ -1738,7 +1745,7 @@ export async function send_lamports(
 }
 
 export async function retry_send_lamports(
-    amount: number,
+    lamports: bigint,
     sender: Keypair,
     receiver: PublicKey,
     priority?: PriorityLevel,
@@ -1746,13 +1753,13 @@ export async function retry_send_lamports(
 ): Promise<String> {
     while (retries > 0) {
         try {
-            return await send_lamports(amount, sender, receiver, priority);
+            return await send_lamports(lamports, sender, receiver, priority);
         } catch (error) {
             if (retries === 1 || (error instanceof TransactionSubmissionError && error.outcome === 'unknown'))
                 throw error;
             const balance = await get_balance(sender.publicKey, COMMITMENT);
-            if (balance === 0) throw new Error(`Sender has no balance.`);
-            if (balance < amount) amount = balance;
+            if (balance === 0n) throw new Error(`Sender has no balance.`);
+            if (balance < lamports) lamports = balance;
             retries--;
         }
         await common.sleep(TRADE_RETRY_INTERVAL_MS * (retries + 1));
@@ -1830,7 +1837,7 @@ export async function close_accounts(
         (acc) => acc.data.amount === 0n || acc.data.mint.equals(SOL_MINT) || burn
     );
 
-    if ((await get_balance(owner.publicKey, COMMITMENT)) === 0) {
+    if ((await get_balance(owner.publicKey, COMMITMENT)) === 0n) {
         if (accounts_to_close.length === 0)
             return {
                 unsold_mints,
@@ -2092,71 +2099,53 @@ export async function generate_trade_lta(
     }
 }
 
-// Token creation bundles
+// Quote-related utilities and functions
 
-export async function send_create_bundle({
-    instructions,
-    creator,
-    mint,
-    buyers,
-    tip,
-    priority,
-    alts,
-    token_program,
-    wallet_compute_units
-}: {
-    instructions: TransactionInstruction[];
-    creator: Keypair;
-    mint: Keypair;
-    buyers: InitialBuy[];
-    tip: number;
-    priority?: PriorityLevel;
-    alts: AddressLookupTableAccount[];
-    token_program: PublicKey;
-    wallet_compute_units: number;
-}): Promise<String> {
-    const version = global.TRANSACTION_VERSION ?? 0;
-    const generated =
-        version === 0
-            ? await generate_trade_lta(
-                  creator,
-                  buyers.map(({ buyer }) => buyer),
-                  mint.publicKey,
-                  token_program
-              )
-            : undefined;
-    try {
-        const tables = generated ? [generated, ...alts] : alts;
-        const tip_instruction = create_tip_instruction(creator.publicKey, tip);
-        const tip_account = tip_instruction.keys[1].pubkey;
-        const groups = pack_tx_groups(
-            buyers,
-            (buy) => buy.instructions,
-            (buy) => buy.buyer.publicKey,
-            version,
-            tables,
-            (payer) => [create_tip_instruction(payer, tip, undefined, tip_account)],
-            Math.min(TRADE_MAX_WALLETS_PER_CREATE_TX, Math.floor(MAX_COMPUTE_UNIT_LIMIT / wallet_compute_units))
-        );
-        if (groups.length + 1 > get_bundle_size())
-            throw new Error('Initial buys do not fit in one atomic create bundle. Reduce the buyer count.');
-        return await retry_send_bundle(
-            [instructions, ...groups.map((group) => group.flatMap((buy) => buy.instructions))],
-            [[creator, mint], ...groups.map((group) => group.map(({ buyer }) => buyer))],
-            tip,
-            priority,
-            tables,
-            MAX_COMPUTE_UNIT_LIMIT,
-            undefined,
-            { tip_account }
-        );
-    } finally {
-        if (generated) {
-            await deactivate_ltas(creator, [generated])
-                .then(() =>
-                    common.log(`ALT ${generated.key} deactivated; reclaim its rent with close-ltas after cooldown.`)
-                )
-                .catch((error) => common.warn(`Could not deactivate ALT ${generated.key}: ${error}`));
-        }
+const quote_cache = new Map<string, { mint: PublicKey; token_program: PublicKey; decimals: number }>();
+
+export function normalize_quote_mint(value?: string | PublicKey): PublicKey {
+    const mint = value ? new PublicKey(value) : SOL_MINT;
+    return mint.equals(PublicKey.default) ? SOL_MINT : mint;
+}
+
+export async function get_quote_info(mint: PublicKey) {
+    const known = get_quote_by_mint(mint) ?? quote_cache.get(mint.toBase58());
+    if (known) return known;
+    const account = await global.CONNECTION.getAccountInfo(mint, COMMITMENT);
+    if (!account || (!account.owner.equals(TOKEN_PROGRAM_ID) && !account.owner.equals(TOKEN_2022_PROGRAM_ID)))
+        throw new Error(`Invalid quote mint: ${mint}`);
+    const decoded = decode_mint_account(account);
+    const result = { mint, token_program: account.owner, decimals: decoded.decimals };
+    quote_cache.set(mint.toBase58(), result);
+    return result;
+}
+
+export async function prepare_quote_account(owner: Keypair, mint: PublicKey, amount?: bigint) {
+    const quote = await get_quote_info(mint);
+    const ata = await getAssociatedTokenAddress(mint, owner.publicKey, quote.token_program);
+    const setup: TransactionInstruction[] = [
+        createAssociatedTokenAccountIdempotentInstruction(owner, ata, owner.publicKey, mint, quote.token_program)
+    ];
+    const cleanup: TransactionInstruction[] = [];
+    if (mint.equals(SOL_MINT)) {
+        if (amount !== undefined && amount > 0n)
+            setup.push(
+                SystemProgram.transfer({ fromPubkey: owner.publicKey, toPubkey: ata, lamports: amount }),
+                createSyncNativeInstruction(ata)
+            );
+        cleanup.push(createCloseAccountInstruction(ata, owner.publicKey, owner.publicKey));
     }
+    return { ...quote, ata, setup, cleanup };
+}
+
+export function quote_metrics(raw_price: number, supply: bigint, quote_decimals: number, base_decimals = 6) {
+    return {
+        price_quote: (raw_price * 10 ** base_decimals) / 10 ** quote_decimals,
+        mcap_quote: (raw_price * Number(supply)) / 10 ** quote_decimals
+    };
+}
+
+export async function quote_price(mint: PublicKey): Promise<number> {
+    const asset = await get_token_meta(mint);
+    return asset.price_per_token ?? 0;
 }

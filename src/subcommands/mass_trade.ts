@@ -1,43 +1,49 @@
-import { AddressLookupTableAccount, LAMPORTS_PER_SOL, Keypair, TransactionInstruction } from '@solana/web3.js';
+import { AddressLookupTableAccount, Keypair, TransactionInstruction } from '@solana/web3.js';
 import * as common from '../common/common';
 import * as trade from '../common/trade_common';
 import { COMMITMENT, PriorityLevel } from '../constants';
-import { get_program_compute_unit_limit } from '../common/get_trader';
+import { Executor } from '../common/executor';
 
 export async function bundle_buy(
     mint_meta: trade.IMintMeta,
     entries: [common.Wallet, number][],
-    trader: trade.IProgramTrader,
+    executor: Executor,
     slippage: number,
     bundle_tip: number,
     priority: PriorityLevel
 ): Promise<void> {
-    const wallet_bundles = common.chunks(entries, trade.get_bundle_size());
+    const bundle_size = trade.get_bundle_size();
     const bundles: Promise<void>[] = [];
-    const ltas: AddressLookupTableAccount[] = [];
     let failed = 0;
+    let wallet_index = 0;
 
-    for (const wallet_bundle of wallet_bundles) {
+    while (wallet_index < entries.length) {
         const instructions: TransactionInstruction[][] = [];
         const signers: Keypair[][] = [];
-        for (const entry of wallet_bundle) {
-            const [wallet, amount] = entry;
+        const ltas: AddressLookupTableAccount[] = [];
+        let funded = false;
+        for (; wallet_index < entries.length && instructions.length < bundle_size; wallet_index++) {
+            const [wallet, amount] = entries[wallet_index];
             const buyer = wallet.keypair;
             try {
-                const balance = await trade.get_balance(buyer.publicKey, COMMITMENT);
-                if (balance < amount) continue;
+                const funding = await executor.has_enough_balances(amount, buyer.publicKey, mint_meta, slippage);
+                if (funding.status === 'insufficient') continue;
                 common.log(
                     `Buying ${amount.toFixed(6)} SOL worth of tokens with ${buyer.publicKey.toString().padEnd(44, ' ')} (${wallet.name})...`
                 );
-                const [buy_instructions, buy_ltas] = await trader.buy_token_instructions(
+                const [buy_instructions, buy_ltas] = await executor.buy_token_instructions(
                     amount,
                     buyer,
                     mint_meta,
                     slippage
                 );
-                mint_meta = trader.update_mint_meta_reserves(mint_meta, amount);
-                instructions.push(buy_instructions);
-                signers.push([buyer]);
+                if (buy_instructions.length > bundle_size)
+                    throw new Error(`Wallet requires more than ${bundle_size} transactions in one bundle.`);
+                if (instructions.length + buy_instructions.length > bundle_size) break;
+                funded ||= buy_instructions.length > 1;
+                mint_meta = executor.update_mint_meta_reserves(mint_meta, funding.quote_amount, 'buy');
+                instructions.push(...buy_instructions);
+                signers.push(...buy_instructions.map(() => [buyer]));
                 for (const lta of buy_ltas || []) {
                     if (!ltas.some((existing) => existing.key.equals(lta.key))) ltas.push(lta);
                 }
@@ -49,7 +55,7 @@ export async function bundle_buy(
         if (instructions.length === 0) continue;
         bundles.push(
             trade
-                .send_bundle(instructions, signers, bundle_tip, priority, ltas, get_program_compute_unit_limit())
+                .send_bundle(instructions, signers, bundle_tip, priority, ltas, executor.get_compute_unit_limit(funded))
                 .then((signature) => common.log(common.green(`Bundle completed, signature: ${signature}`)))
                 .catch((error) => {
                     failed++;
@@ -57,7 +63,7 @@ export async function bundle_buy(
                 })
         );
         await common.sleep(trade.get_bundle_interval_ms());
-        mint_meta = await trader.update_mint_meta(mint_meta);
+        mint_meta = await executor.update_mint_meta(mint_meta);
     }
     await Promise.allSettled(bundles);
     if (failed > 0) throw new Error(`${failed} bundle buy operation(s) failed.`);
@@ -66,7 +72,7 @@ export async function bundle_buy(
 export async function bundle_sell(
     mint_meta: trade.IMintMeta,
     wallets: common.Wallet[],
-    trader: trade.IProgramTrader,
+    executor: Executor,
     percent: number,
     slippage: number,
     bundle_tip: number,
@@ -94,30 +100,37 @@ export async function bundle_sell(
         .filter((wallet) => wallet !== null)
         .sort((a, b) => b!.token_amount.uiAmount! - a!.token_amount.uiAmount!);
 
-    const wallet_bundles = common.chunks(wallets_with_balance, trade.get_bundle_size());
+    const bundle_size = trade.get_bundle_size();
     const bundles: Promise<void>[] = [];
-    const ltas: AddressLookupTableAccount[] = [];
     let failed = 0;
+    let wallet_index = 0;
 
-    for (const wallet_bundle of wallet_bundles) {
+    while (wallet_index < wallets_with_balance.length) {
         const instructions: TransactionInstruction[][] = [];
         const signers: Keypair[][] = [];
-        for (const wallet of wallet_bundle) {
+        const ltas: AddressLookupTableAccount[] = [];
+        let funded = false;
+        for (; wallet_index < wallets_with_balance.length && instructions.length < bundle_size; wallet_index++) {
+            const wallet = wallets_with_balance[wallet_index];
             const seller = wallet.keypair;
             const token_amount = trade.get_token_amount_by_percent(wallet.token_amount, percent);
             try {
                 common.log(
                     `Selling ${token_amount.uiAmount} tokens from ${seller.publicKey.toString().padEnd(44, ' ')} (${wallet.name})...`
                 );
-                const [sell_instructions, sell_ltas] = await trader.sell_token_instructions(
+                const [sell_instructions, sell_ltas] = await executor.sell_token_instructions(
                     token_amount,
                     seller,
                     mint_meta,
                     slippage
                 );
-                mint_meta = trader.update_mint_meta_reserves(mint_meta, token_amount);
-                instructions.push(sell_instructions);
-                signers.push([seller]);
+                if (sell_instructions.length > bundle_size)
+                    throw new Error(`Wallet requires more than ${bundle_size} transactions in one bundle.`);
+                if (instructions.length + sell_instructions.length > bundle_size) break;
+                funded ||= sell_instructions.length > 1;
+                mint_meta = executor.update_mint_meta_reserves(mint_meta, token_amount, 'sell');
+                instructions.push(...sell_instructions);
+                signers.push(...sell_instructions.map(() => [seller]));
                 for (const lta of sell_ltas || []) {
                     if (!ltas.some((existing) => existing.key.equals(lta.key))) ltas.push(lta);
                 }
@@ -129,7 +142,7 @@ export async function bundle_sell(
         if (instructions.length === 0) continue;
         bundles.push(
             trade
-                .send_bundle(instructions, signers, bundle_tip, priority, ltas, get_program_compute_unit_limit())
+                .send_bundle(instructions, signers, bundle_tip, priority, ltas, executor.get_compute_unit_limit(funded))
                 .then((signature) => common.log(common.green(`Bundle completed, signature: ${signature}`)))
                 .catch((error) => {
                     failed++;
@@ -137,7 +150,7 @@ export async function bundle_sell(
                 })
         );
         await common.sleep(trade.get_bundle_interval_ms());
-        mint_meta = await trader.update_mint_meta(mint_meta);
+        mint_meta = await executor.update_mint_meta(mint_meta);
     }
     await Promise.allSettled(bundles);
     if (failed > 0) throw new Error(`${failed} bundle sell operation(s) failed.`);
@@ -146,7 +159,7 @@ export async function bundle_sell(
 export async function seq_buy(
     mint_meta: trade.IMintMeta,
     entries: [common.Wallet, number][],
-    trader: trade.IProgramTrader,
+    executor: Executor,
     slippage: number,
     priority: PriorityLevel,
     protection_tip?: number,
@@ -158,13 +171,13 @@ export async function seq_buy(
         const [wallet, amount] = entry;
         const buyer = wallet.keypair;
         try {
-            const balance = (await trade.get_balance(buyer.publicKey, COMMITMENT)) / LAMPORTS_PER_SOL;
-            if (balance < amount) continue;
+            const funding = await executor.has_enough_balances(amount, buyer.publicKey, mint_meta, slippage);
+            if (funding.status === 'insufficient') continue;
             common.log(
                 `Buying ${amount.toFixed(6)} SOL worth of tokens with ${buyer.publicKey.toString().padEnd(44, ' ')} (${wallet.name})...`
             );
             try {
-                const signature = await trader.buy_token(
+                const signature = await executor.buy_token(
                     amount,
                     buyer,
                     mint_meta,
@@ -179,7 +192,7 @@ export async function seq_buy(
                 const message = error instanceof Error ? error.message : String(error);
                 common.error(common.red(`Transaction failed for ${wallet.name} (${wallet.id}): ${message}`));
             }
-            mint_meta = await trader.update_mint_meta(mint_meta);
+            mint_meta = await executor.update_mint_meta(mint_meta);
         } catch (error) {
             failed++;
             common.error(common.red(`Failed to buy the token for ${wallet.name}: ${error}`));
@@ -191,7 +204,7 @@ export async function seq_buy(
 export async function seq_sell(
     mint_meta: trade.IMintMeta,
     wallets: common.Wallet[],
-    trader: trade.IProgramTrader,
+    executor: Executor,
     percent: number,
     slippage: number,
     priority: PriorityLevel,
@@ -215,7 +228,7 @@ export async function seq_sell(
                 `Selling ${token_amount_to_sell.uiAmount} tokens from ${seller.publicKey.toString().padEnd(44, ' ')} (${wallet.name})...`
             );
             try {
-                const signature = await trader.sell_token(
+                const signature = await executor.sell_token(
                     token_amount_to_sell,
                     seller,
                     mint_meta,
@@ -230,7 +243,7 @@ export async function seq_sell(
                 const message = error instanceof Error ? error.message : String(error);
                 common.error(common.red(`Transaction failed for ${wallet.name} (${wallet.id}): ${message}`));
             }
-            mint_meta = await trader.update_mint_meta(mint_meta);
+            mint_meta = await executor.update_mint_meta(mint_meta);
         } catch (error) {
             failed++;
             common.error(common.red(`Failed to sell the token for ${wallet.name}: ${error}`));

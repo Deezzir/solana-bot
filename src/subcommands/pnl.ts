@@ -109,8 +109,7 @@ async function calculate_profit_loss(
     for (const tx of transactions) {
         if (!tx.transaction_data.mint) continue;
         const mint = tx.transaction_data.mint;
-        const fees = tx.balance_changes.fees;
-        const change_sol = tx.balance_changes.change_sol - Math.sign(tx.balance_changes.change_sol) * fees;
+        const change_sol = tx.balance_changes.change_sol + tx.balance_changes.fees;
         const change_tokens = tx.balance_changes.change_tokens;
 
         if (change_sol > 0 && change_tokens == 0) continue;

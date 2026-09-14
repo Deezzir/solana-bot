@@ -1,7 +1,9 @@
 {
     "name": "solana-bot",
-    "version": "1.0.4",
+    "version": "1.1.0",
     "description": "Solana bot",
+    "author": "deezzir@gmail.com",
+    "license": "MIT",
     "main": "./src/bot.ts",
     "bin": {
         "solana-bot": "./src/bot.ts"
@@ -28,8 +30,6 @@
         "prune": "ts-prune",
         "format": "prettier --config .prettierrc 'src/**/*.ts' --write"
     },
-    "author": "deezzir@gmail.com",
-    "license": "MIT",
     "devDependencies": {
         "@types/bun": "^1.3.14",
         "@types/figlet": "^1.7.0",
@@ -46,7 +46,6 @@
         "bs58": "^6.0.0",
         "commander": "^15.0.0",
         "csv-parse": "^7.0.2",
-        "dotenv": "^17.4.2",
         "figlet": "^1.11.4",
         "inquirer": "^14.0.2"
     }

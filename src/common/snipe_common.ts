@@ -1,7 +1,7 @@
 import { Worker } from 'worker_threads';
 import inquirer from 'inquirer';
 import { clearLine, moveCursor } from 'readline';
-import { LAMPORTS_PER_SOL, ParsedTransactionWithMeta, PublicKey } from '@solana/web3.js';
+import { ParsedTransactionWithMeta, PublicKey } from '@solana/web3.js';
 import {
     COMMITMENT,
     PRIORITY_FEE_TTL_MS,
@@ -12,11 +12,19 @@ import {
     SNIPE_MIN_MCAP,
     SNIPE_SELL_SLIPPAGE,
     SNIPE_SUB_COMMITMENT,
+    SOL_MINT,
     TransactionRelay,
     TRADE_MAX_SLIPPAGE
 } from '../constants';
 import * as common from './common';
-import { IProgramTrader, get_balance, get_priority_fee_estimate, retry_get_tx } from './trade_common';
+import {
+    IProgramProvider,
+    get_balance,
+    get_priority_fee_estimate,
+    lamports_to_sol,
+    retry_get_tx
+} from './trade_common';
+import { quote_price } from './trade_common';
 import bs58 from 'bs58';
 import { configure_rpc_rate_limiter, create_rpc_rate_limit_state } from './rate_limit';
 import {
@@ -42,6 +50,7 @@ type BotConfig = {
     priority_level: PriorityLevel;
     protection_tip: number;
     mev_protect: boolean;
+    funding: boolean;
     token_name: string | undefined;
     token_ticker: string | undefined;
     mint: PublicKey | undefined;
@@ -64,6 +73,7 @@ export type WorkerConfig = {
     priority_level: PriorityLevel;
     transaction_relay: TransactionRelay;
     transaction_version: 0 | 1;
+    funding: boolean;
     rpc_rate_limit_state: SharedArrayBuffer;
 };
 
@@ -73,7 +83,7 @@ type WorkerJob = {
     job: Promise<void>;
 };
 
-type WorkerMessage = 'stop' | 'buy' | 'mint' | 'sell' | 'config' | 'priority_fee';
+type WorkerMessage = 'stop' | 'buy' | 'mint' | 'sell' | 'config' | 'priority_fee' | 'market_cap';
 
 export interface ISniper {
     snipe(wallets: common.Wallet[], sol_price: number): Promise<void>;
@@ -145,7 +155,7 @@ export function update_config(config: WorkerConfig | BotConfig, key: string, val
 
 export abstract class SniperBase implements ISniper {
     protected bot_config: BotConfig | null;
-    protected trader: IProgramTrader;
+    protected provider: IProgramProvider;
     protected workers: WorkerJob[];
     private rpc_rate_limit_state: SharedArrayBuffer;
 
@@ -157,9 +167,9 @@ export abstract class SniperBase implements ISniper {
     private subscribe_type: SubscriberType;
     private wait_stop_func: (() => void) | null = null;
 
-    constructor(trader: IProgramTrader, subscribe_type: SubscriberType = SubscriberType.Tx) {
+    constructor(provider: IProgramProvider, subscribe_type: SubscriberType = SubscriberType.Tx) {
         this.workers = new Array<WorkerJob>();
-        this.trader = trader;
+        this.provider = provider;
         this.bot_config = null;
         this.rpc_rate_limit_state = create_rpc_rate_limit_state();
         this.subscribe_type = subscribe_type;
@@ -216,7 +226,7 @@ export abstract class SniperBase implements ISniper {
         const name = token_name.toLowerCase();
         const ticker = token_ticker.toLowerCase();
         let completed = false;
-        common.log(`Waiting for the new token create for the '${this.trader.get_name()}' program...`);
+        common.log(`Waiting for the new token create for the '${this.provider.get_name()}' program...`);
 
         switch (this.subscriber.type) {
             case SubscriberType.Logs:
@@ -233,7 +243,7 @@ export abstract class SniperBase implements ISniper {
                             completed = true;
                             this.wait_stop_func = null;
                             await this.wait_create_unsubscribe();
-                            common.log(`Caught the new token drop for the '${this.trader.get_name()}' program`);
+                            common.log(`Caught the new token drop for the '${this.provider.get_name()}' program`);
                             resolve(result);
                         } catch (err) {
                             common.error(common.red(`Failed fetching the parsed transaction: ${err}`));
@@ -256,7 +266,7 @@ export abstract class SniperBase implements ISniper {
                         completed = true;
                         this.wait_stop_func = null;
                         await this.wait_create_unsubscribe();
-                        common.log(`Caught the new token drop for the '${this.trader.get_name()}' program`);
+                        common.log(`Caught the new token drop for the '${this.provider.get_name()}' program`);
                         resolve(result);
                     };
 
@@ -321,6 +331,8 @@ export abstract class SniperBase implements ISniper {
         let priority_fee: number | undefined = use_cached_priority_fee ? 0 : undefined;
         let priority_refreshing = false;
         let priority_refresh_timer: NodeJS.Timeout | undefined;
+        let market_cap_timer: NodeJS.Timeout | undefined;
+        let poll_stopped = false;
         const refresh_priority_fee = async () => {
             if (priority_refreshing) return;
             priority_refreshing = true;
@@ -351,44 +363,54 @@ export abstract class SniperBase implements ISniper {
             this.bot_config.mint = result.mint;
             common.log(`[Main Worker] Token detected: ${this.bot_config.mint.toString()}`);
 
-            let mint_meta = await this.trader.default_mint_meta(this.bot_config.mint, sol_price, result.misc);
+            let mint_meta = await this.provider.default_mint_meta(this.bot_config.mint, result.misc);
 
             void this.workers_post_message('buy', {
-                mint: this.bot_config.mint.toString(),
-                sol_price,
-                misc: result.misc,
+                mint_meta: mint_meta.serialize(),
                 priority_fee
             });
 
             let migrated: boolean = false;
-            let poll_stopped = false;
             let unsubscribe: (() => void) | null = null;
             let last_subscription_update = 0;
 
-            const publish_update = (next_meta: typeof mint_meta) => {
-                last_subscription_update = performance.now();
+            const publish_market_cap = async () => {
+                if (poll_stopped) return;
+                try {
+                    const { quote_mint_pubkey, token_quote_mc } = mint_meta;
+                    const price = quote_mint_pubkey.equals(SOL_MINT)
+                        ? sol_price
+                        : await quote_price(quote_mint_pubkey).catch(() => 0);
+                    if (poll_stopped) return;
+                    const usd_market_cap = Number.isFinite(price) && price > 0 ? token_quote_mc * price : 0;
+                    if (global.RL) global.RL.emit('mcap', usd_market_cap);
+                    await this.workers_post_message('market_cap', usd_market_cap);
+                } catch (error) {
+                    common.warn(`Failed to publish market cap: ${error}`);
+                }
+                if (!poll_stopped) market_cap_timer = setTimeout(publish_market_cap, SNIPE_META_POLL_INTERVAL_MS);
+            };
+
+            const publish_mint = (next_meta: typeof mint_meta) => {
                 mint_meta = next_meta;
                 if (mint_meta.migrated && !migrated) {
                     migrated = true;
                     common.log('[Main Worker] Token migrated to liquidity pool...');
                 }
-                if (global.RL) global.RL.emit('mcap', mint_meta.token_usd_mc);
-                this.workers_post_message('mint', mint_meta.serialize());
+                void this.workers_post_message('mint', mint_meta.serialize());
+            };
+            const publish_update = (next_meta: typeof mint_meta) => {
+                last_subscription_update = performance.now();
+                publish_mint(next_meta);
             };
 
             const poll = async () => {
                 if (poll_stopped) return;
                 try {
                     const poll_started = performance.now();
-                    const next_meta = await this.trader.update_mint_meta(mint_meta, sol_price);
+                    const next_meta = await this.provider.update_mint_meta(mint_meta);
                     if (!poll_stopped && last_subscription_update <= poll_started) {
-                        mint_meta = next_meta;
-                        if (mint_meta.migrated && !migrated) {
-                            migrated = true;
-                            common.log('[Main Worker] Token migrated to liquidity pool...');
-                        }
-                        if (global.RL) global.RL.emit('mcap', mint_meta.token_usd_mc);
-                        this.workers_post_message('mint', mint_meta.serialize());
+                        publish_mint(next_meta);
                     }
                 } catch (err) {
                     common.error(common.red(`Failed to update token metadata`));
@@ -397,20 +419,17 @@ export abstract class SniperBase implements ISniper {
             };
 
             setTimeout(poll, SNIPE_META_POLL_INTERVAL_MS);
-            unsubscribe = await this.trader.subscribe_mint_meta(
-                mint_meta,
-                publish_update,
-                sol_price,
-                SNIPE_SUB_COMMITMENT
-            );
+            unsubscribe = await this.provider.subscribe_mint_meta(mint_meta, publish_update, SNIPE_SUB_COMMITMENT);
+            market_cap_timer = setTimeout(publish_market_cap, 0);
 
             await this.workers_wait();
 
             if (unsubscribe) unsubscribe();
-            poll_stopped = true;
         } catch (error) {
             throw new Error(`Failed to snipe the token: ${error}`);
         } finally {
+            poll_stopped = true;
+            if (market_cap_timer) clearTimeout(market_cap_timer);
             if (priority_refresh_timer) clearInterval(priority_refresh_timer);
             common.close_readline();
         }
@@ -431,7 +450,7 @@ export abstract class SniperBase implements ISniper {
         const balance_checks = wallets.map(async (wallet) => {
             const holder = wallet.keypair;
             try {
-                const sol_balance = (await get_balance(holder.publicKey, COMMITMENT)) / LAMPORTS_PER_SOL;
+                const sol_balance = lamports_to_sol(await get_balance(holder.publicKey, COMMITMENT));
                 if (sol_balance <= min_balance) {
                     common.error(
                         `Address: ${holder.publicKey.toString().padEnd(44, ' ')} has no balance. (wallet ${wallet.id})`
@@ -507,7 +526,7 @@ export abstract class SniperBase implements ISniper {
 
         for (const wallet of wallets) {
             const worker_data: WorkerConfig = {
-                program: this.trader.get_name() as common.Program,
+                program: this.provider.get_name() as common.Program,
                 secret: wallet.keypair.secretKey,
                 id: wallet.id,
                 trade_interval: this.bot_config.trade_interval,
@@ -521,6 +540,7 @@ export abstract class SniperBase implements ISniper {
                 priority_level: this.bot_config.priority_level,
                 protection_tip: this.bot_config.protection_tip,
                 mev_protect: this.bot_config.mev_protect,
+                funding: this.bot_config.funding,
                 transaction_relay: global.TRANSACTION_RELAY,
                 transaction_version: global.TRANSACTION_VERSION,
                 rpc_rate_limit_state: this.rpc_rate_limit_state
@@ -683,7 +703,8 @@ export abstract class SniperBase implements ISniper {
             buy_slippage,
             priority_level,
             protection_tip,
-            mev_protect
+            mev_protect,
+            funding
         } = json;
         if (mint === undefined && token_name === undefined && token_ticker === undefined) {
             throw new Error('Missing mint or token name and token ticker.');
@@ -691,7 +712,10 @@ export abstract class SniperBase implements ISniper {
         if (mint !== undefined) {
             if (token_name !== undefined || token_ticker !== undefined)
                 throw new Error('Mint and token name/token ticker are mutually exclusive. Choose one.');
-            if (!common.is_valid_pubkey(mint) || (await this.trader.get_mint_meta(new PublicKey(mint))) === undefined) {
+            if (
+                !common.is_valid_pubkey(mint) ||
+                (await this.provider.get_mint_meta(new PublicKey(mint))) === undefined
+            ) {
                 throw new Error('Invalid mint public key.');
             }
             json.mint = new PublicKey(json.mint);
@@ -767,9 +791,13 @@ export abstract class SniperBase implements ISniper {
         if (mev_protect && (!protection_tip || protection_tip <= 0)) {
             throw new Error('mev_protect requires a protection tip to be greater than 0.');
         }
+        if (funding !== undefined && typeof funding !== 'boolean') {
+            throw new Error('funding must be a boolean');
+        }
 
         if (!('is_buy_once' in json)) json.is_buy_once = false;
         if (!('mev_protect' in json)) json.mev_protect = false;
+        if (!('funding' in json)) json.funding = false;
         if (!('trade_interval' in json)) json.trade_interval = 0;
         if (!('start_interval' in json)) json.start_interval = 0;
         if (!('mcap_threshold' in json)) json.mcap_threshold = Infinity;
@@ -909,6 +937,12 @@ export abstract class SniperBase implements ISniper {
                     name: 'is_buy_once',
                     message: 'Do you want to buy only once?',
                     default: false
+                },
+                {
+                    type: 'confirm',
+                    name: 'funding',
+                    message: 'Do you want to enable token funding?',
+                    default: false
                 }
             ]);
 
@@ -967,7 +1001,7 @@ export abstract class SniperBase implements ISniper {
                         message: 'Enter the mint public key:',
                         validate: async (value: string) => {
                             if (!common.is_valid_pubkey(value)) return 'Please enter a valid public key.';
-                            if ((await this.trader.get_mint_meta(new PublicKey(value))) === undefined)
+                            if ((await this.provider.get_mint_meta(new PublicKey(value))) === undefined)
                                 return 'Mint not found. Please enter a valid mint public key.';
                             return true;
                         },
@@ -1010,6 +1044,7 @@ export abstract class SniperBase implements ISniper {
             priority_level: bot_config.priority_level.toString(),
             protection_tip: bot_config.protection_tip ? `${bot_config.protection_tip} SOL` : 'N/A',
             mev_protect: bot_config.mev_protect ? 'Yes' : 'No',
+            funding: bot_config.funding ? 'Yes' : 'No',
             spend_limit: bot_config.spend_limit === Infinity ? 'N/A' : `${bot_config.spend_limit} SOL`,
             min_buy: bot_config.min_buy ? `${bot_config.min_buy} SOL` : 'N/A',
             max_buy: bot_config.max_buy ? `${bot_config.max_buy} SOL` : 'N/A',

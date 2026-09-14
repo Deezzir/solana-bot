@@ -8,67 +8,16 @@ import {
 } from '@solana/web3.js';
 import * as common from '../common/common';
 import * as trade from '../common/trade_common';
-import {
-    COMMITMENT,
-    JUPITER_API_URL,
-    PriorityLevel,
-    SOL_MINT,
-    TRADE_DEFAULT_TOKEN_DECIMALS,
-    TRADE_RAYDIUM_SWAP_TAX
-} from '../constants';
+import { COMMITMENT, SOL_MINT, TRADE_DEFAULT_TOKEN_DECIMALS, TRADE_RAYDIUM_SWAP_TAX } from '../constants';
 import { TOKEN_PROGRAM_ID } from '../common/token';
-
-type JupiterQuote = {
-    inputMint: string;
-    inAmount: string;
-    outputMint: string;
-    outAmount: string;
-    otherAmountThreshold: string;
-    swapMode: 'ExactIn' | 'ExactOut';
-    slippageBps: number;
-    platformFee: {
-        amount: string;
-        feeBps: number;
-    };
-    priceImpactPct: string;
-    routePlan: Array<{
-        swapInfo: {
-            ammKey: string;
-            label: string;
-            inputMint: string;
-            outputMint: string;
-            inAmount: string;
-            outAmount: string;
-            feeAmount: string;
-            feeMint: string;
-        };
-        percent: number;
-    }>;
-    contextSlot: number;
-    timeTaken: number;
-};
-
-type JupiterInstruction = {
-    programId: string;
-    accounts: Array<{ pubkey: string; isSigner: boolean; isWritable: boolean }>;
-    data: string;
-};
-
-type JupiterInstructions = {
-    tokenLedgerInstruction?: JupiterInstruction | null;
-    setupInstructions?: JupiterInstruction[];
-    otherInstructions?: JupiterInstruction[];
-    swapInstruction?: JupiterInstruction | null;
-    cleanupInstruction?: JupiterInstruction | null;
-    addressLookupTableAddresses?: string[];
-};
+import { quote_jupiter, swap_jupiter_instructions } from './swap_jupiter';
 
 class JupiterMintMeta implements trade.IMintMeta {
     mint!: string;
+    quote_mint!: string;
     name: string = 'Unknown';
     symbol: string = 'Unknown';
     total_supply: bigint = BigInt(0);
-    usd_market_cap: number = 0;
     market_cap: number = 0;
     fee: number = TRADE_RAYDIUM_SWAP_TAX;
     token_program_id!: string;
@@ -89,8 +38,8 @@ class JupiterMintMeta implements trade.IMintMeta {
         return this.symbol;
     }
 
-    public get token_usd_mc(): number {
-        return this.usd_market_cap;
+    public get token_quote_mc(): number {
+        return this.market_cap;
     }
 
     public get migrated(): boolean {
@@ -105,15 +54,20 @@ class JupiterMintMeta implements trade.IMintMeta {
         return new PublicKey(this.mint);
     }
 
+    public get quote_mint_pubkey(): PublicKey {
+        return SOL_MINT;
+    }
+
     public get token_program(): PublicKey {
         return new PublicKey(this.token_program_id);
     }
 
     public serialize(): trade.SerializedMintMeta {
         return {
-            token_usd_mc: this.token_usd_mc,
+            token_quote_mc: this.token_quote_mc,
             mint_pubkey: this.mint_pubkey.toBase58(),
             token_program: this.token_program.toBase58(),
+            quote_mint_pubkey: this.quote_mint_pubkey.toBase58(),
             migrated: this.migrated,
             platform_fee: this.platform_fee,
             token_name: this.token_name,
@@ -121,10 +75,10 @@ class JupiterMintMeta implements trade.IMintMeta {
             token_mint: this.token_mint,
 
             mint: this.mint,
+            quote_mint: SOL_MINT.toBase58(),
             name: this.name,
             symbol: this.symbol,
             total_supply: this.total_supply.toString(),
-            usd_market_cap: this.usd_market_cap,
             market_cap: this.market_cap,
             fee: this.fee
         };
@@ -135,8 +89,8 @@ class JupiterMintMeta implements trade.IMintMeta {
             mint: data.mint as string,
             name: data.name as string,
             symbol: data.symbol as string,
+            quote_mint: SOL_MINT.toBase58(),
             total_supply: BigInt(data.total_supply as string),
-            usd_market_cap: data.usd_market_cap as number,
             market_cap: data.market_cap as number,
             fee: data.fee as number,
             token_program_id: data.token_program as string
@@ -144,7 +98,7 @@ class JupiterMintMeta implements trade.IMintMeta {
     }
 }
 
-export class Trader implements trade.IProgramTrader {
+export class Provider implements trade.IProgramProvider {
     public get_name(): string {
         return common.Program.Jupiter;
     }
@@ -157,73 +111,30 @@ export class Trader implements trade.IProgramTrader {
         return new JupiterMintMeta().deserialize(data);
     }
 
-    public async get_trader_fees(_trader: Keypair): Promise<trade.ClaimableAsset[]> {
+    public async get_rewards(_trader: Keypair): Promise<trade.ClaimableAsset[]> {
         return [];
     }
 
-    public async claim_trader_fees(
+    public get_compute_unit_limit(): number | undefined {
+        return undefined;
+    }
+
+    public async claim_rewards_instructions(
         _trader: Keypair,
-        _assets: trade.ClaimableAsset[],
-        _priority?: PriorityLevel
-    ): Promise<String> {
+        _assets: trade.ClaimableAsset[]
+    ): Promise<TransactionInstruction[]> {
         throw new Error('Not supported');
     }
 
-    public async buy_token(
-        sol_amount: number,
-        buyer: Keypair,
-        mint_meta: JupiterMintMeta,
-        slippage: number = 0.05,
-        priority?: PriorityLevel,
-        protection_tip?: number,
-        mev_protect: boolean = false
-    ): Promise<String> {
-        const sol_token_amount = trade.get_sol_token_amount(sol_amount);
-        const mint = new PublicKey(mint_meta.mint);
-        return await this.swap_jupiter(
-            sol_token_amount,
-            buyer,
-            SOL_MINT,
-            mint,
-            slippage,
-            priority,
-            protection_tip,
-            mev_protect
-        );
-    }
-
     public async buy_token_instructions(
-        sol_amount: number,
+        amount: TokenAmount,
         buyer: Keypair,
         mint_meta: JupiterMintMeta,
         slippage: number = 0.05
     ): Promise<[TransactionInstruction[], AddressLookupTableAccount[]?]> {
-        const sol_token_amount = trade.get_sol_token_amount(sol_amount);
         const mint = new PublicKey(mint_meta.mint);
-        const quote = await this.quote_jupiter(sol_token_amount, SOL_MINT, mint, slippage);
-        return await this.swap_jupiter_instructions(buyer, quote);
-    }
-
-    public async sell_token(
-        token_amount: TokenAmount,
-        seller: Keypair,
-        mint_meta: JupiterMintMeta,
-        slippage: number = 0.05,
-        priority: PriorityLevel,
-        protection_tip?: number,
-        mev_protect: boolean = false
-    ): Promise<String> {
-        const mint = new PublicKey(mint_meta.mint);
-        return await this.swap_jupiter(
-            token_amount,
-            seller,
-            mint,
-            SOL_MINT,
-            slippage,
-            priority,
-            protection_tip,
-            mev_protect
-        );
+        const quote = await quote_jupiter(amount, SOL_MINT, mint, slippage);
+        return await swap_jupiter_instructions(buyer, quote);
     }
 
     public async sell_token_instructions(
@@ -231,22 +142,26 @@ export class Trader implements trade.IProgramTrader {
         seller: Keypair,
         mint_meta: JupiterMintMeta,
         slippage: number = 0.05
-    ): Promise<[TransactionInstruction[], AddressLookupTableAccount[]?]> {
+    ): Promise<trade.SellInstructions> {
         const mint = new PublicKey(mint_meta.mint);
-        const quote = await this.quote_jupiter(token_amount, mint, SOL_MINT, slippage);
-        return await this.swap_jupiter_instructions(seller, quote);
+        const quote = await quote_jupiter(token_amount, mint, SOL_MINT, slippage);
+        const [instructions, ltas] = await swap_jupiter_instructions(seller, quote);
+        return {
+            instructions,
+            ltas,
+            minimum_quote_output: { amount: quote.otherAmountThreshold, decimals: 9, uiAmount: null }
+        };
     }
 
     public async buy_sell_instructions(
-        sol_amount: number,
+        amount: TokenAmount,
         trader: Keypair,
         mint_meta: JupiterMintMeta,
         slippage: number = 0.05
-    ): Promise<[TransactionInstruction[], TransactionInstruction[], AddressLookupTableAccount[]?]> {
-        const sol_token_amount = trade.get_sol_token_amount(sol_amount);
+    ): Promise<trade.BuySellInstructions> {
         const mint = new PublicKey(mint_meta.mint);
-        const quote = await this.quote_jupiter(sol_token_amount, SOL_MINT, mint, slippage);
-        const exact_out_quote = await this.quote_jupiter(
+        const quote = await quote_jupiter(amount, SOL_MINT, mint, slippage);
+        const exact_out_quote = await quote_jupiter(
             { amount: quote.outAmount, decimals: TRADE_DEFAULT_TOKEN_DECIMALS, uiAmount: null },
             SOL_MINT,
             mint,
@@ -255,12 +170,19 @@ export class Trader implements trade.IProgramTrader {
         );
         if (exact_out_quote.swapMode !== 'ExactOut' || exact_out_quote.outAmount !== quote.outAmount)
             throw new Error('Jupiter did not return the requested exact-output buy quote.');
-        const amount = BigInt(sol_token_amount.amount);
-        const max_amount = amount + (amount * BigInt(Math.floor(slippage * 10000))) / 10000n;
+
+        const amount_raw = BigInt(amount.amount);
+        const max_amount = amount_raw + (amount_raw * BigInt(Math.floor(slippage * 10000))) / 10000n;
+
         if (BigInt(exact_out_quote.otherAmountThreshold) > max_amount)
             throw new Error('Jupiter exact-output buy exceeds the SOL budget.');
-        let [buy_instructions, ltas] = await this.swap_jupiter_instructions(trader, exact_out_quote);
-        let [sell_instructions, sell_ltas] = await this.sell_token_instructions(
+
+        const [buy, ltas] = await swap_jupiter_instructions(trader, exact_out_quote);
+        const {
+            instructions: sell,
+            ltas: sell_ltas,
+            minimum_quote_output
+        } = await this.sell_token_instructions(
             {
                 uiAmount: Number(quote.outAmount) / 10 ** TRADE_DEFAULT_TOKEN_DECIMALS,
                 amount: quote.outAmount,
@@ -271,84 +193,12 @@ export class Trader implements trade.IProgramTrader {
             slippage
         );
 
-        return [buy_instructions, sell_instructions, [...ltas, ...(sell_ltas ?? [])]];
+        return { buy, sell, ltas: [...ltas, ...(sell_ltas ?? [])], minimum_quote_output };
     }
 
-    public async buy_sell(
-        sol_amount: number,
-        trader: Keypair,
-        mint_meta: JupiterMintMeta,
-        slippage: number = 0.05,
-        interval_ms?: number,
-        priority?: PriorityLevel,
-        protection_tip?: number,
-        mev_protect: boolean = false
-    ): Promise<[String, String]> {
-        const [buy_instructions, sell_instructions, ltas] = await this.buy_sell_instructions(
-            sol_amount,
-            trader,
-            mint_meta,
-            slippage
-        );
-
-        if (interval_ms && interval_ms > 0) {
-            const buy_signature = await trade.send_tx(
-                buy_instructions,
-                [trader],
-                priority,
-                protection_tip,
-                mev_protect,
-                ltas
-            );
-            await common.sleep(interval_ms);
-            const sell_signature = await trade.retry_send_tx(
-                sell_instructions,
-                [trader],
-                priority,
-                protection_tip,
-                mev_protect,
-                ltas
-            );
-            return [buy_signature, sell_signature];
-        }
-
-        const signature = await trade.send_tx(
-            [...buy_instructions, ...sell_instructions],
-            [trader],
-            priority,
-            protection_tip,
-            mev_protect,
-            ltas
-        );
-        return [signature, signature];
-    }
-
-    public async buy_sell_bundle(
-        sol_amount: number,
-        trader: Keypair,
-        mint_meta: JupiterMintMeta,
-        tip: number,
-        slippage: number = 0.05,
-        priority?: PriorityLevel
-    ): Promise<String> {
-        const [buy_instructions, sell_instructions, ltas] = await this.buy_sell_instructions(
-            sol_amount,
-            trader,
-            mint_meta,
-            slippage
-        );
-        return await trade.send_bundle(
-            [buy_instructions, sell_instructions],
-            [[trader], [trader]],
-            tip,
-            priority,
-            ltas
-        );
-    }
-
-    public async get_mint_meta(mint: PublicKey, sol_price: number = 0): Promise<JupiterMintMeta | undefined> {
+    public async get_mint_meta(mint: PublicKey): Promise<JupiterMintMeta | undefined> {
         try {
-            return await this.default_mint_meta(mint, sol_price);
+            return await this.default_mint_meta(mint);
         } catch (error) {
             return undefined;
         }
@@ -358,30 +208,31 @@ export class Trader implements trade.IProgramTrader {
         throw new Error('Not supported');
     }
 
-    public async create_token(
+    public async create_token_instructions(
         _mint: Keypair,
         _creator: Keypair,
         _token_name: string,
         _token_symbol: string,
-        _meta_cid: string,
-        _sol_amount: number = 0,
-        _traders?: [Keypair, number][],
-        _bundle_tip?: number,
-        _priority?: PriorityLevel
-    ): Promise<String> {
+        _meta_cid: string
+    ): Promise<trade.CreateTokenInstructions> {
         throw new Error('Not supported');
     }
 
-    public update_mint_meta_reserves(mint_meta: JupiterMintMeta, _amount: number | TokenAmount): JupiterMintMeta {
+    public update_mint_meta_reserves(
+        mint_meta: JupiterMintMeta,
+        _amount: TokenAmount,
+        _op: trade.TradeOp
+    ): JupiterMintMeta {
         return mint_meta;
     }
 
-    public async update_mint_meta(mint_meta: JupiterMintMeta, sol_price: number = 0.0): Promise<JupiterMintMeta> {
+    public async update_mint_meta(mint_meta: JupiterMintMeta): Promise<JupiterMintMeta> {
         const mint = new PublicKey(mint_meta.mint);
-        return this.default_mint_meta(mint, sol_price);
+        return this.default_mint_meta(mint);
     }
 
-    public async default_mint_meta(mint: PublicKey, sol_price: number = 0.0): Promise<JupiterMintMeta> {
+    public async default_mint_meta(mint: PublicKey): Promise<JupiterMintMeta> {
+        const sol_price = await common.fetch_sol_price();
         const meta = await trade.get_token_meta(mint).catch(() => {
             return {
                 token_name: 'Unknown',
@@ -397,10 +248,10 @@ export class Trader implements trade.IProgramTrader {
         const market_cap = sol_price ? usd_market_cap / sol_price : 0;
         return new JupiterMintMeta({
             mint: mint.toString(),
+            quote_mint: SOL_MINT.toString(),
             name: meta.token_name,
             symbol: meta.token_symbol,
             total_supply: BigInt(meta.token_supply),
-            usd_market_cap,
             market_cap,
             token_program_id: meta.token_program.toString()
         });
@@ -409,7 +260,6 @@ export class Trader implements trade.IProgramTrader {
     public async subscribe_mint_meta(
         _mint_meta: JupiterMintMeta,
         _callback: (mint_meta: JupiterMintMeta) => void,
-        _sol_price: number = 0,
         _commitment: Commitment = COMMITMENT
     ): Promise<() => void> {
         throw new Error('Not supported');
@@ -419,94 +269,48 @@ export class Trader implements trade.IProgramTrader {
         return await common.upload_metadata_ipfs(meta, image_path);
     }
 
-    private async jupiter_request<T>(path: string, init: RequestInit = {}): Promise<T> {
-        const api_key = process.env.JUPITER_API_KEY;
-        if (!api_key) throw new Error('JUPITER_API_KEY is required to use the Jupiter provider.');
-
-        const response = await fetch(`${JUPITER_API_URL}${path}`, {
-            ...init,
-            headers: { 'x-api-key': api_key, ...init.headers }
-        });
-        const payload = await response.json();
-        if (!response.ok || payload.error || payload.errorCode)
-            throw new Error(payload.error || `Jupiter ${path} request failed with HTTP ${response.status}.`);
-        return payload as T;
-    }
-
-    private async swap_jupiter(
-        amount: TokenAmount,
-        seller: Keypair,
-        from: PublicKey,
-        to: PublicKey,
-        slippage: number = 0.05,
-        priority?: PriorityLevel,
-        protection_tip?: number,
-        mev_protect: boolean = false
-    ): Promise<String> {
-        const quote = await this.quote_jupiter(amount, from, to, slippage);
-        const [instructions, lta_accounts] = await this.swap_jupiter_instructions(seller, quote);
-        return await trade.send_tx(instructions, [seller], priority, protection_tip, mev_protect, lta_accounts);
-    }
-
-    private async quote_jupiter(
-        amount: TokenAmount,
-        from: PublicKey,
-        to: PublicKey,
-        slippage: number = 0.05,
-        swap_mode: 'ExactIn' | 'ExactOut' = 'ExactIn'
-    ): Promise<JupiterQuote> {
-        trade.validate_trade_parameters(amount, slippage);
-        const params = new URLSearchParams({
-            inputMint: from.toBase58(),
-            outputMint: to.toBase58(),
-            amount: amount.amount,
-            swapMode: swap_mode,
-            slippageBps: String(slippage * 10000)
-        });
-        return await this.jupiter_request<JupiterQuote>(`quote?${params.toString()}`);
-    }
-
-    private async swap_jupiter_instructions(
-        seller: Keypair,
-        quote: JupiterQuote
-    ): Promise<[TransactionInstruction[], AddressLookupTableAccount[]]> {
-        const deserialize_instruction = (instruction: JupiterInstruction) => {
-            return new TransactionInstruction({
-                programId: new PublicKey(instruction.programId),
-                keys: instruction.accounts.map((key: any) => ({
-                    pubkey: new PublicKey(key.pubkey),
-                    isSigner: key.isSigner,
-                    isWritable: key.isWritable
-                })),
-                data: Buffer.from(instruction.data, 'base64')
-            });
+    public async estimate_buy_output(
+        mint_meta: JupiterMintMeta,
+        quote_amount: TokenAmount,
+        slippage: number
+    ): Promise<trade.OutputEstimate> {
+        const [quote, base] = await Promise.all([
+            quote_jupiter(quote_amount, SOL_MINT, mint_meta.mint_pubkey),
+            trade.get_quote_info(mint_meta.mint_pubkey)
+        ]);
+        const minimum_quote = trade.apply_slippage_down(BigInt(quote.outAmount), slippage);
+        return {
+            expected: {
+                amount: quote.outAmount,
+                decimals: base.decimals,
+                uiAmount: Number(quote.outAmount) / 10 ** base.decimals
+            },
+            minimum: {
+                amount: minimum_quote.toString(),
+                decimals: base.decimals,
+                uiAmount: Number(minimum_quote) / 10 ** base.decimals
+            }
         };
-        const instructions_raw = await this.jupiter_request<JupiterInstructions>('swap-instructions', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                quoteResponse: quote,
-                userPublicKey: seller.publicKey.toBase58(),
-                wrapAndUnwrapSol: true
-            })
-        });
-        if (!instructions_raw.swapInstruction)
-            throw new Error('Jupiter swap instructions did not include a swap instruction.');
+    }
 
-        const lta_accounts = await trade.get_ltas(
-            (instructions_raw.addressLookupTableAddresses ?? []).map((lta) => new PublicKey(lta))
-        );
-        const instructions: TransactionInstruction[] = [
-            ...(instructions_raw.tokenLedgerInstruction
-                ? [deserialize_instruction(instructions_raw.tokenLedgerInstruction)]
-                : []),
-            ...(instructions_raw.setupInstructions ?? []).map(deserialize_instruction),
-            ...(instructions_raw.otherInstructions ?? []).map(deserialize_instruction),
-            deserialize_instruction(instructions_raw.swapInstruction),
-            ...(instructions_raw.cleanupInstruction
-                ? [deserialize_instruction(instructions_raw.cleanupInstruction)]
-                : [])
-        ];
-        return [instructions, lta_accounts];
+    public async estimate_sell_output(
+        mint_meta: JupiterMintMeta,
+        token_amount: TokenAmount,
+        slippage: number
+    ): Promise<trade.OutputEstimate> {
+        const quote = await quote_jupiter(token_amount, mint_meta.mint_pubkey, SOL_MINT);
+        const minimum_quote = trade.apply_slippage_down(BigInt(quote.outAmount), slippage);
+        return {
+            expected: {
+                amount: quote.outAmount,
+                decimals: 9,
+                uiAmount: Number(quote.outAmount) / 10 ** 9
+            },
+            minimum: {
+                amount: minimum_quote.toString(),
+                decimals: 9,
+                uiAmount: Number(minimum_quote) / 10 ** 9
+            }
+        };
     }
 }

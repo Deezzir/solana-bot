@@ -1,5 +1,5 @@
-import { Trader } from './trade_meteora';
+import { Provider } from './trade_meteora';
 import { Runner } from './snipe_meteora';
 
-export const MeteoraTrader = new Trader();
+export const MeteoraProvider = new Provider();
 export { Runner as MeteoraRunner };

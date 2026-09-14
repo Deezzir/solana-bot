@@ -181,6 +181,7 @@ async function main() {
     global.TRANSACTION_RELAY = TransactionRelay.Sender;
     global.TRANSACTION_VERSION = 0;
     global.NO_COLORS = false;
+    global.FUNDING = false;
 
     const program = new Command();
 
@@ -222,10 +223,12 @@ async function main() {
     );
     program.addOption(new Option('--nc, --no-colors', 'Disable colored output'));
     program.addOption(new Option('--v1', 'Use v1 transactions; fail if upstream support cannot be verified'));
+    program.addOption(new Option('--funding', 'Enable token funding'));
 
     program.hook('preAction', async () => {
         global.PROGRAM = program.opts().program;
         global.TRANSACTION_RELAY = program.opts().relay;
+        global.FUNDING = program.opts().funding === true;
         global.NO_COLORS = program.opts().colors === false;
         if (program.opts().v1 && (await get_max_transaction_version()) !== 1)
             throw new Error(
@@ -918,7 +921,7 @@ async function main() {
             if (!drop_wallet) throw new InvalidArgumentError('Invalid index.');
             return drop_wallet.keypair;
         })
-        .option('--ap, --airdrop <percent>', 'Percent of tokens to be airdroped', (value) => {
+        .option('--ap, --airdrop <percent>', 'Percent of tokens to be airdropped', (value) => {
             const parsed_value = parseFloat(value);
             if (isNaN(parsed_value)) throw new InvalidArgumentError('Not a number.');
             if (parsed_value < 0 || parsed_value > 1.0) throw new InvalidArgumentError('Invalid range (0.0 - 1.0).');
