@@ -20,7 +20,7 @@ import * as volume from './subcommands/volume';
 import * as token_drop from './subcommands/token_drop';
 import * as pnl from './subcommands/pnl';
 import * as mass_trade from './subcommands/mass_trade';
-import { get_sniper, create_executor } from './common/get_trader';
+import { get_sniper, create_executor } from './common/get_provider';
 import { Executor } from './common/executor';
 import { SubscriberType } from './common/subscriber';
 import { get_quote_name_by_mint } from './quote';

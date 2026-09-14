@@ -13,7 +13,7 @@ import {
     SNIPE_RETRY_INTERVAL_MS,
     TransactionRelay
 } from '../constants';
-import { create_executor } from './get_trader';
+import { create_executor } from './get_provider';
 import { configure_rpc_rate_limiter, rpc_connection_config } from './rate_limit';
 
 type State =

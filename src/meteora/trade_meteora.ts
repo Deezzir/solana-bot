@@ -407,7 +407,7 @@ const DBCStateStruct = define_decoder_struct({
     creator_base_fee: u64(),
     creator_quote_fee: u64()
 });
-export class Trader implements trade.IProgramTrader {
+export class Provider implements trade.IProgramProvider {
     public get_name(): string {
         return common.Program.Meteora;
     }
@@ -654,14 +654,17 @@ export class Trader implements trade.IProgramTrader {
         seller: Keypair,
         mint_meta: MeteoraMintMeta,
         slippage: number
-    ): Promise<[TransactionInstruction[], AddressLookupTableAccount[]?]> {
+    ): Promise<trade.SellInstructions> {
         trade.validate_trade_parameters(token_amount, slippage);
         const lta = await trade.get_ltas([METEORA_LTA_ACCOUNT]);
         if (mint_meta.migrated) {
             if (!mint_meta.damm_v2_data) throw new Error('Missing DAMM v2 pool data.');
-            return [await this.get_sell_damm_v2_instructions(token_amount, seller, mint_meta, slippage), lta];
+            return {
+                ...(await this.get_sell_damm_v2_instructions(token_amount, seller, mint_meta, slippage)),
+                ltas: lta
+            };
         }
-        return [await this.get_sell_dbc_instructions(token_amount, seller, mint_meta, slippage), lta];
+        return { ...(await this.get_sell_dbc_instructions(token_amount, seller, mint_meta, slippage)), ltas: lta };
     }
 
     public async buy_sell_instructions(
@@ -669,7 +672,7 @@ export class Trader implements trade.IProgramTrader {
         trader: Keypair,
         mint_meta: MeteoraMintMeta,
         slippage: number
-    ): Promise<[TransactionInstruction[], TransactionInstruction[], AddressLookupTableAccount[]?]> {
+    ): Promise<trade.BuySellInstructions> {
         trade.validate_trade_parameters(amount, slippage);
         const quote_amount_raw = BigInt(amount.amount);
         let buy_instructions: TransactionInstruction[];
@@ -702,7 +705,11 @@ export class Trader implements trade.IProgramTrader {
             if (mint_meta.complete)
                 throw new Error('An atomic buy/sell cannot complete the DBC curve. Reduce the buy amount.');
         }
-        const [sell_instructions, lta] = await this.sell_token_instructions(
+        const {
+            instructions: sell,
+            ltas,
+            minimum_quote_output
+        } = await this.sell_token_instructions(
             {
                 uiAmount: Number(token_amount_raw) / 10 ** mint_meta.token_decimal,
                 amount: token_amount_raw.toString(),
@@ -712,7 +719,7 @@ export class Trader implements trade.IProgramTrader {
             mint_meta,
             slippage
         );
-        return [buy_instructions, sell_instructions, lta];
+        return { buy: buy_instructions, sell, ltas, minimum_quote_output };
     }
 
     public async create_token_instructions(
@@ -1808,7 +1815,7 @@ export class Trader implements trade.IProgramTrader {
         seller: Keypair,
         mint_meta: Partial<MeteoraMintMeta>,
         slippage: number = 0.05
-    ): Promise<TransactionInstruction[]> {
+    ): Promise<trade.SellInstructions> {
         if (!mint_meta.mint || !mint_meta.dbc_data || !mint_meta.pool)
             throw new Error(`Incomplete mint meta data for sell instructions.`);
         if (token_amount.amount === null) throw new Error(`Invalid token amount: ${token_amount.amount}`);
@@ -1833,7 +1840,7 @@ export class Trader implements trade.IProgramTrader {
         const token_ata = await trade.calc_ata(seller.publicKey, mint, token_program);
         const wsol_ata = quote_account.ata;
 
-        return [
+        const instructions = [
             ...quote_account.setup,
             new TransactionInstruction({
                 keys: [
@@ -1858,6 +1865,14 @@ export class Trader implements trade.IProgramTrader {
             }),
             ...quote_account.cleanup
         ];
+        return {
+            instructions,
+            minimum_quote_output: {
+                amount: sol_amount_raw.toString(),
+                decimals: quote_account.decimals,
+                uiAmount: null
+            }
+        };
     }
 
     private async get_buy_damm_v2_instructions(
@@ -1876,11 +1891,20 @@ export class Trader implements trade.IProgramTrader {
         seller: Keypair,
         mint_meta: MeteoraMintMeta,
         slippage: number
-    ): Promise<TransactionInstruction[]> {
+    ): Promise<trade.SellInstructions> {
         if (token_amount.amount === null) throw new Error(`Invalid token amount: ${token_amount.amount}`);
-        return (
-            await this.get_damm_v2_swap_instructions(BigInt(token_amount.amount), seller, mint_meta, 'sell', slippage)
-        ).instructions;
+        const { instructions, minimum_output } = await this.get_damm_v2_swap_instructions(
+            BigInt(token_amount.amount),
+            seller,
+            mint_meta,
+            'sell',
+            slippage
+        );
+        const quote = await get_quote_info(mint_meta.quote_mint_pubkey);
+        return {
+            instructions,
+            minimum_quote_output: { amount: minimum_output.toString(), decimals: quote.decimals, uiAmount: null }
+        };
     }
 
     private async get_damm_v2_swap_instructions(
@@ -1890,7 +1914,7 @@ export class Trader implements trade.IProgramTrader {
         op: trade.TradeOp,
         slippage: number,
         exact_out: boolean = false
-    ): Promise<{ instructions: TransactionInstruction[]; output_amount: bigint }> {
+    ): Promise<{ instructions: TransactionInstruction[]; output_amount: bigint; minimum_output: bigint }> {
         const { pool, state, input_mint, output_mint, input_program, output_program, output_amount } =
             await this.get_damm_v2_quote(amount_in, mint_meta, op);
         const input_ata = await trade.calc_ata(trader.publicKey, input_mint, input_program);
@@ -1971,6 +1995,6 @@ export class Trader implements trade.IProgramTrader {
                     trader.publicKey
                 )
             );
-        return { instructions, output_amount };
+        return { instructions, output_amount, minimum_output: exact_out ? output_amount : minimum_amount_out };
     }
 }

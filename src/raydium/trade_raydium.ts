@@ -268,7 +268,7 @@ export class RaydiumMintMeta implements trade.IMintMeta {
     }
 }
 
-export class RaydiumTrader implements trade.IProgramTrader {
+export class RaydiumProvider implements trade.IProgramProvider {
     protected readonly compute_unit_limit = RAYDIUM_COMPUTE_UNIT_LIMIT;
     protected readonly mint_meta_defaults = RAYDIUM_DEFAULT_MINT_META;
 
@@ -401,15 +401,15 @@ export class RaydiumTrader implements trade.IProgramTrader {
         seller: Keypair,
         mint_meta: RaydiumMintMeta,
         slippage: number = 0.05
-    ): Promise<[TransactionInstruction[], AddressLookupTableAccount[]?]> {
+    ): Promise<trade.SellInstructions> {
         trade.validate_trade_parameters(token_amount, slippage);
         const lta = await trade.get_ltas([RAYDIUM_LTA_ACCOUNT]);
         if (mint_meta.complete) {
             const instructions = await this.get_sell_cpmm_instructions(token_amount, seller, mint_meta, slippage);
-            return [instructions, lta];
+            return { ...instructions, ltas: lta };
         }
         const instructions = await this.get_sell_instructions(token_amount, seller, mint_meta, slippage);
-        return [instructions, lta];
+        return { ...instructions, ltas: lta };
     }
 
     public async buy_sell_instructions(
@@ -417,14 +417,18 @@ export class RaydiumTrader implements trade.IProgramTrader {
         trader: Keypair,
         mint_meta: RaydiumMintMeta,
         slippage: number = 0.05
-    ): Promise<[TransactionInstruction[], TransactionInstruction[], AddressLookupTableAccount[]?]> {
+    ): Promise<trade.BuySellInstructions> {
         trade.validate_trade_parameters(amount, slippage);
         const amount_raw = BigInt(amount.amount);
         const token_amount_raw = this.calc_token_amount_raw(amount_raw, mint_meta);
         const buy_instructions = mint_meta.complete
             ? await this.get_buy_cpmm_instructions(amount, trader, mint_meta, slippage, token_amount_raw)
             : await this.get_buy_instructions(amount, trader, mint_meta, slippage, token_amount_raw);
-        const [sell_instructions, lta] = await this.sell_token_instructions(
+        const {
+            instructions: sell,
+            ltas,
+            minimum_quote_output
+        } = await this.sell_token_instructions(
             {
                 uiAmount: Number(token_amount_raw) / 10 ** TRADE_DEFAULT_TOKEN_DECIMALS,
                 amount: token_amount_raw.toString(),
@@ -434,7 +438,7 @@ export class RaydiumTrader implements trade.IProgramTrader {
             mint_meta,
             slippage
         );
-        return [buy_instructions, sell_instructions, lta];
+        return { buy: buy_instructions, sell, ltas, minimum_quote_output };
     }
 
     public async get_mint_meta(mint: PublicKey): Promise<RaydiumMintMeta | undefined> {
@@ -1241,7 +1245,7 @@ export class RaydiumTrader implements trade.IProgramTrader {
         seller: Keypair,
         mint_meta: Partial<RaydiumMintMeta>,
         slippage: number = 0.05
-    ): Promise<TransactionInstruction[]> {
+    ): Promise<trade.SellInstructions> {
         if (
             !mint_meta.mint ||
             !mint_meta.quote_vault ||
@@ -1276,7 +1280,7 @@ export class RaydiumTrader implements trade.IProgramTrader {
         const token_ata = await trade.calc_ata(seller.publicKey, mint, token_program);
         const wsol_ata = quote.ata;
 
-        return [
+        const instructions = [
             ...quote.setup,
             new TransactionInstruction({
                 keys: [
@@ -1308,6 +1312,10 @@ export class RaydiumTrader implements trade.IProgramTrader {
             }),
             ...quote.cleanup
         ];
+        return {
+            instructions,
+            minimum_quote_output: { amount: quote_amount_raw.toString(), decimals: quote.decimals, uiAmount: null }
+        };
     }
 
     private async get_buy_cpmm_instructions(
@@ -1387,7 +1395,7 @@ export class RaydiumTrader implements trade.IProgramTrader {
         seller: Keypair,
         mint_meta: RaydiumMintMeta,
         slippage: number = 0.05
-    ): Promise<TransactionInstruction[]> {
+    ): Promise<trade.SellInstructions> {
         if (
             !mint_meta.mint ||
             !mint_meta.pool ||
@@ -1409,10 +1417,11 @@ export class RaydiumTrader implements trade.IProgramTrader {
         const config = new PublicKey(mint_meta.config);
 
         const token_amount_raw = BigInt(token_amount.amount);
-        const instruction_data = this.swap_cpmm_data(
-            token_amount_raw,
-            trade.apply_slippage_down(this.calc_quote_amount_raw(token_amount_raw, mint_meta), slippage)
+        const minimum_quote_output = trade.apply_slippage_down(
+            this.calc_quote_amount_raw(token_amount_raw, mint_meta),
+            slippage
         );
+        const instruction_data = this.swap_cpmm_data(token_amount_raw, minimum_quote_output);
         const token_ata = await trade.calc_ata(
             seller.publicKey,
             new PublicKey(mint_meta.mint),
@@ -1420,7 +1429,7 @@ export class RaydiumTrader implements trade.IProgramTrader {
         );
         const wsol_ata = quote.ata;
 
-        return [
+        const instructions = [
             ...quote.setup,
             new TransactionInstruction({
                 keys: [
@@ -1443,6 +1452,10 @@ export class RaydiumTrader implements trade.IProgramTrader {
             }),
             ...quote.cleanup
         ];
+        return {
+            instructions,
+            minimum_quote_output: { amount: minimum_quote_output.toString(), decimals: quote.decimals, uiAmount: null }
+        };
     }
 
     private async calc_vault(

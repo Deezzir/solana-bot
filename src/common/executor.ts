@@ -9,7 +9,7 @@ import {
     TRADE_MAX_WALLETS_PER_CREATE_TX
 } from '../constants';
 import {
-    IProgramTrader,
+    IProgramProvider,
     IMintMeta,
     SerializedMintMeta,
     TradeOp,
@@ -64,48 +64,54 @@ type CreateBundleOptions = {
 
 export class Executor {
     constructor(
-        private readonly trader: IProgramTrader,
+        private readonly provider: IProgramProvider,
         private enable_funding: boolean = false
     ) {}
 
     public get_lta_addresses(): PublicKey[] {
-        return this.trader.get_lta_addresses();
+        return this.provider.get_lta_addresses();
     }
 
-    public get_compute_unit_limit(): number | undefined {
-        return this.trader.get_compute_unit_limit();
+    public get_compute_unit_limit(funded: boolean = false): number | undefined {
+        const limit = this.provider.get_compute_unit_limit();
+        return funded
+            ? Math.min(
+                  MAX_COMPUTE_UNIT_LIMIT,
+                  (limit ?? MAX_COMPUTE_UNIT_LIMIT) + EXECUTOR_JUPITER_COMPUTE_UNIT_ALLOWANCE
+              )
+            : limit;
     }
 
     public deserialize_mint_meta(data: SerializedMintMeta): IMintMeta {
-        return this.trader.deserialize_mint_meta(data);
+        return this.provider.deserialize_mint_meta(data);
     }
 
     public get_mint_meta(mint: PublicKey): Promise<IMintMeta | undefined> {
-        return this.trader.get_mint_meta(mint);
+        return this.provider.get_mint_meta(mint);
     }
 
     public update_mint_meta(mint_meta: IMintMeta): Promise<IMintMeta> {
-        return this.trader.update_mint_meta(mint_meta);
+        return this.provider.update_mint_meta(mint_meta);
     }
 
     public update_mint_meta_reserves(mint_meta: IMintMeta, amount: TokenAmount, op: TradeOp): IMintMeta {
-        return this.trader.update_mint_meta_reserves(mint_meta, amount, op);
+        return this.provider.update_mint_meta_reserves(mint_meta, amount, op);
     }
 
     public get_random_mints(count: number): Promise<IMintMeta[]> {
-        return this.trader.get_random_mints(count);
+        return this.provider.get_random_mints(count);
     }
 
     public create_token_metadata(meta: IPFSMetadata, image_path: string): Promise<string> {
-        return this.trader.create_token_metadata(meta, image_path);
+        return this.provider.create_token_metadata(meta, image_path);
     }
 
     public get_rewards(trader: Keypair): Promise<ClaimableAsset[]> {
-        return this.trader.get_rewards(trader);
+        return this.provider.get_rewards(trader);
     }
 
     public async claim_rewards(trader: Keypair, assets: ClaimableAsset[], priority?: PriorityLevel): Promise<String> {
-        const instructions = await this.trader.claim_rewards_instructions(trader, assets);
+        const instructions = await this.provider.claim_rewards_instructions(trader, assets);
         return send_tx(
             instructions,
             [trader],
@@ -113,7 +119,7 @@ export class Executor {
             undefined,
             false,
             undefined,
-            this.trader.get_compute_unit_limit()
+            this.provider.get_compute_unit_limit()
         );
     }
 
@@ -138,7 +144,7 @@ export class Executor {
                     protection_tip,
                     priority,
                     ltas,
-                    this.get_funded_compute_unit_limit()
+                    this.get_compute_unit_limit(true)
                 );
             }
 
@@ -150,7 +156,7 @@ export class Executor {
                     protection_tip,
                     mev_protect,
                     ltas,
-                    this.get_funded_compute_unit_limit()
+                    this.get_compute_unit_limit(true)
                 );
             } catch (error) {
                 if (!(error instanceof CompileTransactionError)) throw error;
@@ -167,7 +173,7 @@ export class Executor {
                 protection_tip,
                 mev_protect,
                 ltas,
-                this.trader.get_compute_unit_limit()
+                this.provider.get_compute_unit_limit()
             );
         }
     }
@@ -190,7 +196,7 @@ export class Executor {
                 protection_tip,
                 mev_protect,
                 ltas,
-                this.trader.get_compute_unit_limit()
+                this.provider.get_compute_unit_limit()
             );
 
         if (instructions.length !== 2)
@@ -203,7 +209,7 @@ export class Executor {
                 protection_tip,
                 priority,
                 ltas,
-                this.get_funded_compute_unit_limit()
+                this.get_compute_unit_limit(true)
             );
         }
 
@@ -215,7 +221,7 @@ export class Executor {
                 protection_tip,
                 mev_protect,
                 ltas,
-                this.get_funded_compute_unit_limit()
+                this.get_compute_unit_limit(true)
             );
         } catch (error) {
             if (!(error instanceof CompileTransactionError)) throw error;
@@ -247,8 +253,8 @@ export class Executor {
             priority,
             ltas,
             this.is_non_sol_quote(mint_meta) && this.enable_funding
-                ? this.get_funded_compute_unit_limit()
-                : this.trader.get_compute_unit_limit()
+                ? this.get_compute_unit_limit(true)
+                : this.provider.get_compute_unit_limit()
         );
     }
 
@@ -280,7 +286,7 @@ export class Executor {
             if (bought_amount <= 0n) throw new Error('No tokens received from the buy; cannot execute the sell.');
 
             await sleep(interval_ms);
-            mint_meta = await this.trader.update_mint_meta(mint_meta);
+            mint_meta = await this.provider.update_mint_meta(mint_meta);
             const sell_signature = await this.sell_token(
                 { amount: bought_amount.toString(), decimals: balance_after.decimals, uiAmount: null },
                 trader,
@@ -328,7 +334,12 @@ export class Executor {
             mint_meta,
             slippage
         );
-        const [instructions, ltas] = await this.trader.buy_token_instructions(quote_amount, buyer, mint_meta, slippage);
+        const [instructions, ltas] = await this.provider.buy_token_instructions(
+            quote_amount,
+            buyer,
+            mint_meta,
+            slippage
+        );
         return [
             [...funding_instructions, instructions],
             [...funding_ltas, ...(ltas ?? [])]
@@ -342,31 +353,23 @@ export class Executor {
         slippage: number
     ): Promise<[TransactionInstruction[][], AddressLookupTableAccount[]?]> {
         const is_non_sol_quote = this.is_non_sol_quote(mint_meta);
-        if (!is_non_sol_quote || (is_non_sol_quote && !this.enable_funding)) {
-            const [instructions, ltas] = await this.trader.sell_token_instructions(
-                token_amount,
-                seller,
-                mint_meta,
-                slippage
-            );
-            return [[instructions], ltas];
-        }
-
-        const quote_mint = mint_meta.quote_mint_pubkey;
-        const estimate = await this.trader.estimate_sell_output(mint_meta, token_amount, slippage);
-        const { quote } = await this.get_sol_quote_from_token(estimate.minimum, quote_mint, slippage);
-
-        const [trade_instructions, trade_ltas] = await this.trader.sell_token_instructions(
+        const { instructions, ltas, minimum_quote_output } = await this.provider.sell_token_instructions(
             token_amount,
             seller,
             mint_meta,
             slippage
         );
+        if (!is_non_sol_quote || (is_non_sol_quote && !this.enable_funding)) {
+            return [[instructions], ltas];
+        }
+
+        const quote_mint = mint_meta.quote_mint_pubkey;
+        const { quote } = await this.get_sol_quote_from_token(minimum_quote_output, quote_mint, slippage);
         const [fund_instructions, fund_ltas] = await swap_jupiter_instructions(seller, quote);
 
         return [
-            [trade_instructions, fund_instructions],
-            [...(trade_ltas ?? []), ...fund_ltas]
+            [instructions, fund_instructions],
+            [...(ltas ?? []), ...fund_ltas]
         ];
     }
 
@@ -382,21 +385,19 @@ export class Executor {
             mint_meta,
             slippage
         );
-        const [buy_instructions, sell_instructions, trade_ltas] = await this.trader.buy_sell_instructions(
-            quote_amount,
-            trader,
-            mint_meta,
-            slippage
-        );
-        const buy_groups = [...funding_instructions, buy_instructions];
-        const sell_groups = [sell_instructions];
+        const {
+            buy,
+            sell,
+            ltas: trade_ltas,
+            minimum_quote_output
+        } = await this.provider.buy_sell_instructions(quote_amount, trader, mint_meta, slippage);
+        const buy_groups = [...funding_instructions, buy];
+        const sell_groups = [sell];
         const ltas = [...funding_ltas, ...(trade_ltas ?? [])];
 
         if (this.is_non_sol_quote(mint_meta) && this.enable_funding) {
-            const buy_estimate = await this.trader.estimate_buy_output(mint_meta, quote_amount, slippage);
-            const sell_estimate = await this.trader.estimate_sell_output(mint_meta, buy_estimate.minimum, slippage);
             const { quote } = await this.get_sol_quote_from_token(
-                sell_estimate.minimum,
+                minimum_quote_output,
                 mint_meta.quote_mint_pubkey,
                 slippage
             );
@@ -421,7 +422,7 @@ export class Executor {
         config?: object
     ): Promise<String> {
         validate_create_token_parameters(sol_amount, traders, bundle_tip);
-        let { instructions, mint_meta, ltas } = await this.trader.create_token_instructions(
+        let { instructions, mint_meta, ltas } = await this.provider.create_token_instructions(
             mint,
             creator,
             token_name,
@@ -437,7 +438,7 @@ export class Executor {
                 mint_meta,
                 COMMANDS_BUY_SLIPPAGE
             );
-            const [buy_instructions, buy_ltas] = await this.trader.buy_token_instructions(
+            const [buy_instructions, buy_ltas] = await this.provider.buy_token_instructions(
                 quote_amount,
                 buyer,
                 mint_meta,
@@ -446,7 +447,7 @@ export class Executor {
             for (const table of [...funding_ltas, ...(buy_ltas ?? [])]) {
                 if (!ltas.some((existing) => existing.key.equals(table.key))) ltas.push(table);
             }
-            if (traders) mint_meta = this.trader.update_mint_meta_reserves(mint_meta, quote_amount, 'buy');
+            if (traders) mint_meta = this.provider.update_mint_meta_reserves(mint_meta, quote_amount, 'buy');
             return { buyer, instructions: buy_instructions, funding };
         };
 
@@ -466,7 +467,7 @@ export class Executor {
                     undefined,
                     false,
                     ltas,
-                    funding.length ? MAX_COMPUTE_UNIT_LIMIT : this.trader.get_compute_unit_limit()
+                    funding.length ? MAX_COMPUTE_UNIT_LIMIT : this.provider.get_compute_unit_limit()
                 );
             } catch (error) {
                 if (!(error instanceof CompileTransactionError)) throw error;
@@ -489,7 +490,7 @@ export class Executor {
             priority,
             alts: ltas,
             token_program: mint_meta.token_program,
-            wallet_compute_units: this.trader.get_compute_unit_limit() ?? MAX_COMPUTE_UNIT_LIMIT
+            wallet_compute_units: this.provider.get_compute_unit_limit() ?? MAX_COMPUTE_UNIT_LIMIT
         });
     }
 
@@ -500,12 +501,12 @@ export class Executor {
         slippage = COMMANDS_BUY_SLIPPAGE
     ): Promise<BuyFunding> {
         const sol_amount_raw = sol_to_lamports(sol_amount);
-        const [sol_balance_raw, quote_balance, quote_info] = await Promise.all([
+        const quote_info = await get_quote_info(mint_meta.quote_mint_pubkey);
+        const [sol_balance_raw, quote_balance] = await Promise.all([
             get_balance(account, COMMITMENT),
             this.is_non_sol_quote(mint_meta)
-                ? get_token_balance(account, mint_meta.quote_mint_pubkey, COMMITMENT)
-                : null,
-            get_quote_info(mint_meta.quote_mint_pubkey)
+                ? get_token_balance(account, mint_meta.quote_mint_pubkey, COMMITMENT, quote_info.token_program)
+                : null
         ]);
 
         if (quote_balance === null) {
@@ -532,7 +533,7 @@ export class Executor {
             const status =
                 quote_balance_raw >= quote_amount_raw
                     ? 'ready'
-                    : sol_balance_raw >= sol_needed_raw
+                    : this.enable_funding && sol_balance_raw >= sol_needed_raw
                       ? 'needs_funding'
                       : 'insufficient';
 
@@ -680,13 +681,6 @@ export class Executor {
         } else {
             return [quote_out_token_amount, [], []];
         }
-    }
-
-    private get_funded_compute_unit_limit(): number {
-        const trader_limit = this.trader.get_compute_unit_limit();
-        return trader_limit === undefined
-            ? MAX_COMPUTE_UNIT_LIMIT
-            : Math.min(MAX_COMPUTE_UNIT_LIMIT, trader_limit + EXECUTOR_JUPITER_COMPUTE_UNIT_ALLOWANCE);
     }
 
     private is_non_sol_quote(mint_meta: IMintMeta): boolean {

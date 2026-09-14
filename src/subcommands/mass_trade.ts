@@ -2,7 +2,6 @@ import { AddressLookupTableAccount, Keypair, TransactionInstruction } from '@sol
 import * as common from '../common/common';
 import * as trade from '../common/trade_common';
 import { COMMITMENT, PriorityLevel } from '../constants';
-import { get_program_compute_unit_limit } from '../common/get_trader';
 import { Executor } from '../common/executor';
 
 export async function bundle_buy(
@@ -22,6 +21,7 @@ export async function bundle_buy(
         const instructions: TransactionInstruction[][] = [];
         const signers: Keypair[][] = [];
         const ltas: AddressLookupTableAccount[] = [];
+        let funded = false;
         for (; wallet_index < entries.length && instructions.length < bundle_size; wallet_index++) {
             const [wallet, amount] = entries[wallet_index];
             const buyer = wallet.keypair;
@@ -40,6 +40,7 @@ export async function bundle_buy(
                 if (buy_instructions.length > bundle_size)
                     throw new Error(`Wallet requires more than ${bundle_size} transactions in one bundle.`);
                 if (instructions.length + buy_instructions.length > bundle_size) break;
+                funded ||= buy_instructions.length > 1;
                 mint_meta = executor.update_mint_meta_reserves(mint_meta, funding.quote_amount, 'buy');
                 instructions.push(...buy_instructions);
                 signers.push(...buy_instructions.map(() => [buyer]));
@@ -54,7 +55,7 @@ export async function bundle_buy(
         if (instructions.length === 0) continue;
         bundles.push(
             trade
-                .send_bundle(instructions, signers, bundle_tip, priority, ltas, get_program_compute_unit_limit())
+                .send_bundle(instructions, signers, bundle_tip, priority, ltas, executor.get_compute_unit_limit(funded))
                 .then((signature) => common.log(common.green(`Bundle completed, signature: ${signature}`)))
                 .catch((error) => {
                     failed++;
@@ -108,6 +109,7 @@ export async function bundle_sell(
         const instructions: TransactionInstruction[][] = [];
         const signers: Keypair[][] = [];
         const ltas: AddressLookupTableAccount[] = [];
+        let funded = false;
         for (; wallet_index < wallets_with_balance.length && instructions.length < bundle_size; wallet_index++) {
             const wallet = wallets_with_balance[wallet_index];
             const seller = wallet.keypair;
@@ -125,6 +127,7 @@ export async function bundle_sell(
                 if (sell_instructions.length > bundle_size)
                     throw new Error(`Wallet requires more than ${bundle_size} transactions in one bundle.`);
                 if (instructions.length + sell_instructions.length > bundle_size) break;
+                funded ||= sell_instructions.length > 1;
                 mint_meta = executor.update_mint_meta_reserves(mint_meta, token_amount, 'sell');
                 instructions.push(...sell_instructions);
                 signers.push(...sell_instructions.map(() => [seller]));
@@ -139,7 +142,7 @@ export async function bundle_sell(
         if (instructions.length === 0) continue;
         bundles.push(
             trade
-                .send_bundle(instructions, signers, bundle_tip, priority, ltas, get_program_compute_unit_limit())
+                .send_bundle(instructions, signers, bundle_tip, priority, ltas, executor.get_compute_unit_limit(funded))
                 .then((signature) => common.log(common.green(`Bundle completed, signature: ${signature}`)))
                 .catch((error) => {
                     failed++;

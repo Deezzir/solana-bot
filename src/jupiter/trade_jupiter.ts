@@ -98,7 +98,7 @@ class JupiterMintMeta implements trade.IMintMeta {
     }
 }
 
-export class Trader implements trade.IProgramTrader {
+export class Provider implements trade.IProgramProvider {
     public get_name(): string {
         return common.Program.Jupiter;
     }
@@ -142,10 +142,15 @@ export class Trader implements trade.IProgramTrader {
         seller: Keypair,
         mint_meta: JupiterMintMeta,
         slippage: number = 0.05
-    ): Promise<[TransactionInstruction[], AddressLookupTableAccount[]?]> {
+    ): Promise<trade.SellInstructions> {
         const mint = new PublicKey(mint_meta.mint);
         const quote = await quote_jupiter(token_amount, mint, SOL_MINT, slippage);
-        return await swap_jupiter_instructions(seller, quote);
+        const [instructions, ltas] = await swap_jupiter_instructions(seller, quote);
+        return {
+            instructions,
+            ltas,
+            minimum_quote_output: { amount: quote.otherAmountThreshold, decimals: 9, uiAmount: null }
+        };
     }
 
     public async buy_sell_instructions(
@@ -153,7 +158,7 @@ export class Trader implements trade.IProgramTrader {
         trader: Keypair,
         mint_meta: JupiterMintMeta,
         slippage: number = 0.05
-    ): Promise<[TransactionInstruction[], TransactionInstruction[], AddressLookupTableAccount[]?]> {
+    ): Promise<trade.BuySellInstructions> {
         const mint = new PublicKey(mint_meta.mint);
         const quote = await quote_jupiter(amount, SOL_MINT, mint, slippage);
         const exact_out_quote = await quote_jupiter(
@@ -172,8 +177,12 @@ export class Trader implements trade.IProgramTrader {
         if (BigInt(exact_out_quote.otherAmountThreshold) > max_amount)
             throw new Error('Jupiter exact-output buy exceeds the SOL budget.');
 
-        let [buy_instructions, ltas] = await swap_jupiter_instructions(trader, exact_out_quote);
-        let [sell_instructions, sell_ltas] = await this.sell_token_instructions(
+        const [buy, ltas] = await swap_jupiter_instructions(trader, exact_out_quote);
+        const {
+            instructions: sell,
+            ltas: sell_ltas,
+            minimum_quote_output
+        } = await this.sell_token_instructions(
             {
                 uiAmount: Number(quote.outAmount) / 10 ** TRADE_DEFAULT_TOKEN_DECIMALS,
                 amount: quote.outAmount,
@@ -184,7 +193,7 @@ export class Trader implements trade.IProgramTrader {
             slippage
         );
 
-        return [buy_instructions, sell_instructions, [...ltas, ...(sell_ltas ?? [])]];
+        return { buy, sell, ltas: [...ltas, ...(sell_ltas ?? [])], minimum_quote_output };
     }
 
     public async get_mint_meta(mint: PublicKey): Promise<JupiterMintMeta | undefined> {

@@ -1,3 +1,3 @@
-import { Trader } from './trade_jupiter';
+import { Provider } from './trade_jupiter';
 
-export const JupiterTrader = new Trader();
+export const JupiterProvider = new Provider();

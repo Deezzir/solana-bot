@@ -162,7 +162,20 @@ export type OutputEstimate = {
     minimum: TokenAmount;
 };
 
-export interface IProgramTrader {
+export type SellInstructions = {
+    instructions: TransactionInstruction[];
+    ltas?: AddressLookupTableAccount[];
+    minimum_quote_output: TokenAmount;
+};
+
+export type BuySellInstructions = {
+    buy: TransactionInstruction[];
+    sell: TransactionInstruction[];
+    ltas?: AddressLookupTableAccount[];
+    minimum_quote_output: TokenAmount;
+};
+
+export interface IProgramProvider {
     get_name(): string;
     get_lta_addresses(): PublicKey[];
     deserialize_mint_meta(data: SerializedMintMeta): IMintMeta;
@@ -177,13 +190,13 @@ export interface IProgramTrader {
         seller: Keypair,
         mint_meta: IMintMeta,
         slippage: number
-    ): Promise<[TransactionInstruction[], AddressLookupTableAccount[]?]>;
+    ): Promise<SellInstructions>;
     buy_sell_instructions(
         quote_amount: TokenAmount,
         trader: Keypair,
         mint_meta: IMintMeta,
         slippage: number
-    ): Promise<[TransactionInstruction[], TransactionInstruction[], AddressLookupTableAccount[]?]>;
+    ): Promise<BuySellInstructions>;
     create_token_instructions(
         mint: Keypair,
         creator: Keypair,
