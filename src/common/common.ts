@@ -185,12 +185,15 @@ export async function get_wallets(keys_csv_path: string): Promise<Wallet[]> {
 
         for (const record of records) {
             const is_reserve = record.is_reserve === 'true';
+            const pubkey = new PublicKey(record.public_key);
             const entry = {
                 name: record.name,
                 id: is_reserve && !reserve_found ? 0 : index++,
                 keypair: await Keypair.fromSecretKey(base58.decode(record.private_key)),
                 is_reserve: is_reserve
             };
+            if (!pubkey.equals(entry.keypair.publicKey))
+                throw new Error(`Public key mismatch for wallet ${record.name}`);
             if (is_reserve) reserve_found = true;
             if (is_reserve) rows.unshift(entry);
             else rows.push(entry);

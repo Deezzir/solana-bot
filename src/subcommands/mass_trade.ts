@@ -26,7 +26,7 @@ export async function bundle_buy(
             const buyer = wallet.keypair;
             try {
                 const funding = await executor.has_enough_balances(amount, buyer.publicKey, mint_meta, slippage);
-                if (funding.status !== 'ready') continue;
+                if (funding.status === 'insufficient') continue;
                 common.log(
                     `Buying ${amount.toFixed(6)} SOL worth of tokens with ${buyer.publicKey.toString().padEnd(44, ' ')} (${wallet.name})...`
                 );
@@ -160,7 +160,7 @@ export async function seq_buy(
         const buyer = wallet.keypair;
         try {
             const funding = await executor.has_enough_balances(amount, buyer.publicKey, mint_meta, slippage);
-            if (funding.status !== 'ready') continue;
+            if (funding.status === 'insufficient') continue;
             common.log(
                 `Buying ${amount.toFixed(6)} SOL worth of tokens with ${buyer.publicKey.toString().padEnd(44, ' ')} (${wallet.name})...`
             );

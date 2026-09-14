@@ -295,8 +295,10 @@ export async function execute_depth_sol_fund(
     depth: number,
     bundle_tip: number
 ): Promise<common.Wallet[]> {
-    const target_file = common.setup_rescue_file();
+    if (depth < 1) throw new Error(`Min depth is 1, but ${depth} was provided`);
     if (depth > TRANSFER_MAX_DEPTH) throw new Error(`Max depth is ${TRANSFER_MAX_DEPTH}, but ${depth} was provided`);
+
+    const target_file = common.setup_rescue_file();
     if (!target_file) throw new Error('Failed to create a target file for the funding transfers');
 
     const transfer_map = await generate_depth_transfer_map(entries, funder, depth, target_file);
@@ -320,7 +322,7 @@ export async function execute_depth_sol_fund(
             const tx_signers: Keypair[] = [];
             const tx_lamports = Math.floor(
                 common.safe_number(trade.sol_to_lamports(fund_amount)) -
-                    (5000 * tx.length - 2) -
+                    5000 * (tx.length - 1) -
                     (tx_idx === txs.length - 1 ? bundle_tip * LAMPORTS_PER_SOL : 0)
             );
             for (let wallet_idx = 1; wallet_idx < tx.length; wallet_idx++) {
@@ -403,8 +405,10 @@ export async function execute_depth_dist_token(
     depth: number,
     bundle_tip: number
 ) {
-    const target_file = common.setup_rescue_file();
+    if (depth < 1) throw new Error(`Min depth is 1, but ${depth} was provided`);
     if (depth > TRANSFER_MAX_DEPTH) throw new Error(`Max depth is ${TRANSFER_MAX_DEPTH}, but ${depth} was provided`);
+
+    const target_file = common.setup_rescue_file();
     if (!target_file) throw new Error('Failed to create a target file for the distribution transfers');
 
     const transfer_map = await generate_depth_transfer_map(entries, distributer, depth, target_file);

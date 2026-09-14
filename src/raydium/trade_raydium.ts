@@ -1016,7 +1016,7 @@ export class RaydiumTrader implements trade.IProgramTrader {
             expected: {
                 amount: raw_amount.toString(),
                 decimals: quote.decimals,
-                uiAmount: Number(raw_amount) / 10 ** mint_meta.token_decimals
+                uiAmount: Number(raw_amount) / 10 ** quote.decimals
             },
             minimum: {
                 amount: minimum_raw_amount.toString(),
