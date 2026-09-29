@@ -16,6 +16,7 @@ import {
     Finality,
     AddressLookupTableAccount,
     AddressLookupTableProgram,
+    SYSVAR_SLOT_HASHES_PUBKEY,
     ParsedTransactionWithMeta,
     ParsedInstruction,
     PartiallyDecodedInstruction
@@ -57,6 +58,7 @@ import {
     CACHE_SIZE_MAX,
     ACCOUNT_READ_CACHE_TTL_MS,
     HELIUS_RPC,
+    NETWORK,
     SENDER_ENDPOINT,
     SENDER_INTERVAL_MS,
     SENDER_MAX_BUNDLE_SIZE,
@@ -1071,6 +1073,22 @@ export async function get_priority_fee_estimate(
     priority_level: PriorityLevel,
     account_keys: PublicKey[]
 ): Promise<number> {
+    if (NETWORK === 'devnet') {
+        const samples = await global.CONNECTION.getRecentPrioritizationFees({ lockedWritableAccounts: account_keys });
+        const fees = samples.map((sample) => Number(sample.prioritizationFee)).sort((a, b) => a - b);
+        if (fees.length === 0 || fees.some((fee) => !Number.isSafeInteger(fee) || fee < 0))
+            throw new Error('RPC returned no valid recent prioritization fees.');
+        const percentile = {
+            [PriorityLevel.MIN]: 0,
+            [PriorityLevel.LOW]: 0.25,
+            [PriorityLevel.MEDIUM]: 0.5,
+            [PriorityLevel.HIGH]: 0.75,
+            [PriorityLevel.VERY_HIGH]: 0.95,
+            [PriorityLevel.UNSAFE_MAX]: 1,
+            [PriorityLevel.DEFAULT]: 0.75
+        }[priority_level];
+        return fees[Math.ceil((fees.length - 1) * percentile)];
+    }
     const response = await helius_rpc<{ priorityFeeEstimate?: number }>('getPriorityFeeEstimate', [
         {
             accountKeys: account_keys.map((account) => account.toBase58()),
@@ -1091,6 +1109,20 @@ async function get_priority_fee(priority_opts: PriorityOptions, ctx: Transaction
 
     if (!priority_opts.transaction)
         throw new Error(`Transaction instructions and signers are required to get priority fee estimate.`);
+
+    if (NETWORK === 'devnet') {
+        const { instructions, signers } = priority_opts.transaction;
+        const writable_accounts = new Set([
+            signers[0].publicKey.toBase58(),
+            ...instructions.flatMap((instruction) =>
+                instruction.keys.filter((key) => key.isWritable).map((key) => key.pubkey.toBase58())
+            )
+        ]);
+        return get_priority_fee_estimate(
+            priority_opts.priority_level ?? PriorityLevel.DEFAULT,
+            [...writable_accounts].map((address) => new PublicKey(address))
+        );
+    }
 
     const cache_key = get_priority_cache_key(priority_opts);
     return cached_priority_fee(cache_key, async () => {
@@ -1926,12 +1958,16 @@ export async function close_accounts(
 // Address lookup tables
 
 export async function create_lta(payer: Keypair): Promise<[PublicKey, String]> {
-    const commitment: Commitment = 'finalized';
     let retries = TRADE_RETRIES;
 
     while (retries > 0) {
         try {
-            const recent_slot = await global.CONNECTION.getSlot(commitment);
+            const slot_hashes = await global.CONNECTION.getAccountInfo(SYSVAR_SLOT_HASHES_PUBKEY, COMMITMENT);
+            if (!slot_hashes || slot_hashes.data.length < 16) throw new Error('SlotHashes sysvar is unavailable.');
+            const data = slot_hashes.data;
+            const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+            if (view.getBigUint64(0, true) === 0n) throw new Error('SlotHashes sysvar is empty.');
+            const recent_slot = view.getBigUint64(8, true);
             const [instruction, lt_address] = await AddressLookupTableProgram.createLookupTable({
                 authority: payer.publicKey,
                 payer: payer.publicKey,

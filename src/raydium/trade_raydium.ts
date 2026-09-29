@@ -277,7 +277,7 @@ export class RaydiumProvider implements trade.IProgramProvider {
     }
 
     public get_lta_addresses(): PublicKey[] {
-        return [RAYDIUM_LTA_ACCOUNT];
+        return RAYDIUM_LTA_ACCOUNT ? [RAYDIUM_LTA_ACCOUNT] : [];
     }
 
     public deserialize_mint_meta(data: trade.SerializedMintMeta): RaydiumMintMeta {
@@ -387,7 +387,7 @@ export class RaydiumProvider implements trade.IProgramProvider {
         slippage: number = 0.05
     ): Promise<[TransactionInstruction[], AddressLookupTableAccount[]?]> {
         trade.validate_trade_parameters(amount, slippage);
-        const lta = await trade.get_ltas([RAYDIUM_LTA_ACCOUNT]);
+        const lta = await trade.get_ltas(this.get_lta_addresses());
         if (mint_meta.complete) {
             const instructions = await this.get_buy_cpmm_instructions(amount, buyer, mint_meta, slippage);
             return [instructions, lta];
@@ -403,7 +403,7 @@ export class RaydiumProvider implements trade.IProgramProvider {
         slippage: number = 0.05
     ): Promise<trade.SellInstructions> {
         trade.validate_trade_parameters(token_amount, slippage);
-        const lta = await trade.get_ltas([RAYDIUM_LTA_ACCOUNT]);
+        const lta = await trade.get_ltas(this.get_lta_addresses());
         if (mint_meta.complete) {
             const instructions = await this.get_sell_cpmm_instructions(token_amount, seller, mint_meta, slippage);
             return { ...instructions, ltas: lta };
