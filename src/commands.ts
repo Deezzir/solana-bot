@@ -344,7 +344,7 @@ export async function token_balance(wallets: common.Wallet[], mint: PublicKey, f
     } else if (format === 'table') {
         common.log(common.yellow(`Getting the token balance of the wallets by the mint ${mint.toString()}...`));
         common.log(common.yellow(`Token: ${token_name} | Symbol: ${token_symbol}`));
-        common.log(common.green(`Wallet Count: ${wallet_count}\n`));
+        common.log(common.yellow(`Wallet Count: ${wallet_count}\n`));
 
         common.print_header([
             { title: 'Id', width: common.COLUMN_WIDTHS.id },

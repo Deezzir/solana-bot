@@ -62,6 +62,7 @@ import {
     PUMP_FEE_PROGRAM_ID,
     PUMP_AMM_FEE_CONFIG,
     PUMP_BUYBACK_FEE_RECIPIENTS,
+    PUMP_AMM_FEE_RECIPIENTS,
     PUMP_FEE_RECIPIENTS,
     MAYHEM_FEE_RECIPIENTS,
     MAYHEM_PROGRAM_ID,
@@ -281,7 +282,7 @@ export class Provider implements trade.IProgramProvider {
     }
 
     public get_lta_addresses(): PublicKey[] {
-        return [PUMP_QUOTE_LTA_ACCOUNT, PUMP_LTA_ACCOUNT];
+        return [PUMP_QUOTE_LTA_ACCOUNT, PUMP_LTA_ACCOUNT].filter((address): address is PublicKey => address !== null);
     }
 
     public deserialize_mint_meta(data: trade.SerializedMintMeta): PumpMintMeta {
@@ -1816,7 +1817,7 @@ export class Provider implements trade.IProgramProvider {
             quote.token_program
         );
         const pool_v2 = await this.calc_pool_v2(mint);
-        const fee_recipients = mint_meta.is_mayhem ? MAYHEM_FEE_RECIPIENTS : PUMP_FEE_RECIPIENTS;
+        const fee_recipients = mint_meta.is_mayhem ? MAYHEM_FEE_RECIPIENTS : PUMP_AMM_FEE_RECIPIENTS;
         const fee_recipient = fee_recipients[Math.floor(Math.random() * fee_recipients.length)];
         const fee_recipient_ata = await trade.calc_ata(fee_recipient, quote_mint, quote.token_program);
         const buyback_fee_recipient =
@@ -1909,7 +1910,7 @@ export class Provider implements trade.IProgramProvider {
             quote.token_program
         );
         const pool_v2 = await this.calc_pool_v2(mint);
-        const fee_recipients = mint_meta.is_mayhem ? MAYHEM_FEE_RECIPIENTS : PUMP_FEE_RECIPIENTS;
+        const fee_recipients = mint_meta.is_mayhem ? MAYHEM_FEE_RECIPIENTS : PUMP_AMM_FEE_RECIPIENTS;
         const fee_recipient = fee_recipients[Math.floor(Math.random() * fee_recipients.length)];
         const fee_recipient_ata = await trade.calc_ata(fee_recipient, quote_mint, quote.token_program);
         const buyback_fee_recipient =

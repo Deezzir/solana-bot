@@ -413,7 +413,7 @@ export class Provider implements trade.IProgramProvider {
     }
 
     public get_lta_addresses(): PublicKey[] {
-        return [METEORA_LTA_ACCOUNT];
+        return METEORA_LTA_ACCOUNT ? [METEORA_LTA_ACCOUNT] : [];
     }
 
     public deserialize_mint_meta(data: trade.SerializedMintMeta): MeteoraMintMeta {
@@ -641,7 +641,7 @@ export class Provider implements trade.IProgramProvider {
         slippage: number
     ): Promise<[TransactionInstruction[], AddressLookupTableAccount[]?]> {
         trade.validate_trade_parameters(amount, slippage);
-        const lta = await trade.get_ltas([METEORA_LTA_ACCOUNT]);
+        const lta = await trade.get_ltas(this.get_lta_addresses());
         if (mint_meta.migrated) {
             if (!mint_meta.damm_v2_data) throw new Error('Missing DAMM v2 pool data.');
             return [await this.get_buy_damm_v2_instructions(amount, buyer, mint_meta, slippage), lta];
@@ -656,7 +656,7 @@ export class Provider implements trade.IProgramProvider {
         slippage: number
     ): Promise<trade.SellInstructions> {
         trade.validate_trade_parameters(token_amount, slippage);
-        const lta = await trade.get_ltas([METEORA_LTA_ACCOUNT]);
+        const lta = await trade.get_ltas(this.get_lta_addresses());
         if (mint_meta.migrated) {
             if (!mint_meta.damm_v2_data) throw new Error('Missing DAMM v2 pool data.');
             return {

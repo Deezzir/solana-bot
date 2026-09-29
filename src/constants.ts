@@ -11,8 +11,12 @@ function get_env_variable(var_name: string, default_value: string = ''): any {
 }
 
 // NETWORK CONSTANTS
+export const NETWORK = get_env_variable('NETWORK', 'mainnet') as string as 'mainnet' | 'devnet';
 const HELIUS_API_KEY = get_env_variable('HELIUS_API_KEY');
-export const HELIUS_RPC = `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`;
+export const HELIUS_RPC =
+    NETWORK === 'mainnet'
+        ? `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`
+        : `https://devnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`;
 export const WS_URL = `wss://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`;
 export const RPC_REQUESTS_PER_SECOND = Number(get_env_variable('RPC_REQUESTS_PER_SECOND', '50'));
 export const COMMITMENT = 'confirmed';
@@ -166,8 +170,10 @@ export const RAYDIUM_CPMM_POOL_STATE_HEADER = new Uint8Array([247, 237, 227, 245
 export const RAYDIUM_CPMM_AUTHORITY = new PublicKey('GpMZbSM2GgvTKHJirzeGfMFoaZ8UR2X7F4v8vHTvxFbL');
 export const RAYDIUM_CPMM_SWAP_DISCRIMINATOR = new Uint8Array([143, 190, 90, 218, 196, 30, 51, 222]);
 export const RAYDIUM_CPMM_SWAP_EXACT_OUT_DISCRIMINATOR = new Uint8Array([55, 217, 98, 86, 163, 74, 180, 173]);
-export const RAYDIUM_LTA_ACCOUNT = new PublicKey('DiVZACwhLuhxtVDm7tXqcTBch9WrvUkraHLWwcTPEura');
-export const RAYDIUM_LTA_ACCOUNT_EXTRA = new PublicKey('39TSYuyedPtTakGJdUpx7Qp9EHTuA93Yx2vGiRqyuYKD');
+export const RAYDIUM_LTA_ACCOUNT =
+    NETWORK === 'mainnet' ? new PublicKey('DiVZACwhLuhxtVDm7tXqcTBch9WrvUkraHLWwcTPEura') : null;
+export const RAYDIUM_LTA_ACCOUNT_EXTRA =
+    NETWORK === 'mainnet' ? new PublicKey('39TSYuyedPtTakGJdUpx7Qp9EHTuA93Yx2vGiRqyuYKD') : null;
 
 // BONK CONSTANTS
 export const BONK_DEFAULT_MINT_META = {
@@ -195,8 +201,10 @@ export const METEORA_DBC_PARAMS = {
 export const METEORA_DAMM_V2_PROGRAM_ID = new PublicKey('cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG');
 export const METEORA_DBC_POOL_AUTHORITY = new PublicKey('FhVo3mqL8PW5pH5U2CN4XE33DokiyZnUwuGpH2hmHLuM');
 export const METEORA_DBC_EVENT_AUTHORITY = new PublicKey('8Ks12pbrD6PXxfty1hVQiE9sc289zgU1zHkvXhrSdriF');
-export const METEORA_LTA_ACCOUNT = new PublicKey('F1geeThcTKPq5nJDpJ9Eh7gk7t4k22PKpcGjbzzPJD14');
-export const METEORA_LTA_ACCOUNT_EXTRA = new PublicKey('6WgD151HNpmFfv5Hzf2NsPTVNoSC1JjeMoJ8sEFtpDKh');
+export const METEORA_LTA_ACCOUNT =
+    NETWORK === 'mainnet' ? new PublicKey('F1geeThcTKPq5nJDpJ9Eh7gk7t4k22PKpcGjbzzPJD14') : null;
+export const METEORA_LTA_ACCOUNT_EXTRA =
+    NETWORK === 'mainnet' ? new PublicKey('6WgD151HNpmFfv5Hzf2NsPTVNoSC1JjeMoJ8sEFtpDKh') : null;
 export const METEORA_DAMM_V2_STATE_HEADER = new Uint8Array([241, 154, 109, 4, 17, 177, 109, 188]);
 export const METEORA_DBC_STATE_HEADER = new Uint8Array([213, 224, 5, 209, 98, 69, 119, 92]);
 export const METEORA_CONFIG_HEADER = new Uint8Array([26, 108, 14, 123, 116, 230, 129, 43]);
@@ -220,22 +228,59 @@ export const PUMP_DEFAULT_MINT_META = {
 };
 export const PUMP_FEE_PERCENTAGE = 0.0125; // 1.25%
 export const PUMP_SWAP_PERCENTAGE = 0.0125; // 1.25%
-export const PUMP_LTA_ACCOUNT_EXTRA = new PublicKey('FNbKyKh4LjC1kSmhMahZ2gJPwt1anynVUdaCNmmuxzac');
-export const PUMP_LTA_ACCOUNT = new PublicKey('J5edBug5X1G1PoUgtnBjNUpcrhpeJiRKy7TWqs5Yvuk3');
-export const PUMP_QUOTE_LTA_ACCOUNT = new PublicKey('Hyif6eWb8x88RVrvjPfabsgRYnwkVnyByEXTVTXbUcyP');
+export const PUMP_LTA_ACCOUNT_EXTRA =
+    NETWORK === 'mainnet' ? new PublicKey('FNbKyKh4LjC1kSmhMahZ2gJPwt1anynVUdaCNmmuxzac') : null;
+export const PUMP_LTA_ACCOUNT =
+    NETWORK === 'mainnet' ? new PublicKey('J5edBug5X1G1PoUgtnBjNUpcrhpeJiRKy7TWqs5Yvuk3') : null;
+export const PUMP_QUOTE_LTA_ACCOUNT =
+    NETWORK === 'mainnet' ? new PublicKey('Hyif6eWb8x88RVrvjPfabsgRYnwkVnyByEXTVTXbUcyP') : null;
 export const PUMP_PROGRAM_ID = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
 export const PUMP_FEE_PROGRAM_ID = new PublicKey('pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ');
 export const PUMP_FEE_CONFIG = new PublicKey('8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt');
-export const PUMP_FEE_RECIPIENTS = [
-    new PublicKey('62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV'),
-    new PublicKey('7VtfL8fvgNfhz17qKRMjzQEXgbdpnHHHQRh54R9jP2RJ'),
-    new PublicKey('7hTckgnGnLQR6sdH7YkqFTAA7VwTfYFaZ6EhEsU3saCX'),
-    new PublicKey('9rPYyANsfQZw3DnDmKE3YCQF5E8oD89UXoHn9JFEhJUz'),
-    new PublicKey('AVmoTthdrX6tKt4nDjco2D775W2YK3sDhxPcMmzUAmTY'),
-    new PublicKey('CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM'),
-    new PublicKey('FWsW1xNtWscwNmKv6wVsU1iTzRN6wmmk3MjxRP5tT7hz'),
-    new PublicKey('G5UZAVbAf46s7cKWoyKu8kYTip9DGTpbLZ2qa9Aq69dP')
-];
+export const PUMP_FEE_RECIPIENTS =
+    NETWORK === 'mainnet'
+        ? [
+              new PublicKey('62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV'),
+              new PublicKey('7VtfL8fvgNfhz17qKRMjzQEXgbdpnHHHQRh54R9jP2RJ'),
+              new PublicKey('7hTckgnGnLQR6sdH7YkqFTAA7VwTfYFaZ6EhEsU3saCX'),
+              new PublicKey('9rPYyANsfQZw3DnDmKE3YCQF5E8oD89UXoHn9JFEhJUz'),
+              new PublicKey('AVmoTthdrX6tKt4nDjco2D775W2YK3sDhxPcMmzUAmTY'),
+              new PublicKey('CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM'),
+              new PublicKey('FWsW1xNtWscwNmKv6wVsU1iTzRN6wmmk3MjxRP5tT7hz'),
+              new PublicKey('G5UZAVbAf46s7cKWoyKu8kYTip9DGTpbLZ2qa9Aq69dP')
+          ]
+        : [
+              new PublicKey('68yFSZxzLWJXkxxRGydZ63C6mHx1NLEDWmwN9Lb5yySg'),
+              new PublicKey('6QgPshH1egekJ2TURfakiiApDdv98qfRuRe7RectX8xs'),
+              new PublicKey('78i5hpHxbtmosSJdfJ74WzwdUr3eKWg9RbCPpBeAF78t'),
+              new PublicKey('8RMFYhsVsfdGCuWPFLxMCbSpSesiofabDdNorGqFrBNe'),
+              new PublicKey('9GDepfBcjJMvNgmijXWVWa97Am7VZYCqXx7kJV44E9ij'),
+              new PublicKey('9ppkS5madL2uXozoEnMnZi5bKDq9jgdKkSavjWTS5NfW'),
+              new PublicKey('DDMCfwbcaNYTeMk1ca8tr8BQKFaUfFCWFwBJq8JcnyCw'),
+              new PublicKey('DRDBsRMst21CJUhwD16pncgiXnBrFaRAPvA2G6SUQceE')
+          ];
+export const PUMP_AMM_FEE_RECIPIENTS =
+    NETWORK === 'mainnet'
+        ? [
+              new PublicKey('62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV'),
+              new PublicKey('7VtfL8fvgNfhz17qKRMjzQEXgbdpnHHHQRh54R9jP2RJ'),
+              new PublicKey('7hTckgnGnLQR6sdH7YkqFTAA7VwTfYFaZ6EhEsU3saCX'),
+              new PublicKey('9rPYyANsfQZw3DnDmKE3YCQF5E8oD89UXoHn9JFEhJUz'),
+              new PublicKey('AVmoTthdrX6tKt4nDjco2D775W2YK3sDhxPcMmzUAmTY'),
+              new PublicKey('FWsW1xNtWscwNmKv6wVsU1iTzRN6wmmk3MjxRP5tT7hz'),
+              new PublicKey('G5UZAVbAf46s7cKWoyKu8kYTip9DGTpbLZ2qa9Aq69dP'),
+              new PublicKey('JCRGumoE9Qi5BBgULTgdgTLjSgkCMSbF62ZZfGs84JeU')
+          ]
+        : [
+              new PublicKey('12e2F4DKkD3Lff6WPYsU7Xd76SHPEyN9T8XSsTJNF8oT'),
+              new PublicKey('2Ej38XSkmpvXzoUg5ZLma7Y9rCiZVgxzTdvE3Kph5juM'),
+              new PublicKey('3PAxmkxnM2vHno9amWQCsaaFjYnPGcD87HZGx1ChVjPj'),
+              new PublicKey('4QZqaBNm2F7viBDhhs8AQ5wC9FshgLJEiLLFGoxZZrTn'),
+              new PublicKey('9xvDPD6G7NRCEu7W2M9vCLeo8we23Ww7pzQEhXcuJAmA'),
+              new PublicKey('CdkG7sp1LT9YLsDaTWREaQcX6W4gZySk3o1eSjoL2uTh'),
+              new PublicKey('Freijj9xKLefjrb5fHgT6KMbYG1XBP2mA83tqeXYUMYM'),
+              new PublicKey('Hxzab4UjjVH2KjsdAqzdxGdYUpNN5FKhpu7iikB869uH')
+          ];
 export const MAYHEM_FEE_RECIPIENTS = [
     new PublicKey('GesfTA3X2arioaHp8bbKdjG9vJtskViWACZoYvxp4twS'),
     new PublicKey('4budycTjhs9fD6xw62VBducVTNgMgJJ5BgtKq7mAZwn6'),
