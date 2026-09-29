@@ -1,6 +1,6 @@
 {
     "name": "solana-bot",
-    "version": "1.1.3",
+    "version": "1.1.4",
     "description": "Solana bot",
     "author": "deezzir@gmail.com",
     "license": "MIT",
@@ -43,7 +43,7 @@
         "typescript": "^7.0.2"
     },
     "dependencies": {
-        "@solana-program/token": "^0.16.1",
+        "@solana-program/token": "^0.17.0",
         "@solana-program/token-2022": "^0.17.0",
         "@solana/web3.js": "3.0.0-rc.3",
         "bs58": "^6.0.0",
