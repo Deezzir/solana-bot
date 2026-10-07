@@ -42,6 +42,11 @@ import {
     SYSTEM_PROGRAM_ID,
     PUMP_BUY_V2_DISCRIMINATOR,
     PUMP_SELL_V2_DISCRIMINATOR,
+    PUMP_BUY_V3_DISCRIMINATOR,
+    PUMP_SELL_V3_DISCRIMINATOR,
+    PUMP_AMM_BUY_V2_DISCRIMINATOR,
+    PUMP_AMM_BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR,
+    PUMP_AMM_SELL_V2_DISCRIMINATOR,
     PUMP_AMM_BUY_EXACT_QUOTE_IN_DISCRIMINATOR,
     PUMP_AMM_BUY_EXACT_OUT_DISCRIMINATOR,
     PUMP_SELL_DISCRIMINATOR,
@@ -315,7 +320,7 @@ export class Provider implements trade.IProgramProvider {
         const [amm_creator_vault] = await this.calc_amm_creator_vault(trader.publicKey);
         const amm_assets = await Promise.all(
             amm_pools.map(async ({ account }) => {
-                const state = AMMStateStruct.decode(account.data);
+                const state = this.decode_amm_state(account.data);
                 const quote_mint_info = await global.CONNECTION.getAccountInfo(state.quote_mint, COMMITMENT);
                 if (!quote_mint_info) throw new Error(`Pump AMM quote mint is missing: ${state.quote_mint}`);
                 const quote_token_program = quote_mint_info.owner;
@@ -962,10 +967,6 @@ export class Provider implements trade.IProgramProvider {
         let current_mint_meta = mint_meta;
         let latest_slot = 0n;
         let amm_state: ReturnType<typeof AMMStateStruct.decode> | null = null;
-        let base_vault_balance: bigint | null = null;
-        let quote_vault_balance: bigint | null = null;
-        let base_vault_slot = 0n;
-        let quote_vault_slot = 0n;
         let vaults_started = false;
         let amm_pool_address = current_mint_meta.amm_pool;
 
@@ -981,16 +982,16 @@ export class Provider implements trade.IProgramProvider {
         };
 
         const publish_amm = async (slot: bigint = 0n) => {
-            if (
-                !amm_state ||
-                base_vault_balance === null ||
-                quote_vault_balance === null ||
-                base_vault_slot !== quote_vault_slot
-            )
-                return;
-            const state = amm_state;
-            const base_balance = base_vault_balance;
-            const quote_balance = quote_vault_balance;
+            if (stopped || !amm_state || !amm_pool_address) return;
+            const response = await global.CONNECTION.getMultipleAccountsInfoAndContext(
+                [new PublicKey(amm_pool_address), amm_state.base_vault, amm_state.quote_vault],
+                { commitment, minContextSlot: slot }
+            );
+            const [pool_info, base_info, quote_info] = response.value;
+            if (!pool_info || !base_info || !quote_info) return;
+            const state = this.decode_amm_state(pool_info.data);
+            const base_balance = decode_token_account(base_info).amount;
+            const quote_balance = decode_token_account(quote_info).amount;
             const quote = await get_quote_info(state.quote_mint);
             const metrics = quote_metrics(
                 Number(quote_balance + state.virtual_quote_reserves) / Number(base_balance),
@@ -1003,9 +1004,6 @@ export class Provider implements trade.IProgramProvider {
                 state.quote_mint,
                 quote.token_program
             );
-
-            if (base_balance !== base_vault_balance || quote_balance !== quote_vault_balance || state !== amm_state)
-                return;
 
             publish(
                 new PumpMintMeta({
@@ -1024,7 +1022,7 @@ export class Provider implements trade.IProgramProvider {
                     is_mayhem: state.is_mayhem,
                     is_cashback: state.is_cashback
                 }),
-                slot
+                response.context.slot
             );
         };
 
@@ -1033,52 +1031,28 @@ export class Provider implements trade.IProgramProvider {
             vaults_started = true;
             base_vault_sub_id = global.CONNECTION.onAccountChange(
                 state.base_vault,
-                (info, context) => {
-                    base_vault_balance = decode_token_account(info).amount;
-                    base_vault_slot = context.slot;
-                    void publish_amm(context.slot).catch(() => {});
-                },
+                (_info, context) => void publish_amm(context.slot).catch(() => {}),
                 { commitment }
             );
             quote_vault_sub_id = global.CONNECTION.onAccountChange(
                 state.quote_vault,
-                (info, context) => {
-                    quote_vault_balance = decode_token_account(info).amount;
-                    quote_vault_slot = context.slot;
-                    void publish_amm(context.slot).catch(() => {});
-                },
+                (_info, context) => void publish_amm(context.slot).catch(() => {}),
                 { commitment }
             );
-
-            const response = await global.CONNECTION.getMultipleAccountsInfoAndContext(
-                [state.base_vault, state.quote_vault],
-                commitment
-            );
-            const [base_info, quote_info] = response.value;
-            if (base_info && response.context.slot >= base_vault_slot) {
-                base_vault_balance = decode_token_account(base_info).amount;
-                base_vault_slot = response.context.slot;
-            }
-            if (quote_info && response.context.slot >= quote_vault_slot) {
-                quote_vault_balance = decode_token_account(quote_info).amount;
-                quote_vault_slot = response.context.slot;
-            }
-            await publish_amm(response.context.slot);
         };
 
         const process_amm_update = async (info: AccountInfo<Uint8Array>, slot: bigint = 0n) => {
             if (stopped || !info?.data || (slot && slot < latest_slot)) return;
-            amm_state = AMMStateStruct.decode(info.data);
+            amm_state = this.decode_amm_state(info.data);
             await subscribe_amm_accounts(amm_state);
-            unsubscribe(amm_state_sub_id);
-            amm_state_sub_id = undefined;
+            await publish_amm(slot);
         };
 
         const attach_amm = async (amm: PublicKey) => {
             amm_pool_address = amm.toBase58();
             amm_state_sub_id = global.CONNECTION.onAccountChange(
                 amm,
-                (info, context) => void process_amm_update(info, context.slot),
+                (info, context) => void process_amm_update(info, context.slot).catch(() => {}),
                 { commitment }
             );
             const response = await global.CONNECTION.getAccountInfoAndContext(amm, commitment);
@@ -1273,6 +1247,222 @@ export class Provider implements trade.IProgramProvider {
         const slippage_buf = Buffer.alloc(8);
         slippage_buf.writeBigUInt64LE(minimum_quote_output, 0);
         return Buffer.concat([instruction_buf, token_amount_buf, slippage_buf]);
+    }
+
+    private buy_v3_data(quote_amount_raw: bigint, token_amount_raw: bigint, slippage: number): Buffer {
+        const data = Buffer.alloc(24);
+        Buffer.from(PUMP_BUY_V3_DISCRIMINATOR).copy(data);
+        data.writeBigUInt64LE(token_amount_raw, 8);
+        data.writeBigUInt64LE(trade.apply_slippage_up(quote_amount_raw, slippage), 16);
+        return data;
+    }
+
+    private sell_v3_data(minimum_quote_output: bigint, token_amount_raw: bigint): Buffer {
+        const data = Buffer.alloc(24);
+        Buffer.from(PUMP_SELL_V3_DISCRIMINATOR).copy(data);
+        data.writeBigUInt64LE(token_amount_raw, 8);
+        data.writeBigUInt64LE(minimum_quote_output, 16);
+        return data;
+    }
+
+    private amm_buy_exact_quote_in_v2_data(
+        quote_amount_raw: bigint,
+        token_amount_raw: bigint,
+        slippage: number
+    ): Buffer {
+        const data = Buffer.alloc(24);
+        Buffer.from(PUMP_AMM_BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR).copy(data);
+        data.writeBigUInt64LE(quote_amount_raw, 8);
+        data.writeBigUInt64LE(trade.apply_slippage_down(token_amount_raw, slippage), 16);
+        return data;
+    }
+
+    private amm_buy_exact_out_v2_data(quote_amount_raw: bigint, token_amount_raw: bigint, slippage: number): Buffer {
+        const data = Buffer.alloc(24);
+        Buffer.from(PUMP_AMM_BUY_V2_DISCRIMINATOR).copy(data);
+        data.writeBigUInt64LE(token_amount_raw, 8);
+        data.writeBigUInt64LE(trade.apply_slippage_up(quote_amount_raw, slippage), 16);
+        return data;
+    }
+
+    private amm_sell_v2_data(minimum_quote_output: bigint, token_amount_raw: bigint): Buffer {
+        const data = Buffer.alloc(24);
+        Buffer.from(PUMP_AMM_SELL_V2_DISCRIMINATOR).copy(data);
+        data.writeBigUInt64LE(token_amount_raw, 8);
+        data.writeBigUInt64LE(minimum_quote_output, 16);
+        return data;
+    }
+
+    public async get_buy_instructions_v3(
+        amount: TokenAmount,
+        buyer: Keypair,
+        mint_meta: Partial<PumpMintMeta>,
+        slippage: number = 0.05
+    ): Promise<TransactionInstruction[]> {
+        trade.validate_trade_parameters(amount, slippage);
+        if (
+            !mint_meta.mint ||
+            !mint_meta.quote_mint ||
+            !mint_meta.base_vault ||
+            !mint_meta.quote_vault ||
+            !mint_meta.token_program_id
+        )
+            throw new Error('Incomplete mint meta data for v3 buy instructions.');
+        if (mint_meta.is_cashback) throw new Error('Pump v3 trades do not support cashback coins.');
+
+        const mint = new PublicKey(mint_meta.mint);
+        const quote_mint = new PublicKey(mint_meta.quote_mint);
+        const token_program = new PublicKey(mint_meta.token_program_id);
+        const bonding_curve = new PublicKey(mint_meta.base_vault);
+        const quote = await get_quote_info(quote_mint);
+        const buyback_wallet =
+            PUMP_BUYBACK_FEE_RECIPIENTS[Math.floor(Math.random() * PUMP_BUYBACK_FEE_RECIPIENTS.length)];
+        const [token_ata, quote_ata, quote_curve_ata, buyback_ata, accumulator] = await Promise.all([
+            trade.calc_ata(buyer.publicKey, mint, token_program),
+            trade.calc_ata(buyer.publicKey, quote_mint, quote.token_program),
+            trade.calc_ata(bonding_curve, quote_mint, quote.token_program),
+            trade.calc_ata(buyback_wallet, quote_mint, quote.token_program),
+            this.calc_user_volume_accumulator(buyer.publicKey, PUMP_PROGRAM_ID)
+        ]);
+        const quote_amount_raw = BigInt(amount.amount);
+        const token_amount_raw = this.calc_token_amount_raw(quote_amount_raw, mint_meta);
+        return [
+            createAssociatedTokenAccountIdempotentInstruction(buyer, token_ata, buyer.publicKey, mint, token_program),
+            ...(!quote_mint.equals(SOL_MINT)
+                ? [
+                      createAssociatedTokenAccountIdempotentInstruction(
+                          buyer,
+                          quote_ata,
+                          buyer.publicKey,
+                          quote_mint,
+                          quote.token_program
+                      ),
+                      createAssociatedTokenAccountIdempotentInstruction(
+                          buyer,
+                          buyback_ata,
+                          buyback_wallet,
+                          quote_mint,
+                          quote.token_program
+                      )
+                  ]
+                : []),
+            new TransactionInstruction({
+                programId: PUMP_PROGRAM_ID,
+                data: this.buy_v3_data(quote_amount_raw, token_amount_raw, slippage),
+                keys: [
+                    { pubkey: PUMP_GLOBAL_ACCOUNT, isSigner: false, isWritable: false },
+                    { pubkey: mint, isSigner: false, isWritable: false },
+                    { pubkey: quote_mint, isSigner: false, isWritable: false },
+                    { pubkey: token_program, isSigner: false, isWritable: false },
+                    { pubkey: quote.token_program, isSigner: false, isWritable: false },
+                    { pubkey: bonding_curve, isSigner: false, isWritable: true },
+                    { pubkey: new PublicKey(mint_meta.quote_vault), isSigner: false, isWritable: true },
+                    { pubkey: quote_curve_ata, isSigner: false, isWritable: true },
+                    { pubkey: buyer.publicKey, isSigner: true, isWritable: true },
+                    { pubkey: token_ata, isSigner: false, isWritable: true },
+                    { pubkey: quote_ata, isSigner: false, isWritable: true },
+                    { pubkey: accumulator, isSigner: false, isWritable: true },
+                    { pubkey: PUMP_FEE_CONFIG, isSigner: false, isWritable: false },
+                    {
+                        pubkey: quote_mint.equals(SOL_MINT) ? buyback_wallet : buyback_ata,
+                        isSigner: false,
+                        isWritable: true
+                    },
+                    { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
+                    { pubkey: PUMP_EVENT_AUTHORITY_ACCOUNT, isSigner: false, isWritable: false },
+                    { pubkey: PUMP_PROGRAM_ID, isSigner: false, isWritable: false }
+                ]
+            })
+        ];
+    }
+
+    public async get_sell_instructions_v3(
+        token_amount: TokenAmount,
+        seller: Keypair,
+        mint_meta: Partial<PumpMintMeta>,
+        slippage: number = 0.05
+    ): Promise<trade.SellInstructions> {
+        trade.validate_trade_parameters(token_amount, slippage);
+        if (
+            !mint_meta.mint ||
+            !mint_meta.quote_mint ||
+            !mint_meta.base_vault ||
+            !mint_meta.quote_vault ||
+            !mint_meta.token_program_id
+        )
+            throw new Error('Incomplete mint meta data for v3 sell instructions.');
+        if (mint_meta.is_cashback) throw new Error('Pump v3 trades do not support cashback coins.');
+
+        const mint = new PublicKey(mint_meta.mint);
+        const quote_mint = new PublicKey(mint_meta.quote_mint);
+        const token_program = new PublicKey(mint_meta.token_program_id);
+        const bonding_curve = new PublicKey(mint_meta.base_vault);
+        const quote = await get_quote_info(quote_mint);
+        const buyback_wallet =
+            PUMP_BUYBACK_FEE_RECIPIENTS[Math.floor(Math.random() * PUMP_BUYBACK_FEE_RECIPIENTS.length)];
+        const [token_ata, quote_ata, quote_curve_ata, buyback_ata, accumulator] = await Promise.all([
+            trade.calc_ata(seller.publicKey, mint, token_program),
+            trade.calc_ata(seller.publicKey, quote_mint, quote.token_program),
+            trade.calc_ata(bonding_curve, quote_mint, quote.token_program),
+            trade.calc_ata(buyback_wallet, quote_mint, quote.token_program),
+            this.calc_user_volume_accumulator(seller.publicKey, PUMP_PROGRAM_ID)
+        ]);
+        const token_amount_raw = BigInt(token_amount.amount);
+        const minimum_quote_output = trade.apply_slippage_down(
+            this.calc_quote_amount_raw(token_amount_raw, mint_meta),
+            slippage
+        );
+        const instructions = [
+            ...(!quote_mint.equals(SOL_MINT)
+                ? [
+                      createAssociatedTokenAccountIdempotentInstruction(
+                          seller,
+                          quote_ata,
+                          seller.publicKey,
+                          quote_mint,
+                          quote.token_program
+                      ),
+                      createAssociatedTokenAccountIdempotentInstruction(
+                          seller,
+                          buyback_ata,
+                          buyback_wallet,
+                          quote_mint,
+                          quote.token_program
+                      )
+                  ]
+                : []),
+            new TransactionInstruction({
+                programId: PUMP_PROGRAM_ID,
+                data: this.sell_v3_data(minimum_quote_output, token_amount_raw),
+                keys: [
+                    { pubkey: PUMP_GLOBAL_ACCOUNT, isSigner: false, isWritable: false },
+                    { pubkey: mint, isSigner: false, isWritable: false },
+                    { pubkey: quote_mint, isSigner: false, isWritable: false },
+                    { pubkey: token_program, isSigner: false, isWritable: false },
+                    { pubkey: quote.token_program, isSigner: false, isWritable: false },
+                    { pubkey: bonding_curve, isSigner: false, isWritable: true },
+                    { pubkey: new PublicKey(mint_meta.quote_vault), isSigner: false, isWritable: true },
+                    { pubkey: quote_curve_ata, isSigner: false, isWritable: true },
+                    { pubkey: seller.publicKey, isSigner: true, isWritable: true },
+                    { pubkey: token_ata, isSigner: false, isWritable: true },
+                    { pubkey: quote_ata, isSigner: false, isWritable: true },
+                    { pubkey: accumulator, isSigner: false, isWritable: true },
+                    { pubkey: PUMP_FEE_CONFIG, isSigner: false, isWritable: false },
+                    {
+                        pubkey: quote_mint.equals(SOL_MINT) ? buyback_wallet : buyback_ata,
+                        isSigner: false,
+                        isWritable: true
+                    },
+                    { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
+                    { pubkey: PUMP_EVENT_AUTHORITY_ACCOUNT, isSigner: false, isWritable: false },
+                    { pubkey: PUMP_PROGRAM_ID, isSigner: false, isWritable: false }
+                ]
+            })
+        ];
+        return {
+            instructions,
+            minimum_quote_output: { amount: minimum_quote_output.toString(), decimals: quote.decimals, uiAmount: null }
+        };
     }
 
     private async get_buy_instructions(
@@ -1741,8 +1931,17 @@ export class Provider implements trade.IProgramProvider {
         return this.get_amm_state_from_data(info.data);
     }
 
+    private decode_amm_state(data: Uint8Array): ReturnType<typeof AMMStateStruct.decode> {
+        const input =
+            data.byteLength >= AMMStateStruct.get_offset('is_mayhem') &&
+            data.byteLength <= AMMStateStruct.get_offset('virtual_quote_reserves')
+                ? Buffer.concat([data, Buffer.alloc(AMMStateStruct.get_size() - data.byteLength)])
+                : data;
+        return AMMStateStruct.decode(input);
+    }
+
     private async get_amm_state_from_data(data: Uint8Array): Promise<AMMState> {
-        const state = AMMStateStruct.decode(data);
+        const state = this.decode_amm_state(data);
         const [base_vault_balance, quote_vault_balance, supply] = await Promise.all([
             trade.get_vault_balance(state.base_vault),
             trade.get_vault_balance(state.quote_vault),
@@ -1767,6 +1966,156 @@ export class Provider implements trade.IProgramProvider {
             PUMP_AMM_PROGRAM_ID
         );
         return amm;
+    }
+
+    public async get_buy_amm_instructions_v2(
+        amount: TokenAmount,
+        buyer: Keypair,
+        mint_meta: Partial<PumpMintMeta>,
+        slippage: number = 0.05,
+        exact_out_amount?: bigint
+    ): Promise<TransactionInstruction[]> {
+        trade.validate_trade_parameters(amount, slippage);
+        if (
+            !mint_meta.mint ||
+            !mint_meta.quote_mint ||
+            !mint_meta.amm_pool ||
+            !mint_meta.base_vault ||
+            !mint_meta.quote_vault ||
+            !mint_meta.token_program_id
+        )
+            throw new Error('Incomplete mint meta data for AMM v2 buy instructions.');
+        if (mint_meta.is_cashback) throw new Error('PumpSwap v2 trades do not support cashback coins.');
+
+        const quote_amount_raw = BigInt(amount.amount);
+        const mint = new PublicKey(mint_meta.mint);
+        const quote_mint = new PublicKey(mint_meta.quote_mint);
+        const token_program = new PublicKey(mint_meta.token_program_id);
+        const quote = await prepare_quote_account(
+            buyer,
+            quote_mint,
+            exact_out_amount === undefined ? quote_amount_raw : trade.apply_slippage_up(quote_amount_raw, slippage)
+        );
+        const buyback_wallet =
+            PUMP_BUYBACK_FEE_RECIPIENTS[Math.floor(Math.random() * PUMP_BUYBACK_FEE_RECIPIENTS.length)];
+        const [token_ata, buyback_ata, accumulator] = await Promise.all([
+            trade.calc_ata(buyer.publicKey, mint, token_program),
+            trade.calc_ata(buyback_wallet, quote_mint, quote.token_program),
+            this.calc_user_volume_accumulator(buyer.publicKey, PUMP_AMM_PROGRAM_ID)
+        ]);
+        const token_amount_raw = exact_out_amount ?? this.calc_token_amount_raw(quote_amount_raw, mint_meta);
+        return [
+            createAssociatedTokenAccountIdempotentInstruction(buyer, token_ata, buyer.publicKey, mint, token_program),
+            ...quote.setup,
+            createAssociatedTokenAccountIdempotentInstruction(
+                buyer,
+                buyback_ata,
+                buyback_wallet,
+                quote_mint,
+                quote.token_program
+            ),
+            new TransactionInstruction({
+                programId: PUMP_AMM_PROGRAM_ID,
+                data:
+                    exact_out_amount === undefined
+                        ? this.amm_buy_exact_quote_in_v2_data(quote_amount_raw, token_amount_raw, slippage)
+                        : this.amm_buy_exact_out_v2_data(quote_amount_raw, token_amount_raw, slippage),
+                keys: [
+                    { pubkey: new PublicKey(mint_meta.amm_pool), isSigner: false, isWritable: true },
+                    { pubkey: buyer.publicKey, isSigner: true, isWritable: true },
+                    { pubkey: PUMP_AMM_GLOBAL_ACCOUNT, isSigner: false, isWritable: false },
+                    { pubkey: mint, isSigner: false, isWritable: false },
+                    { pubkey: quote_mint, isSigner: false, isWritable: false },
+                    { pubkey: token_ata, isSigner: false, isWritable: true },
+                    { pubkey: quote.ata, isSigner: false, isWritable: true },
+                    { pubkey: new PublicKey(mint_meta.base_vault), isSigner: false, isWritable: true },
+                    { pubkey: new PublicKey(mint_meta.quote_vault), isSigner: false, isWritable: true },
+                    { pubkey: token_program, isSigner: false, isWritable: false },
+                    { pubkey: quote.token_program, isSigner: false, isWritable: false },
+                    { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
+                    { pubkey: accumulator, isSigner: false, isWritable: true },
+                    { pubkey: PUMP_AMM_FEE_CONFIG, isSigner: false, isWritable: false },
+                    { pubkey: buyback_ata, isSigner: false, isWritable: true },
+                    { pubkey: PUMP_AMM_EVENT_AUTHORITY_ACCOUNT, isSigner: false, isWritable: false },
+                    { pubkey: PUMP_AMM_PROGRAM_ID, isSigner: false, isWritable: false }
+                ]
+            }),
+            ...quote.cleanup
+        ];
+    }
+
+    public async get_sell_amm_instructions_v2(
+        token_amount: TokenAmount,
+        seller: Keypair,
+        mint_meta: Partial<PumpMintMeta>,
+        slippage: number = 0.05
+    ): Promise<trade.SellInstructions> {
+        trade.validate_trade_parameters(token_amount, slippage);
+        if (
+            !mint_meta.mint ||
+            !mint_meta.quote_mint ||
+            !mint_meta.amm_pool ||
+            !mint_meta.base_vault ||
+            !mint_meta.quote_vault ||
+            !mint_meta.token_program_id
+        )
+            throw new Error('Incomplete mint meta data for AMM v2 sell instructions.');
+        if (mint_meta.is_cashback) throw new Error('PumpSwap v2 trades do not support cashback coins.');
+
+        const mint = new PublicKey(mint_meta.mint);
+        const quote_mint = new PublicKey(mint_meta.quote_mint);
+        const token_program = new PublicKey(mint_meta.token_program_id);
+        const quote = await prepare_quote_account(seller, quote_mint);
+        const buyback_wallet =
+            PUMP_BUYBACK_FEE_RECIPIENTS[Math.floor(Math.random() * PUMP_BUYBACK_FEE_RECIPIENTS.length)];
+        const [token_ata, buyback_ata, accumulator] = await Promise.all([
+            trade.calc_ata(seller.publicKey, mint, token_program),
+            trade.calc_ata(buyback_wallet, quote_mint, quote.token_program),
+            this.calc_user_volume_accumulator(seller.publicKey, PUMP_AMM_PROGRAM_ID)
+        ]);
+        const token_amount_raw = BigInt(token_amount.amount);
+        const minimum_quote_output = trade.apply_slippage_down(
+            this.calc_quote_amount_raw(token_amount_raw, mint_meta),
+            slippage
+        );
+        const instructions = [
+            ...quote.setup,
+            createAssociatedTokenAccountIdempotentInstruction(
+                seller,
+                buyback_ata,
+                buyback_wallet,
+                quote_mint,
+                quote.token_program
+            ),
+            new TransactionInstruction({
+                programId: PUMP_AMM_PROGRAM_ID,
+                data: this.amm_sell_v2_data(minimum_quote_output, token_amount_raw),
+                keys: [
+                    { pubkey: new PublicKey(mint_meta.amm_pool), isSigner: false, isWritable: true },
+                    { pubkey: seller.publicKey, isSigner: true, isWritable: true },
+                    { pubkey: PUMP_AMM_GLOBAL_ACCOUNT, isSigner: false, isWritable: false },
+                    { pubkey: mint, isSigner: false, isWritable: false },
+                    { pubkey: quote_mint, isSigner: false, isWritable: false },
+                    { pubkey: token_ata, isSigner: false, isWritable: true },
+                    { pubkey: quote.ata, isSigner: false, isWritable: true },
+                    { pubkey: new PublicKey(mint_meta.base_vault), isSigner: false, isWritable: true },
+                    { pubkey: new PublicKey(mint_meta.quote_vault), isSigner: false, isWritable: true },
+                    { pubkey: token_program, isSigner: false, isWritable: false },
+                    { pubkey: quote.token_program, isSigner: false, isWritable: false },
+                    { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
+                    { pubkey: accumulator, isSigner: false, isWritable: true },
+                    { pubkey: PUMP_AMM_FEE_CONFIG, isSigner: false, isWritable: false },
+                    { pubkey: buyback_ata, isSigner: false, isWritable: true },
+                    { pubkey: PUMP_AMM_EVENT_AUTHORITY_ACCOUNT, isSigner: false, isWritable: false },
+                    { pubkey: PUMP_AMM_PROGRAM_ID, isSigner: false, isWritable: false }
+                ]
+            }),
+            ...quote.cleanup
+        ];
+        return {
+            instructions,
+            minimum_quote_output: { amount: minimum_quote_output.toString(), decimals: quote.decimals, uiAmount: null }
+        };
     }
 
     private async get_buy_amm_instructions(

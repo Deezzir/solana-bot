@@ -11,7 +11,7 @@ function get_env_variable(var_name: string, default_value: string = ''): any {
 }
 
 // NETWORK CONSTANTS
-export const NETWORK = get_env_variable('NETWORK', 'mainnet') as string as 'mainnet' | 'devnet';
+export const NETWORK: 'mainnet' | 'devnet' = process.argv.slice(2).includes('--devnet') ? 'devnet' : 'mainnet';
 const HELIUS_API_KEY = get_env_variable('HELIUS_API_KEY');
 export const HELIUS_RPC =
     NETWORK === 'mainnet'
@@ -339,6 +339,11 @@ export const PUMP_AMM_CREATOR_VAULT_SEED = new Uint8Array([
 export const PUMP_SELL_DISCRIMINATOR = new Uint8Array([51, 230, 133, 164, 1, 127, 131, 173]);
 export const PUMP_BUY_V2_DISCRIMINATOR = new Uint8Array([184, 23, 238, 97, 103, 197, 211, 61]);
 export const PUMP_SELL_V2_DISCRIMINATOR = new Uint8Array([93, 246, 130, 60, 231, 233, 64, 178]);
+export const PUMP_BUY_V3_DISCRIMINATOR = new Uint8Array([7, 5, 29, 196, 245, 23, 101, 80]);
+export const PUMP_SELL_V3_DISCRIMINATOR = new Uint8Array([28, 146, 222, 119, 38, 196, 105, 213]);
+export const PUMP_AMM_BUY_V2_DISCRIMINATOR = new Uint8Array([184, 23, 238, 97, 103, 197, 211, 61]);
+export const PUMP_AMM_BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR = new Uint8Array([194, 171, 28, 70, 104, 77, 91, 47]);
+export const PUMP_AMM_SELL_V2_DISCRIMINATOR = new Uint8Array([93, 246, 130, 60, 231, 233, 64, 178]);
 export const PUMP_AMM_BUY_EXACT_QUOTE_IN_DISCRIMINATOR = new Uint8Array([198, 46, 21, 82, 180, 217, 232, 112]);
 export const PUMP_AMM_BUY_EXACT_OUT_DISCRIMINATOR = new Uint8Array([102, 6, 61, 18, 1, 218, 235, 234]);
 export const PUMP_CREATE_V1_DISCRIMINATOR = new Uint8Array([24, 30, 200, 40, 5, 28, 7, 119]);

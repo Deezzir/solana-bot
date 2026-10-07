@@ -224,6 +224,7 @@ async function main() {
     program.addOption(new Option('--nc, --no-colors', 'Disable colored output'));
     program.addOption(new Option('--v1', 'Use v1 transactions; fail if upstream support cannot be verified'));
     program.addOption(new Option('--funding', 'Enable token funding'));
+    program.option('--devnet', 'Use Solana devnet');
 
     program.hook('preAction', async () => {
         global.PROGRAM = program.opts().program;
