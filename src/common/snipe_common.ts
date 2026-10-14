@@ -583,12 +583,13 @@ export abstract class SniperBase implements ISniper {
     private setup_cmd_interface() {
         if (!this.bot_config) throw new Error('Bot configuration is not set.');
         if (!global.RL) common.setup_readline();
-        global.RL.setPrompt('Command (stop/config/sell/set)> ');
-        global.RL.prompt(true);
+        const rl = global.RL!;
+        rl.setPrompt('Command (stop/config/sell/set)> ');
+        rl.prompt(true);
 
         let stopping = false;
 
-        global.RL.on('line', (line) => {
+        rl.on('line', (line) => {
             moveCursor(process.stdout, 0, -1);
             clearLine(process.stdout, 0);
 
@@ -665,16 +666,17 @@ export abstract class SniperBase implements ISniper {
                     break;
                 }
             }
-            global.RL.prompt(true);
+            rl.prompt(true);
         })
             .on('mcap', (mcap: number) => {
                 const threshold_reached = this.bot_config!.mcap_threshold < mcap ? ' (Target reached)' : '';
                 const mcap_message = common.bold(`MCAP: $${common.format_currency(mcap)}${threshold_reached}`);
-                global.RL.setPrompt(`${mcap_message} | Command (stop/config/sell/set)> `);
-                global.RL.prompt(true);
+                rl.setPrompt(`${mcap_message} | Command (stop/config/sell/set)> `);
+                rl.prompt(true);
             })
             .on('close', () => {
                 if (!stopping) {
+                    stopping = true;
                     common.log('[Main Worker] Stopping the bot...');
                     this.workers_post_message('stop');
                     common.close_readline();

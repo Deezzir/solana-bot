@@ -8,7 +8,7 @@ import {
     COMMITMENT,
     HELIUS_RPC,
     PriorityLevel,
-    SENDER_ENDPOINTS,
+    SENDER_BENCHMARK_ENDPOINTS,
     SOL_MINT,
     TRADE_RETRIES,
     WALLETS_FILE_HEADERS
@@ -23,7 +23,6 @@ import * as mass_trade from './subcommands/mass_trade';
 import { get_sniper, create_executor } from './common/get_provider';
 import { Executor } from './common/executor';
 import { SubscriberType } from './common/subscriber';
-import { get_quote_name_by_mint } from './quote';
 
 type OutputFormat = 'table' | 'csv';
 
@@ -150,7 +149,7 @@ export async function clean(wallets: common.Wallet[], burn: boolean = false): Pr
         throw new Error(`${total_failed_cnt || unclosed_wallets.length} clean operation(s) failed.`);
 }
 
-export async function claim_fees(
+export async function claim_rewards(
     wallets: common.Wallet[],
     print_only: boolean,
     priority?: PriorityLevel
@@ -427,10 +426,10 @@ export async function token_balance(wallets: common.Wallet[], mint: PublicKey, f
     const allocation_cur = (total_tokens_cur / (supply / 10 ** decimals)) * 100;
     const average_entry_mcap_all =
         (((((total_spendings_all - total_fees_all) / total_tokens_all) * supply) / 10 ** decimals) * sol_price) /
-            1000 || 0;
+        1000 || 0;
     const average_entry_mcap_cur =
         (((((total_spendings_cur - total_fees_cur) / total_tokens_cur) * supply) / 10 ** decimals) * sol_price) /
-            1000 || 0;
+        1000 || 0;
 
     common.log('\nALL:');
     common.log(`    Average Entry MC: ${common.bold(average_entry_mcap_all.toFixed(1) + 'K$')}`);
@@ -620,7 +619,7 @@ export async function buy_token_once(
     let balance_msg = `\nBuyer address: ${buyer.publicKey.toString()} | Balance: ${trade.lamports_to_sol(balances.sol_balance_raw).toFixed(5)} SOL`;
     if (!mint_meta.quote_mint_pubkey.equals(SOL_MINT)) {
         const quote_ui_amount = Number(balances.quote_balance_raw) / 10 ** balances.quote_amount.decimals;
-        const quote_ticker = get_quote_name_by_mint(mint_meta.quote_mint_pubkey);
+        const quote_ticker = await trade.get_quote_name_by_mint(mint_meta.quote_mint_pubkey);
         balance_msg += `, ${quote_ui_amount.toFixed(5)} ${quote_ticker}`;
     }
     common.log(common.bold(balance_msg));
@@ -1266,11 +1265,11 @@ export async function benchmark(
 
                 process.stdout.write(
                     `\r[${i + 1}/${NUM_REQUESTS}] | ` +
-                        `Errors: ${errors} | ` +
-                        `Avg Time: ${avgTime.toFixed(2)} ms | ` +
-                        `Min Time: ${min_time.toFixed(2)} ms | ` +
-                        `Max Time: ${max_time.toFixed(2)} ms | ` +
-                        `TPS: ${tps.toFixed(2)}`
+                    `Errors: ${errors} | ` +
+                    `Avg Time: ${avgTime.toFixed(2)} ms | ` +
+                    `Min Time: ${min_time.toFixed(2)} ms | ` +
+                    `Max Time: ${max_time.toFixed(2)} ms | ` +
+                    `TPS: ${tps.toFixed(2)}`
                 );
             }
         }
@@ -1423,7 +1422,7 @@ export async function get_sender_endpoint(): Promise<void> {
     };
 
     const results = await Promise.all(
-        SENDER_ENDPOINTS.map(async (e) => ({
+        SENDER_BENCHMARK_ENDPOINTS.map(async (e) => ({
             endpoint: e,
             latency: await measure_latency(`${e}/ping`)
         }))
@@ -1433,6 +1432,17 @@ export async function get_sender_endpoint(): Promise<void> {
     for (const result of results) {
         common.log(`${result.endpoint.padEnd(32)} - ${result.latency.toFixed(2).padStart(7)} ms`);
     }
+    if (!Number.isFinite(results[0].latency)) {
+        common.warn('No Sender endpoints responded.');
+        return;
+    }
     common.log(common.green(`\nLowest latency endpoint: ${results[0].endpoint} - ${results[0].latency.toFixed(2)} ms`));
-    common.log(`\nSet SENDER_ENDPOINT=${results[0].endpoint} in your .env`);
+    const https_endpoint = results.find(
+        (result) => result.endpoint.startsWith('https:') && Number.isFinite(result.latency)
+    );
+    if (https_endpoint) {
+        common.log(`\nSet SENDER_ENDPOINT=${https_endpoint.endpoint} in your .env for authenticated HTTPS routing`);
+    } else {
+        common.warn('No HTTPS Sender endpoint responded; existing configuration is unchanged.');
+    }
 }

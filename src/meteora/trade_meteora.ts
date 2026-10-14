@@ -14,7 +14,7 @@ import * as trade from '../common/trade_common';
 import { get_quote_info, normalize_quote_mint, prepare_quote_account, quote_metrics } from '../common/trade_common';
 import {
     COMMITMENT,
-    IPFS,
+    PUBLIC_IPFS,
     METAPLEX_META_SEED,
     METAPLEX_PROGRAM_ID,
     METEORA_DAMM_V2_API_URL,
@@ -421,10 +421,13 @@ export class Provider implements trade.IProgramProvider {
     }
 
     public async get_rewards(trader: Keypair): Promise<MeteoraClaimableAsset[]> {
-        const pools = await trade.get_program_accounts_v2(METEORA_DBC_PROGRAM_ID, [
-            { memcmp: { offset: DBCStateStruct.get_offset('creator'), bytes: trader.publicKey.toBase58() } },
-            { memcmp: { offset: 0, bytes: base58.encode(METEORA_DBC_STATE_HEADER) } }
-        ]);
+        const pools = await global.CONNECTION.getProgramAccounts(METEORA_DBC_PROGRAM_ID, {
+            commitment: COMMITMENT,
+            filters: [
+                { memcmp: { offset: DBCStateStruct.get_offset('creator'), bytes: trader.publicKey.toBase58() } },
+                { memcmp: { offset: 0, bytes: base58.encode(METEORA_DBC_STATE_HEADER) } }
+            ]
+        });
 
         const assets = await Promise.all(
             pools.map(async ({ pubkey, account }) => {
@@ -437,7 +440,10 @@ export class Provider implements trade.IProgramProvider {
                 }
 
                 const config = DBCConfigStruct.decode(config_info.data);
-                if (config.token_type !== 0 || config.quote_token_flag !== 0) {
+                if (
+                    (config.token_type !== 0 && config.token_type !== 1) ||
+                    (config.quote_token_flag !== 0 && config.quote_token_flag !== 1)
+                ) {
                     return [];
                 }
                 const claimable: MeteoraClaimableAsset[] = [];
@@ -478,11 +484,17 @@ export class Provider implements trade.IProgramProvider {
         if (assets.length === 0) throw new Error(`No assets were provided`);
 
         const created_atas = new Set<string>();
-        const add_ata = async (mint: PublicKey) => {
-            const ata = await trade.calc_ata(trader.publicKey, mint);
+        const add_ata = async (mint: PublicKey, token_program: PublicKey) => {
+            const ata = await trade.calc_ata(trader.publicKey, mint, token_program);
             if (!created_atas.has(ata.toBase58())) {
                 instructions.push(
-                    createAssociatedTokenAccountIdempotentInstruction(trader, ata, trader.publicKey, mint)
+                    createAssociatedTokenAccountIdempotentInstruction(
+                        trader,
+                        ata,
+                        trader.publicKey,
+                        mint,
+                        token_program
+                    )
                 );
                 created_atas.add(ata.toBase58());
             }
@@ -599,8 +611,10 @@ export class Provider implements trade.IProgramProvider {
             const state = asset.state!;
             const config = asset.config!;
 
-            const base_ata = await add_ata(state.base_mint);
-            const quote_ata = await add_ata(config.quote_mint);
+            const base_program = config.token_type === 0 ? TOKEN_PROGRAM_ID : TOKEN_2022_PROGRAM_ID;
+            const quote_program = config.quote_token_flag === 0 ? TOKEN_PROGRAM_ID : TOKEN_2022_PROGRAM_ID;
+            const base_ata = await add_ata(state.base_mint, base_program);
+            const quote_ata = await add_ata(config.quote_mint, quote_program);
             const data = Buffer.alloc(24);
             Buffer.from(METEORA_DBC_CLAIM_CREATOR_FEE_DISCRIMINATOR).copy(data);
             data.writeBigUInt64LE(state.creator_base_fee, 8);
@@ -619,16 +633,18 @@ export class Provider implements trade.IProgramProvider {
                         { pubkey: state.base_mint, isSigner: false, isWritable: false },
                         { pubkey: config.quote_mint, isSigner: false, isWritable: false },
                         { pubkey: trader.publicKey, isSigner: true, isWritable: false },
-                        { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-                        { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+                        { pubkey: base_program, isSigner: false, isWritable: false },
+                        { pubkey: quote_program, isSigner: false, isWritable: false },
                         { pubkey: METEORA_DBC_EVENT_AUTHORITY, isSigner: false, isWritable: false },
                         { pubkey: METEORA_DBC_PROGRAM_ID, isSigner: false, isWritable: false }
                     ]
                 })
             );
-            if (config.quote_mint.equals(SOL_MINT))
-                instructions.push(createCloseAccountInstruction(quote_ata, trader.publicKey, trader.publicKey));
         }
+
+        const sol_ata = await trade.calc_ata(trader.publicKey, SOL_MINT);
+        if (created_atas.has(sol_ata.toBase58()))
+            instructions.push(createCloseAccountInstruction(sol_ata, trader.publicKey, trader.publicKey));
 
         if (instructions.length === 0) throw new Error('Invalid assets were provided, no tx was derived');
         return instructions;
@@ -1274,7 +1290,7 @@ export class Provider implements trade.IProgramProvider {
         return [
             new TransactionInstruction({
                 programId: METEORA_DBC_PROGRAM_ID,
-                data: this.create_data(token_name, token_symbol, `${IPFS}${meta_cid}`, token_2022),
+                data: this.create_data(token_name, token_symbol, `${PUBLIC_IPFS}/ipfs/${meta_cid}`, token_2022),
                 keys: [
                     { pubkey: new PublicKey(info.config), isSigner: false, isWritable: false },
                     { pubkey: METEORA_DBC_POOL_AUTHORITY, isSigner: false, isWritable: false },

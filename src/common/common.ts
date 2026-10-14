@@ -3,7 +3,15 @@ import { clearLine, cursorTo } from 'readline';
 import { Keypair, PublicKey } from '@solana/web3.js';
 import { createInterface } from 'readline';
 import { parse } from 'csv-parse/sync';
-import { IPFS, IPFS_API, IPFS_JWT, PUMP_API_URL, WALLETS_FILE_HEADERS, WALLETS_RESCUE_DIR_PATH } from '../constants';
+import {
+    PUBLIC_IPFS,
+    IPFS_API,
+    IPFS_JWT,
+    PUMP_API_URL,
+    WALLETS_FILE_HEADERS,
+    WALLETS_RESCUE_DIR_PATH,
+    IPFS_GATEWAY
+} from '../constants';
 import base58 from 'bs58';
 import path, { basename } from 'path';
 
@@ -291,7 +299,7 @@ export function read_json(file_path: string): object {
 
 export async function fetch_ipfs_json(cid: string): Promise<IPFSMetadata> {
     try {
-        const response = await fetch(`${IPFS}${cid}`);
+        const response = await fetch(`${IPFS_GATEWAY}/ipfs/${cid}`);
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
         return data as IPFSMetadata;
@@ -302,16 +310,21 @@ export async function fetch_ipfs_json(cid: string): Promise<IPFSMetadata> {
 
 export function setup_readline(): void {
     if (global.RL) return;
-    global.RL = createInterface({
+    const rl = createInterface({
         input: process.stdin,
         output: process.stdout
+    });
+    global.RL = rl;
+    rl.once('close', () => {
+        if (global.RL === rl) global.RL = undefined;
     });
 }
 
 export function close_readline(): void {
-    if (!global.RL) return;
-    global.RL.prompt(false);
-    global.RL.pause().removeAllListeners('line').removeAllListeners('close').close();
+    const rl = global.RL;
+    if (!rl) return;
+    global.RL = undefined;
+    rl.pause().removeAllListeners('line').removeAllListeners('close').close();
     cursorTo(process.stdout, 0);
     clearLine(process.stdout, 0);
 }
@@ -496,7 +509,7 @@ export async function upload_metadata_ipfs(meta: IPFSMetadata, image_path: strin
             type: 'image/png'
         });
         const image_resp = await upload_ipfs(image_file);
-        meta.image = `${IPFS}${image_resp.cid}`;
+        meta.image = `${PUBLIC_IPFS}/ipfs/${image_resp.cid}`;
 
         const json = JSON.stringify(meta);
         const json_blob = new Blob([json]);

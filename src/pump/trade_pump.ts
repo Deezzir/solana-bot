@@ -20,7 +20,7 @@ import {
 } from '../common/token';
 import {
     COMMITMENT,
-    IPFS,
+    PUBLIC_IPFS,
     METAPLEX_PROGRAM_ID,
     PUMP_AMM_EVENT_AUTHORITY_ACCOUNT,
     PUMP_AMM_GLOBAL_ACCOUNT,
@@ -52,7 +52,6 @@ import {
     PUMP_SELL_DISCRIMINATOR,
     PUMP_SWAP_PERCENTAGE,
     PUMP_CREATE_V1_DISCRIMINATOR,
-    PUMP_IPFS_API_URL,
     PUMP_AMM_STATE_HEADER,
     PUMP_LTA_ACCOUNT,
     PUMP_QUOTE_LTA_ACCOUNT,
@@ -87,8 +86,6 @@ import {
     PUMP_CLAIM_TOKEN_INCENTIVES_DISCRIMINATOR,
     PROGRAM_COMPUTE_UNIT_LIMITS
 } from '../constants';
-import { readFileSync } from 'fs';
-import { basename } from 'path';
 import base58 from 'bs58';
 import { define_decoder_struct, skip, u8, u64, i128, discriminator, pubkey, u16, bool } from '../common/struct_decoder';
 
@@ -133,6 +130,9 @@ class PumpMintMeta implements trade.IMintMeta {
     token_program_id!: string;
     is_mayhem: boolean = false;
     is_cashback: boolean = false;
+    creator_fee_bps: number = 0;
+    editable_creator_fee: boolean = false;
+    is_holder_reward: boolean = false;
 
     constructor(data: Partial<PumpMintMeta> = {}) {
         Object.assign(this, data);
@@ -203,7 +203,10 @@ class PumpMintMeta implements trade.IMintMeta {
             fee: this.fee,
             token_program_id: this.token_program_id,
             is_mayhem: this.is_mayhem,
-            is_cashback: this.is_cashback
+            is_cashback: this.is_cashback,
+            creator_fee_bps: this.creator_fee_bps,
+            editable_creator_fee: this.editable_creator_fee,
+            is_holder_reward: this.is_holder_reward
         };
     }
 
@@ -226,7 +229,10 @@ class PumpMintMeta implements trade.IMintMeta {
             fee: data.fee as number,
             token_program_id: data.token_program_id as string,
             is_mayhem: data.is_mayhem as boolean,
-            is_cashback: data.is_cashback as boolean
+            is_cashback: data.is_cashback as boolean,
+            creator_fee_bps: data.creator_fee_bps as number,
+            editable_creator_fee: data.editable_creator_fee as boolean,
+            is_holder_reward: data.is_holder_reward as boolean
         });
     }
 }
@@ -241,8 +247,17 @@ const StateStruct = define_decoder_struct({
     complete: bool(),
     creator: pubkey(),
     is_mayhem: bool(),
-    is_cashback: bool(),
-    quote_mint: pubkey()
+    is_cashback: bool(), // deprecated
+    quote_mint: pubkey(),
+    creator_fee_bps: u64(),
+    editable_creator_fee: bool(),
+    is_holder_reward: bool(),
+    creator_fees: u64(),
+    protocol_fees: u64(),
+    depth: u8(),
+    initial_virtual_quote_reserves: u64(),
+    post_complete_base_out: u64(),
+    post_complete_quote_in: u64()
 });
 
 const AMMStateStruct = define_decoder_struct({
@@ -258,8 +273,13 @@ const AMMStateStruct = define_decoder_struct({
     lp_supply: skip(u64().size),
     creator: pubkey(),
     is_mayhem: bool(),
-    is_cashback: bool(),
-    virtual_quote_reserves: i128()
+    is_cashback: bool(), // deprecated
+    virtual_quote_reserves: i128(),
+    creator_fee_bps: u64(),
+    can_edit_creator_fee: bool(),
+    is_holder_reward: bool(),
+    protocol_fees: u64(),
+    creator_fees: u64()
 });
 
 const UserVolumeAccumulatorStruct = define_decoder_struct({
@@ -296,13 +316,9 @@ export class Provider implements trade.IProgramProvider {
 
     public async get_rewards(trader: Keypair): Promise<PumpClaimableAsset[]> {
         const [creator_vault, creator_vault_ata] = await this.calc_creator_vault(trader.publicKey);
-        const [creator_vault_info, creator_vault_rent, amm_pools] = await Promise.all([
+        const [creator_vault_info, creator_vault_rent] = await Promise.all([
             global.CONNECTION.getAccountInfo(creator_vault, COMMITMENT),
-            global.CONNECTION.getMinimumBalanceForRentExemption(0, COMMITMENT),
-            trade.get_program_accounts_v2(PUMP_AMM_PROGRAM_ID, [
-                { memcmp: { offset: AMMStateStruct.get_offset('creator'), bytes: trader.publicKey.toBase58() } },
-                { memcmp: { offset: 0, bytes: base58.encode(PUMP_AMM_STATE_HEADER) } }
-            ])
+            global.CONNECTION.getMinimumBalanceForRentExemption(0, COMMITMENT)
         ]);
         const pump_fees = (creator_vault_info?.lamports ?? 0n) - creator_vault_rent;
         const assets = await this.get_quote_rewards(creator_vault, 'creator_reward', 'v1');
@@ -318,29 +334,7 @@ export class Provider implements trade.IProgramProvider {
             });
         }
         const [amm_creator_vault] = await this.calc_amm_creator_vault(trader.publicKey);
-        const amm_assets = await Promise.all(
-            amm_pools.map(async ({ account }) => {
-                const state = this.decode_amm_state(account.data);
-                const quote_mint_info = await global.CONNECTION.getAccountInfo(state.quote_mint, COMMITMENT);
-                if (!quote_mint_info) throw new Error(`Pump AMM quote mint is missing: ${state.quote_mint}`);
-                const quote_token_program = quote_mint_info.owner;
-                const vault_ata = await trade.calc_ata(amm_creator_vault, state.quote_mint, quote_token_program);
-                const fees = await trade.get_vault_balance(vault_ata).catch(() => ({ balance: 0n, decimals: 0 }));
-                if (fees.balance === 0n) return null;
-                return {
-                    mint: state.quote_mint,
-                    raw_amount: fees.balance,
-                    decimals: fees.decimals,
-                    source: 'creator_reward' as const,
-                    vault: amm_creator_vault,
-                    vault_ata,
-                    curve: 'v2' as const,
-                    quote_mint: state.quote_mint,
-                    quote_token_program
-                };
-            })
-        );
-        assets.push(...amm_assets.filter((asset) => asset !== null));
+        assets.push(...(await this.get_quote_rewards(amm_creator_vault, 'creator_reward', 'v2', true)));
 
         const reward_assets = await Promise.all(
             [
@@ -409,7 +403,8 @@ export class Provider implements trade.IProgramProvider {
     private async get_quote_rewards(
         vault: PublicKey,
         source: 'creator_reward' | 'cashback_reward',
-        curve: PumpClaimableAsset['curve']
+        curve: PumpClaimableAsset['curve'],
+        include_sol: boolean = false
     ): Promise<PumpClaimableAsset[]> {
         const accounts = await Promise.all(
             [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID].map((programId) =>
@@ -419,7 +414,8 @@ export class Provider implements trade.IProgramProvider {
         const assets: PumpClaimableAsset[] = [];
         for (const { pubkey, account } of accounts.flatMap(({ value }) => value)) {
             const token = decode_token_account(account);
-            if (token.amount === 0n || token.mint.equals(SOL_MINT) || !token.owner.equals(vault)) continue;
+            if (token.amount === 0n || (!include_sol && token.mint.equals(SOL_MINT)) || !token.owner.equals(vault))
+                continue;
             const ata = await trade.calc_ata(vault, token.mint, account.owner);
             if (!pubkey.equals(ata)) continue;
             const quote = await get_quote_info(token.mint);
@@ -649,10 +645,10 @@ export class Provider implements trade.IProgramProvider {
         trade.validate_trade_parameters(amount, slippage);
         const lta = await trade.get_ltas(this.get_lta_addresses());
         if (this.get_amm(mint_meta)) {
-            const instructions = await this.get_buy_amm_instructions(amount, buyer, mint_meta, slippage);
+            const instructions = await this.get_buy_amm_instructions_v2(amount, buyer, mint_meta, slippage);
             return [instructions, lta];
         }
-        const instructions = await this.get_buy_instructions(amount, buyer, mint_meta, slippage);
+        const instructions = await this.get_buy_instructions_v3(amount, buyer, mint_meta, slippage);
         return [instructions, lta];
     }
 
@@ -665,10 +661,10 @@ export class Provider implements trade.IProgramProvider {
         trade.validate_trade_parameters(token_amount, slippage);
         const lta = await trade.get_ltas(this.get_lta_addresses());
         if (this.get_amm(mint_meta)) {
-            const instructions = await this.get_sell_amm_instructions(token_amount, seller, mint_meta, slippage);
+            const instructions = await this.get_sell_amm_instructions_v2(token_amount, seller, mint_meta, slippage);
             return { ...instructions, ltas: lta };
         }
-        const instructions = await this.get_sell_instructions(token_amount, seller, mint_meta, slippage);
+        const instructions = await this.get_sell_instructions_v3(token_amount, seller, mint_meta, slippage);
         return { ...instructions, ltas: lta };
     }
 
@@ -682,8 +678,8 @@ export class Provider implements trade.IProgramProvider {
         const quote_amount_raw = BigInt(amount.amount);
         const token_amount_raw = this.calc_token_amount_raw(quote_amount_raw, mint_meta);
         const buy_instructions = this.get_amm(mint_meta)
-            ? await this.get_buy_amm_instructions(amount, trader, mint_meta, slippage, token_amount_raw)
-            : await this.get_buy_instructions(amount, trader, mint_meta, slippage);
+            ? await this.get_buy_amm_instructions_v2(amount, trader, mint_meta, slippage, token_amount_raw)
+            : await this.get_buy_instructions_v3(amount, trader, mint_meta, slippage);
         const {
             instructions: sell,
             ltas,
@@ -729,7 +725,8 @@ export class Provider implements trade.IProgramProvider {
     ): Promise<trade.CreateTokenInstructions> {
         let version: 'v1' | 'v2' = 'v2';
         let is_mayhem: boolean = false;
-        let is_cashback: boolean = false;
+        let creator_fee_bps: number = 75;
+        let is_holder_reward: boolean = false;
         const quote_mint = new PublicKey((config as { quote_mint?: string } | undefined)?.quote_mint ?? SOL_MINT);
 
         if (config) {
@@ -741,18 +738,28 @@ export class Provider implements trade.IProgramProvider {
                 }
             }
             if ('is_mayhem' in config) {
-                if (typeof config.is_mayhem !== 'boolean') {
+                if (typeof config.is_mayhem !== 'boolean')
                     throw new Error(`Invalid config: is_mayhem must be a boolean`);
-                } else {
-                    is_mayhem = config.is_mayhem;
-                }
+                is_mayhem = config.is_mayhem;
             }
             if ('is_cashback' in config) {
-                if (typeof config.is_cashback !== 'boolean') {
-                    throw new Error(`Invalid config: is_cashback must be a boolean`);
-                } else {
-                    is_cashback = config.is_cashback;
-                }
+                throw new Error(`Invalid config: is_cashback is deprecated`);
+            }
+            if ('creator_fee_bps' in config) {
+                if (quote_mint.equals(SOL_MINT))
+                    throw new Error(`Invalid config: creator_fee_bps can only be set for non-SOL quote mints`);
+                if (
+                    typeof config.creator_fee_bps !== 'number' ||
+                    config.creator_fee_bps < 10 ||
+                    config.creator_fee_bps > 300
+                )
+                    throw new Error(`Invalid config: creator_fee_bps must be a number, between 10 and 300`);
+                creator_fee_bps = config.creator_fee_bps;
+            }
+            if ('is_holder_reward' in config) {
+                if (typeof config.is_holder_reward !== 'boolean')
+                    throw new Error(`Invalid config: is_holder_reward must be a boolean`);
+                is_holder_reward = config.is_holder_reward;
             }
         }
         if (version === 'v1' && is_mayhem)
@@ -767,7 +774,8 @@ export class Provider implements trade.IProgramProvider {
             token_program: version === 'v1' ? TOKEN_PROGRAM_ID : TOKEN_2022_PROGRAM_ID,
             quote_mint: quote_mint.toBase58(),
             is_mayhem: is_mayhem,
-            is_cashback: is_cashback
+            is_holder_reward: is_holder_reward,
+            creator_fee_bps: creator_fee_bps
         });
 
         if (!quote_mint.equals(SOL_MINT)) {
@@ -791,7 +799,8 @@ export class Provider implements trade.IProgramProvider {
             meta_cid,
             mint,
             is_mayhem,
-            is_cashback,
+            is_holder_reward,
+            creator_fee_bps,
             version,
             quote_mint
         );
@@ -803,33 +812,37 @@ export class Provider implements trade.IProgramProvider {
         const decoded = data as Record<string, unknown> | undefined;
         const meta = decoded
             ? {
-                  token_name: typeof decoded.name === 'string' && decoded.name ? decoded.name : 'Unknown',
-                  token_symbol: typeof decoded.symbol === 'string' && decoded.symbol ? decoded.symbol : 'Unknown',
-                  creator:
-                      decoded.creator instanceof PublicKey
-                          ? decoded.creator
-                          : typeof decoded.creator === 'string' && decoded.creator
+                token_name: typeof decoded.name === 'string' && decoded.name ? decoded.name : 'Unknown',
+                token_symbol: typeof decoded.symbol === 'string' && decoded.symbol ? decoded.symbol : 'Unknown',
+                creator:
+                    decoded.creator instanceof PublicKey
+                        ? decoded.creator
+                        : typeof decoded.creator === 'string' && decoded.creator
                             ? new PublicKey(decoded.creator)
                             : undefined,
-                  token_program:
-                      decoded.token_program instanceof PublicKey
-                          ? decoded.token_program
-                          : typeof decoded.token_program === 'string' && decoded.token_program
+                token_program:
+                    decoded.token_program instanceof PublicKey
+                        ? decoded.token_program
+                        : typeof decoded.token_program === 'string' && decoded.token_program
                             ? new PublicKey(decoded.token_program)
                             : TOKEN_PROGRAM_ID,
-                  is_mayhem: decoded.is_mayhem === true,
-                  is_cashback: decoded.is_cashback === true
-              }
+                is_mayhem: decoded.is_mayhem === true,
+                is_cashback: decoded.is_cashback === true,
+                is_holder_reward: decoded.is_holder_reward === true,
+                creator_fee_bps: typeof decoded.creator_fee_bps === 'number' ? decoded.creator_fee_bps : 0
+            }
             : {
-                  ...(await trade.get_token_meta(mint).catch(() => ({
-                      token_name: 'Unknown',
-                      token_symbol: 'Unknown',
-                      creator: undefined,
-                      token_program: TOKEN_PROGRAM_ID
-                  }))),
-                  is_mayhem: false,
-                  is_cashback: false
-              };
+                ...(await trade.get_token_meta(mint).catch(() => ({
+                    token_name: 'Unknown',
+                    token_symbol: 'Unknown',
+                    creator: undefined,
+                    token_program: TOKEN_PROGRAM_ID
+                }))),
+                is_mayhem: false,
+                is_cashback: false,
+                is_holder_reward: false,
+                creator_fee_bps: 0
+            };
 
         const quote_mint = new PublicKey((decoded?.quote_mint as string | undefined) ?? SOL_MINT);
         let creator_vault: PublicKey | undefined;
@@ -859,7 +872,9 @@ export class Provider implements trade.IProgramProvider {
             creator_vault_ata: creator_vault_ata ? creator_vault_ata.toString() : undefined,
             token_program_id: meta.token_program.toString(),
             is_mayhem: meta.is_mayhem,
-            is_cashback: meta.is_cashback
+            is_cashback: meta.is_cashback,
+            is_holder_reward: meta.is_holder_reward,
+            creator_fee_bps: meta.creator_fee_bps
         });
     }
 
@@ -978,7 +993,7 @@ export class Provider implements trade.IProgramProvider {
         };
 
         const unsubscribe = (id: number | undefined) => {
-            if (id !== undefined) global.CONNECTION.removeAccountChangeListener(id).catch(() => {});
+            if (id !== undefined) global.CONNECTION.removeAccountChangeListener(id).catch(() => { });
         };
 
         const publish_amm = async (slot: bigint = 0n) => {
@@ -1031,12 +1046,12 @@ export class Provider implements trade.IProgramProvider {
             vaults_started = true;
             base_vault_sub_id = global.CONNECTION.onAccountChange(
                 state.base_vault,
-                (_info, context) => void publish_amm(context.slot).catch(() => {}),
+                (_info, context) => void publish_amm(context.slot).catch(() => { }),
                 { commitment }
             );
             quote_vault_sub_id = global.CONNECTION.onAccountChange(
                 state.quote_vault,
-                (_info, context) => void publish_amm(context.slot).catch(() => {}),
+                (_info, context) => void publish_amm(context.slot).catch(() => { }),
                 { commitment }
             );
         };
@@ -1052,7 +1067,7 @@ export class Provider implements trade.IProgramProvider {
             amm_pool_address = amm.toBase58();
             amm_state_sub_id = global.CONNECTION.onAccountChange(
                 amm,
-                (info, context) => void process_amm_update(info, context.slot).catch(() => {}),
+                (info, context) => void process_amm_update(info, context.slot).catch(() => { }),
                 { commitment }
             );
             const response = await global.CONNECTION.getAccountInfoAndContext(amm, commitment);
@@ -1115,7 +1130,7 @@ export class Provider implements trade.IProgramProvider {
             bonding_sub_id = global.CONNECTION.onAccountChange(
                 bonding_curve,
                 (info, context) => {
-                    void process_bonding_update(info, context.slot).catch(() => {});
+                    void process_bonding_update(info, context.slot).catch(() => { });
                 },
                 { commitment }
             );
@@ -1330,21 +1345,21 @@ export class Provider implements trade.IProgramProvider {
             createAssociatedTokenAccountIdempotentInstruction(buyer, token_ata, buyer.publicKey, mint, token_program),
             ...(!quote_mint.equals(SOL_MINT)
                 ? [
-                      createAssociatedTokenAccountIdempotentInstruction(
-                          buyer,
-                          quote_ata,
-                          buyer.publicKey,
-                          quote_mint,
-                          quote.token_program
-                      ),
-                      createAssociatedTokenAccountIdempotentInstruction(
-                          buyer,
-                          buyback_ata,
-                          buyback_wallet,
-                          quote_mint,
-                          quote.token_program
-                      )
-                  ]
+                    createAssociatedTokenAccountIdempotentInstruction(
+                        buyer,
+                        quote_ata,
+                        buyer.publicKey,
+                        quote_mint,
+                        quote.token_program
+                    ),
+                    createAssociatedTokenAccountIdempotentInstruction(
+                        buyer,
+                        buyback_ata,
+                        buyback_wallet,
+                        quote_mint,
+                        quote.token_program
+                    )
+                ]
                 : []),
             new TransactionInstruction({
                 programId: PUMP_PROGRAM_ID,
@@ -1376,7 +1391,7 @@ export class Provider implements trade.IProgramProvider {
         ];
     }
 
-    public async get_sell_instructions_v3(
+    private async get_sell_instructions_v3(
         token_amount: TokenAmount,
         seller: Keypair,
         mint_meta: Partial<PumpMintMeta>,
@@ -1415,21 +1430,21 @@ export class Provider implements trade.IProgramProvider {
         const instructions = [
             ...(!quote_mint.equals(SOL_MINT)
                 ? [
-                      createAssociatedTokenAccountIdempotentInstruction(
-                          seller,
-                          quote_ata,
-                          seller.publicKey,
-                          quote_mint,
-                          quote.token_program
-                      ),
-                      createAssociatedTokenAccountIdempotentInstruction(
-                          seller,
-                          buyback_ata,
-                          buyback_wallet,
-                          quote_mint,
-                          quote.token_program
-                      )
-                  ]
+                    createAssociatedTokenAccountIdempotentInstruction(
+                        seller,
+                        quote_ata,
+                        seller.publicKey,
+                        quote_mint,
+                        quote.token_program
+                    ),
+                    createAssociatedTokenAccountIdempotentInstruction(
+                        seller,
+                        buyback_ata,
+                        buyback_wallet,
+                        quote_mint,
+                        quote.token_program
+                    )
+                ]
                 : []),
             new TransactionInstruction({
                 programId: PUMP_PROGRAM_ID,
@@ -1465,6 +1480,7 @@ export class Provider implements trade.IProgramProvider {
         };
     }
 
+    // @ts-ignore
     private async get_buy_instructions(
         amount: TokenAmount,
         buyer: Keypair,
@@ -1557,6 +1573,7 @@ export class Provider implements trade.IProgramProvider {
         ];
     }
 
+    // @ts-ignore
     private async get_sell_instructions(
         token_amount: TokenAmount,
         seller: Keypair,
@@ -1660,7 +1677,8 @@ export class Provider implements trade.IProgramProvider {
         meta_link: string,
         creator: PublicKey,
         mayhem_mode: boolean = false,
-        cashback_mode: boolean = false,
+        holder_reward_mode: boolean = false,
+        creator_fee_bps: number = 0,
         version: 'v1' | 'v2' = 'v2'
     ): Buffer {
         const instruction_buf = Buffer.from(
@@ -1691,7 +1709,14 @@ export class Provider implements trade.IProgramProvider {
         mayhem_mode_buf.writeUInt8(mayhem_mode ? 1 : 0, 0);
 
         const cashback_mode_buf = Buffer.alloc(1);
-        cashback_mode_buf.writeUInt8(cashback_mode ? 1 : 0, 0);
+        // deprecated, always false
+        cashback_mode_buf.writeUInt8(0);
+
+        const creator_fee_bps_buf = Buffer.alloc(8);
+        creator_fee_bps_buf.writeUInt32LE(creator_fee_bps, 0);
+
+        const holder_reward_mode_buf = Buffer.alloc(1);
+        holder_reward_mode_buf.writeUInt8(holder_reward_mode ? 1 : 0, 0);
 
         return Buffer.concat([
             instruction_buf,
@@ -1700,7 +1725,9 @@ export class Provider implements trade.IProgramProvider {
             meta_link_buf,
             creator_buf,
             mayhem_mode_buf,
-            cashback_mode_buf
+            cashback_mode_buf,
+            creator_fee_bps_buf,
+            holder_reward_mode_buf
         ]);
     }
 
@@ -1711,19 +1738,21 @@ export class Provider implements trade.IProgramProvider {
         meta_cid: string,
         mint: Keypair,
         mayhem_mode: boolean = false,
-        cashback_mode: boolean = false,
+        holder_reward_mode: boolean = false,
+        creator_fee_bps: number = 0,
         version: 'v1' | 'v2' = 'v2',
         quote_mint: PublicKey = SOL_MINT
     ): Promise<TransactionInstruction[]> {
         const token_program = version === 'v1' ? TOKEN_PROGRAM_ID : TOKEN_2022_PROGRAM_ID;
-        const meta_link = `${IPFS}${meta_cid}`;
+        const meta_link = `${PUBLIC_IPFS}/ipfs/${meta_cid}`;
         const instruction_data = this.create_data(
             token_name,
             token_symbol,
             meta_link,
             creator.publicKey,
             mayhem_mode,
-            cashback_mode,
+            holder_reward_mode,
+            creator_fee_bps,
             version
         );
         const [bonding, assoc_ata] = await this.calc_bonding_curve(mint.publicKey, token_program);
@@ -1758,11 +1787,11 @@ export class Provider implements trade.IProgramProvider {
                     { pubkey: PUMP_PROGRAM_ID, isSigner: false, isWritable: false },
                     ...(!quote_mint.equals(SOL_MINT)
                         ? [
-                              { pubkey: quote_mint, isSigner: false, isWritable: false },
-                              { pubkey: quote_vault, isSigner: false, isWritable: true },
-                              { pubkey: quote.token_program, isSigner: false, isWritable: false },
-                              { pubkey: quote_control, isSigner: false, isWritable: false }
-                          ]
+                            { pubkey: quote_mint, isSigner: false, isWritable: false },
+                            { pubkey: quote_vault, isSigner: false, isWritable: true },
+                            { pubkey: quote.token_program, isSigner: false, isWritable: false },
+                            { pubkey: quote_control, isSigner: false, isWritable: false }
+                        ]
                         : [])
                 ],
                 programId: PUMP_PROGRAM_ID,
@@ -1934,7 +1963,7 @@ export class Provider implements trade.IProgramProvider {
     private decode_amm_state(data: Uint8Array): ReturnType<typeof AMMStateStruct.decode> {
         const input =
             data.byteLength >= AMMStateStruct.get_offset('is_mayhem') &&
-            data.byteLength <= AMMStateStruct.get_offset('virtual_quote_reserves')
+                data.byteLength <= AMMStateStruct.get_offset('virtual_quote_reserves')
                 ? Buffer.concat([data, Buffer.alloc(AMMStateStruct.get_size() - data.byteLength)])
                 : data;
         return AMMStateStruct.decode(input);
@@ -2044,7 +2073,7 @@ export class Provider implements trade.IProgramProvider {
         ];
     }
 
-    public async get_sell_amm_instructions_v2(
+    private async get_sell_amm_instructions_v2(
         token_amount: TokenAmount,
         seller: Keypair,
         mint_meta: Partial<PumpMintMeta>,
@@ -2118,6 +2147,7 @@ export class Provider implements trade.IProgramProvider {
         };
     }
 
+    // @ts-ignore
     private async get_buy_amm_instructions(
         amount: TokenAmount,
         buyer: Keypair,
@@ -2215,6 +2245,7 @@ export class Provider implements trade.IProgramProvider {
         ];
     }
 
+    // @ts-ignore
     private async get_sell_amm_instructions(
         token_amount: TokenAmount,
         seller: Keypair,
@@ -2293,9 +2324,9 @@ export class Provider implements trade.IProgramProvider {
                     { pubkey: PUMP_FEE_PROGRAM_ID, isSigner: false, isWritable: false },
                     ...(mint_meta.is_cashback
                         ? [
-                              { pubkey: quote_user_accumulator_ata, isSigner: false, isWritable: true },
-                              { pubkey: user_volume_accumulator, isSigner: false, isWritable: true }
-                          ]
+                            { pubkey: quote_user_accumulator_ata, isSigner: false, isWritable: true },
+                            { pubkey: user_volume_accumulator, isSigner: false, isWritable: true }
+                        ]
                         : []),
                     { pubkey: pool_v2, isSigner: false, isWritable: false },
                     { pubkey: buyback_fee_recipient, isSigner: false, isWritable: true },
@@ -2313,33 +2344,7 @@ export class Provider implements trade.IProgramProvider {
     }
 
     public async create_token_metadata(meta: common.IPFSMetadata, image_path: string): Promise<string> {
-        let formData = new FormData();
-        const image_file = new File([readFileSync(image_path)], basename(image_path), {
-            type: 'image/png'
-        });
-        formData.append('file', image_file);
-        formData.append('name', meta.name);
-        formData.append('symbol', meta.symbol);
-        formData.append('description', meta.description);
-        formData.append('twitter', meta.twitter || '');
-        formData.append('telegram', meta.telegram || '');
-        formData.append('website', meta.website || '');
-        formData.append('showName', meta.showName ? 'true' : 'false');
-
-        try {
-            const response = await fetch(PUMP_IPFS_API_URL, {
-                method: 'POST',
-                headers: {
-                    Accept: 'application/json'
-                },
-                body: formData
-            });
-            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-            const data = await response.json();
-            return data.metadataUri.split('/').slice(-1)[0];
-        } catch (error) {
-            throw new Error(`Failed to create token metadata: ${error}`);
-        }
+        return common.upload_metadata_ipfs(meta, image_path);
     }
 
     private async get_random_ungraduated_mints(count: number): Promise<PumpMintMeta[]> {

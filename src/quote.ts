@@ -2,103 +2,218 @@
 import { PublicKey } from '@solana/web3.js';
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
-enum Quote {
-    SOL = 'SOL',
-    USDC = 'USDC',
-    BTC = 'BTC',
-    ETH = 'ETH',
-    MU = 'MU',
-    SPY = 'SPY',
-    CRCL = 'CRCL',
-    SKHY = 'SKHY',
-    TSLA = 'TSLA',
-    QQQ = 'QQQ',
-    NVDA = 'NVDA',
-    SPCX = 'SPCX',
-    MSTR = 'MSTR',
-    COIN = 'COIN',
-    GLD = 'GLD',
-    HOOD = 'HOOD',
-    VIDA = 'VIDA',
-    AAPL = 'AAPL',
-    MCD = 'MCD',
-    NKE = 'NKE',
-    DRAM = 'DRAM',
-    PLTR = 'PLTR',
-    MSFT = 'MSFT',
-    BOT = 'BOT',
-    GOOGL = 'GOOGL',
-    TTWO = 'TTWO',
-    GPRO = 'GPRO',
-    META = 'META',
-    AMZN = 'AMZN',
-    KO = 'KO',
-    GME = 'GME',
-    'BRK.B' = 'BRK.B',
-    SNDK = 'SNDK',
-    AMC = 'AMC',
-    MRNA = 'MRNA',
-    AVGO = 'AVGO',
-    LLY = 'LLY',
-    INTC = 'INTC',
-    HYPE = 'HYPE',
-    ZEC = 'ZEC',
-    NEAR = 'NEAR',
-    XRP = 'XRP',
-    XMR = 'XMR',
-    NBIS = 'NBIS',
-    MRVL = 'MRVL',
-    ORCL = 'ORCL',
-    XOM = 'XOM',
-    UNH = 'UNH',
-    NFLX = 'NFLX',
-    NVO = 'NVO',
-    AMD = 'AMD',
-    V = 'V',
-    JPM = 'JPM',
-    WMT = 'WMT',
-    TSM = 'TSM',
-    MA = 'MA',
-    GS = 'GS',
-    UBER = 'UBER',
-    CRWD = 'CRWD',
-    BA = 'BA',
-    DJT = 'DJT',
-    HIMS = 'HIMS',
-    IBM = 'IBM',
-    JNJ = 'JNJ',
-    LMT = 'LMT',
-    LULU = 'LULU',
-    MGM = 'MGM',
-    PFE = 'PFE',
-    QUBT = 'QUBT',
-    RBLX = 'RBLX',
-    RDDT = 'RDDT',
-    RIVN = 'RIVN',
-    SHOP = 'SHOP',
-    SNAP = 'SNAP',
-    UPS = 'UPS',
-    BP = 'BP',
-    LIT = 'LIT',
-    SILV = 'SILV',
-    TAO = 'TAO',
-    DOGE = 'DOGE',
-    MORPHO = 'MORPHO',
-    SV151 = 'SV151',
-    PEAQ = 'PEAQ',
-    PSG = 'PSG',
-    PONS = 'PONS',
-    ARB = 'ARB',
-    SLX = 'SLX',
-    CHIP = 'CHIP',
-    BILL = 'BILL',
-    CASHCAT = 'CASHCAT',
-    PUMP = 'PUMP',
-    BABA = 'BABA',
-    BULL = 'BULL',
-    COST = 'COST',
-    DELL = 'DELL'
-}
+const Quote = {
+    SOL: 'SOL',
+    USDC: 'USDC',
+    BTC: 'BTC',
+    ETH: 'ETH',
+    MU: 'MU',
+    SPY: 'SPY',
+    CRCL: 'CRCL',
+    SKHY: 'SKHY',
+    TSLA: 'TSLA',
+    QQQ: 'QQQ',
+    NVDA: 'NVDA',
+    SPCX: 'SPCX',
+    MSTR: 'MSTR',
+    COIN: 'COIN',
+    GLD: 'GLD',
+    HOOD: 'HOOD',
+    VIDA: 'VIDA',
+    AAPL: 'AAPL',
+    MCD: 'MCD',
+    NKE: 'NKE',
+    DRAM: 'DRAM',
+    PLTR: 'PLTR',
+    MSFT: 'MSFT',
+    BOT: 'BOT',
+    GOOGL: 'GOOGL',
+    TTWO: 'TTWO',
+    GPRO: 'GPRO',
+    META: 'META',
+    AMZN: 'AMZN',
+    KO: 'KO',
+    GME: 'GME',
+    'BRK.B': 'BRK.B',
+    SNDK: 'SNDK',
+    AMC: 'AMC',
+    MRNA: 'MRNA',
+    AVGO: 'AVGO',
+    LLY: 'LLY',
+    INTC: 'INTC',
+    HYPE: 'HYPE',
+    XRP: 'XRP',
+    XMR: 'XMR',
+    NBIS: 'NBIS',
+    MRVL: 'MRVL',
+    BA: 'BA',
+    DJT: 'DJT',
+    HIMS: 'HIMS',
+    IBM: 'IBM',
+    JNJ: 'JNJ',
+    LULU: 'LULU',
+    MGM: 'MGM',
+    PFE: 'PFE',
+    QUBT: 'QUBT',
+    RDDT: 'RDDT',
+    RIVN: 'RIVN',
+    SHOP: 'SHOP',
+    SNAP: 'SNAP',
+    UPS: 'UPS',
+    LIT: 'LIT',
+    TAO: 'TAO',
+    DOGE: 'DOGE',
+    MORPHO: 'MORPHO',
+    SV151: 'SV151',
+    PEAQ: 'PEAQ',
+    PSG: 'PSG',
+    PONS: 'PONS',
+    SLX: 'SLX',
+    CHIP: 'CHIP',
+    BILL: 'BILL',
+    CASHCAT: 'CASHCAT',
+    PUMP: 'PUMP',
+    BULL: 'BULL',
+    COST: 'COST',
+    DELL: 'DELL',
+    ANSEM: 'ANSEM',
+    DKNG: 'DKNG',
+    ORE: 'ORE',
+    GRND: 'GRND',
+    DNUT: 'DNUT',
+    WEN: 'WEN',
+    HTZ: 'HTZ',
+    SPHR: 'SPHR',
+    MON: 'MON',
+    DFDV: 'DFDV',
+    AAVE: 'AAVE',
+    Pnut: 'Pnut',
+    MOODENG: 'MOODENG',
+    ZEREBRO: 'ZEREBRO',
+    ALCH: 'ALCH',
+    neet: 'neet',
+    pippin: 'pippin',
+    PUMPCADE: 'PUMPCADE',
+    OTC: 'OTC',
+    Bert: 'Bert',
+    GOAT: 'GOAT',
+    aura: 'aura',
+    CHILLGUY: 'CHILLGUY',
+    fone: 'fone',
+    Buttcoin: 'Buttcoin',
+    ACT: 'ACT',
+    TripleT: 'TripleT',
+    VINE: 'VINE',
+    Cupsey: 'Cupsey',
+    hSOL: 'hSOL',
+    SKR: 'SKR',
+    Bonk: 'Bonk',
+    $WIF: '$WIF',
+    TRUMP: 'TRUMP',
+    MET: 'MET',
+    ALON: 'ALON',
+    CHILLHOUSE: 'CHILLHOUSE',
+    SPX: 'SPX',
+    GIGA: 'GIGA',
+    PENGU: 'PENGU',
+    RAY: 'RAY',
+    TOAD: 'TOAD',
+    USDUC: 'USDUC',
+    Tokabu: 'Tokabu',
+    '67': '67',
+    gork: 'gork',
+    KINS: 'KINS',
+    Percolator: 'Percolator',
+    Jotchua: 'Jotchua',
+    STONK: 'STONK',
+    FLWS: 'FLWS',
+    LINK: 'LINK',
+    SCHH: 'SCHH',
+    SOLANGELES: 'SOLANGELES',
+    PTN: 'PTN',
+    FLY: 'FLY',
+    BROS: 'BROS',
+    AMD: 'AMD',
+    LUV: 'LUV',
+    WULF: 'WULF',
+    RUM: 'RUM',
+    PAID: 'PAID',
+    USO: 'USO',
+    PEPE: 'PEPE',
+    BB: 'BB',
+    CATE: 'CATE',
+    JEANPHIL: 'JEANPHIL',
+    baton: 'baton',
+    pill: 'pill',
+    CODEC: 'CODEC',
+    NEAR: 'NEAR',
+    MANIFEST: 'MANIFEST',
+    INJ: 'INJ',
+    MICHI: 'MICHI',
+    BP: 'BP',
+    UNI: 'UNI',
+    FWDI: 'FWDI',
+    BABA: 'BABA',
+    BOBO: 'BOBO',
+    CYPH: 'CYPH',
+    ARB: 'ARB',
+    'LMAO!': 'LMAO!',
+    ZAUTH: 'ZAUTH',
+    Jimothy: 'Jimothy',
+    ZEC: 'ZEC',
+    LMT: 'LMT',
+    CARDS: 'CARDS',
+    RBLX: 'RBLX',
+    SUI: 'SUI',
+    URA: 'URA',
+    COPX: 'COPX',
+    IONQ: 'IONQ',
+    APE: 'APE',
+    ARM: 'ARM',
+    USELESS: 'USELESS',
+    CLAW: 'CLAW',
+    biketyson: 'biketyson',
+    Fartcoin: 'Fartcoin',
+    TROLL: 'TROLL',
+    CRWV: 'CRWV',
+    ZAMA: 'ZAMA',
+    IREN: 'IREN',
+    SQQQ: 'SQQQ',
+    NPC: 'NPC',
+    cbLTC: 'cbLTC',
+    WOJAK: 'WOJAK',
+    'e/acc': 'e/acc',
+    HODL: 'HODL',
+    EWY: 'EWY',
+    NOK: 'NOK',
+    cbADA: 'cbADA',
+    RKLB: 'RKLB',
+    NFLX: 'NFLX',
+    BE: 'BE',
+    QNT: 'QNT',
+    ONDO: 'ONDO',
+    PUSA: 'PUSA',
+    BLK: 'BLK',
+    Agency: 'Agency',
+    CLAUDIA: 'CLAUDIA',
+    SHIB: 'SHIB',
+    EWZ: 'EWZ',
+    swordcat: 'swordcat',
+    PLAGUE: 'PLAGUE',
+    CBRS: 'CBRS',
+    VVV: 'VVV',
+    RACE: 'RACE',
+    WLD: 'WLD',
+    ASTER: 'ASTER',
+    RIOT: 'RIOT',
+    W: 'W',
+    STRK: 'STRK',
+    XPL: 'XPL',
+    PSOL: 'PSOL',
+    CMG: 'CMG',
+    TSM: 'TSM'
+} as const;
+type Quote = (typeof Quote)[keyof typeof Quote];
 const QUOTE_MINTS: Record<Quote, { mint: PublicKey; token_program: PublicKey; decimals: number }> = {
     [Quote['SOL']]: {
         mint: new PublicKey('So11111111111111111111111111111111111111112'),
@@ -295,16 +410,6 @@ const QUOTE_MINTS: Record<Quote, { mint: PublicKey; token_program: PublicKey; de
         token_program: TOKEN_PROGRAM_ID,
         decimals: 9
     },
-    [Quote['ZEC']]: {
-        mint: new PublicKey('A7bdiYdS5GjqGFtxf17ppRHtDKPkkRqbKtR27dxvQXaS'),
-        token_program: TOKEN_PROGRAM_ID,
-        decimals: 8
-    },
-    [Quote['NEAR']]: {
-        mint: new PublicKey('3ZLekZYq2qkZiSpnSvabjit34tUkjSwD1JFuW9as9wBG'),
-        token_program: TOKEN_PROGRAM_ID,
-        decimals: 9
-    },
     [Quote['XRP']]: {
         mint: new PublicKey('6UpQcMAb5xMzxc7ZfPaVMgx3KqsvKZdT5U718BzD5We2'),
         token_program: TOKEN_PROGRAM_ID,
@@ -324,76 +429,6 @@ const QUOTE_MINTS: Record<Quote, { mint: PublicKey; token_program: PublicKey; de
         mint: new PublicKey('MRVLSjkR2ceUBukujaD3xCyHP1H3B2SzpsNTZF546jo'),
         token_program: TOKEN_2022_PROGRAM_ID,
         decimals: 6
-    },
-    [Quote['ORCL']]: {
-        mint: new PublicKey('XsjFwUPiLofddX5cWFHW35GCbXcSu1BCUGfxoQAQjeL'),
-        token_program: TOKEN_2022_PROGRAM_ID,
-        decimals: 8
-    },
-    [Quote['XOM']]: {
-        mint: new PublicKey('XsaHND8sHyfMfsWPj6kSdd5VwvCayZvjYgKmmcNL5qh'),
-        token_program: TOKEN_2022_PROGRAM_ID,
-        decimals: 8
-    },
-    [Quote['UNH']]: {
-        mint: new PublicKey('XszvaiXGPwvk2nwb3o9C1CX4K6zH8sez11E6uyup6fe'),
-        token_program: TOKEN_2022_PROGRAM_ID,
-        decimals: 8
-    },
-    [Quote['NFLX']]: {
-        mint: new PublicKey('XsEH7wWfJJu2ZT3UCFeVfALnVA6CP5ur7Ee11KmzVpL'),
-        token_program: TOKEN_2022_PROGRAM_ID,
-        decimals: 8
-    },
-    [Quote['NVO']]: {
-        mint: new PublicKey('XsfAzPzYrYjd4Dpa9BU3cusBsvWfVB9gBcyGC87S57n'),
-        token_program: TOKEN_2022_PROGRAM_ID,
-        decimals: 8
-    },
-    [Quote['AMD']]: {
-        mint: new PublicKey('XsXcJ6GZ9kVnjqGsjBnktRcuwMBmvKWh8S93RefZ1rF'),
-        token_program: TOKEN_2022_PROGRAM_ID,
-        decimals: 8
-    },
-    [Quote['V']]: {
-        mint: new PublicKey('XsqgsbXwWogGJsNcVZ3TyVouy2MbTkfCFhCGGGcQZ2p'),
-        token_program: TOKEN_2022_PROGRAM_ID,
-        decimals: 8
-    },
-    [Quote['JPM']]: {
-        mint: new PublicKey('XsMAqkcKsUewDrzVkait4e5u4y8REgtyS7jWgCpLV2C'),
-        token_program: TOKEN_2022_PROGRAM_ID,
-        decimals: 8
-    },
-    [Quote['WMT']]: {
-        mint: new PublicKey('Xs151QeqTCiuKtinzfRATnUESM2xTU6V9Wy8Vy538ci'),
-        token_program: TOKEN_2022_PROGRAM_ID,
-        decimals: 8
-    },
-    [Quote['TSM']]: {
-        mint: new PublicKey('XsafvsGtzFqqHgTnA3aPC83EAMkacU5mcGtcSayhpVV'),
-        token_program: TOKEN_2022_PROGRAM_ID,
-        decimals: 8
-    },
-    [Quote['MA']]: {
-        mint: new PublicKey('XsApJFV9MAktqnAc6jqzsHVujxkGm9xcSUffaBoYLKC'),
-        token_program: TOKEN_2022_PROGRAM_ID,
-        decimals: 8
-    },
-    [Quote['GS']]: {
-        mint: new PublicKey('XsgaUyp4jd1fNBCxgtTKkW64xnnhQcvgaxzsbAq5ZD1'),
-        token_program: TOKEN_2022_PROGRAM_ID,
-        decimals: 8
-    },
-    [Quote['UBER']]: {
-        mint: new PublicKey('XsAsZLF4MmsvS1sDxRMrUz7REjHfwbC9UAMXSRBqgEB'),
-        token_program: TOKEN_2022_PROGRAM_ID,
-        decimals: 8
-    },
-    [Quote['CRWD']]: {
-        mint: new PublicKey('Xs7xXqkcK7K8urEqGg52SECi79dRp2cEKKuYjUePYDw'),
-        token_program: TOKEN_2022_PROGRAM_ID,
-        decimals: 8
     },
     [Quote['BA']]: {
         mint: new PublicKey('BArimz1PcKZr8PcPh3tcZ2dg4S7FJLk3cw6R5F8GsHKg'),
@@ -420,11 +455,6 @@ const QUOTE_MINTS: Record<Quote, { mint: PublicKey; token_program: PublicKey; de
         token_program: TOKEN_2022_PROGRAM_ID,
         decimals: 6
     },
-    [Quote['LMT']]: {
-        mint: new PublicKey('LMT3i1BHgixFqPUgcyteJhnEz2dpy9i3cYy4pi9BoeV'),
-        token_program: TOKEN_2022_PROGRAM_ID,
-        decimals: 6
-    },
     [Quote['LULU']]: {
         mint: new PublicKey('LULUmT9VMttkfAJE236LXJcYJ2tTP7nunrSWR5G1BdS'),
         token_program: TOKEN_2022_PROGRAM_ID,
@@ -442,11 +472,6 @@ const QUOTE_MINTS: Record<Quote, { mint: PublicKey; token_program: PublicKey; de
     },
     [Quote['QUBT']]: {
         mint: new PublicKey('QUBTAD8C9bMU9LvmMNgKPhrmBGbHvxpu6vfWQtThxxw'),
-        token_program: TOKEN_2022_PROGRAM_ID,
-        decimals: 6
-    },
-    [Quote['RBLX']]: {
-        mint: new PublicKey('RBLXDGRD64AtRamHMFVcjqne3Ar7NLWtFtYNtsrf1cE'),
         token_program: TOKEN_2022_PROGRAM_ID,
         decimals: 6
     },
@@ -475,20 +500,10 @@ const QUOTE_MINTS: Record<Quote, { mint: PublicKey; token_program: PublicKey; de
         token_program: TOKEN_2022_PROGRAM_ID,
         decimals: 6
     },
-    [Quote['BP']]: {
-        mint: new PublicKey('BPxxfRCXkUVhig4HS1Lh7kZqV6SPJhzfEk4x6fVBjPCy'),
-        token_program: TOKEN_PROGRAM_ID,
-        decimals: 9
-    },
     [Quote['LIT']]: {
         mint: new PublicKey('EicWvteVi2fWepEzS3FYWsnuPoP6caZfjnKqNvydLjCH'),
         token_program: TOKEN_PROGRAM_ID,
         decimals: 8
-    },
-    [Quote['SILV']]: {
-        mint: new PublicKey('SiLVFMgD3eD2rgK628NbTBq9MnuJF5FW2CRaVyTB35L'),
-        token_program: TOKEN_2022_PROGRAM_ID,
-        decimals: 6
     },
     [Quote['TAO']]: {
         mint: new PublicKey('taoC6xyv2v8tDLcev4uaGUgV4vdQsWJrGft2kcBRrBY'),
@@ -525,11 +540,6 @@ const QUOTE_MINTS: Record<Quote, { mint: PublicKey; token_program: PublicKey; de
         token_program: TOKEN_PROGRAM_ID,
         decimals: 8
     },
-    [Quote['ARB']]: {
-        mint: new PublicKey('ARBzQTYDCW2KnVEjs1Mc81LekB1ibVFZKbSVmorkoT9d'),
-        token_program: TOKEN_PROGRAM_ID,
-        decimals: 8
-    },
     [Quote['SLX']]: {
         mint: new PublicKey('SLXdx4BUt2v9uJQNzWqSfzTJ9UKLUDsvxHFMEEdrfgq'),
         token_program: TOKEN_PROGRAM_ID,
@@ -555,11 +565,6 @@ const QUOTE_MINTS: Record<Quote, { mint: PublicKey; token_program: PublicKey; de
         token_program: TOKEN_2022_PROGRAM_ID,
         decimals: 6
     },
-    [Quote['BABA']]: {
-        mint: new PublicKey('BABANGA4JE7Kkam4nTrALAwAVgsNJUuFJnnkF7S16BZp'),
-        token_program: TOKEN_2022_PROGRAM_ID,
-        decimals: 6
-    },
     [Quote['BULL']]: {
         mint: new PublicKey('BULL151gUXcFV5wXEUqu9Am2L7Qt4bTJRLRuAUjkcspC'),
         token_program: TOKEN_2022_PROGRAM_ID,
@@ -572,6 +577,686 @@ const QUOTE_MINTS: Record<Quote, { mint: PublicKey; token_program: PublicKey; de
     },
     [Quote['DELL']]: {
         mint: new PublicKey('DELL2aRKQz7DMq5DrKLtkn47ZCnbxXPZXrSGbkmd13wy'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['ANSEM']]: {
+        mint: new PublicKey('9cRCn9rGT8V2imeM2BaKs13yhMEais3ruM3rPvTGpump'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['DKNG']]: {
+        mint: new PublicKey('DKNGQFNGQmoBdXSRGKJ8tTu7uPDasw5JDcfMmWniNfow'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['ORE']]: {
+        mint: new PublicKey('oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 11
+    },
+    [Quote['GRND']]: {
+        mint: new PublicKey('GRNDYDpqwpCm6jVxpbh4xT5AM4r3p391qYsKTHqgaET2'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['DNUT']]: {
+        mint: new PublicKey('DNUTsCvKbKwu2RM72cUuW3TD9YpzArzACcqYQssjPLSk'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['WEN']]: {
+        mint: new PublicKey('WENAZ2WyPbmgvUcKfQ8hyMDfBQP9bZ65hsZ5KTFrRGZ'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['HTZ']]: {
+        mint: new PublicKey('HTZsLG4zqaNvWMwXSLHH3GG5KyJpKwpBRsKVdMG6hvzP'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['SPHR']]: {
+        mint: new PublicKey('SPHRp8cZaSQBTp1KMNP4V1X821SXhXWt4Q2yLdyHzju'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['MON']]: {
+        mint: new PublicKey('CrAr4RRJMBVwRsZtT62pEhfA9H5utymC2mVx8e7FreP2'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 8
+    },
+    [Quote['DFDV']]: {
+        mint: new PublicKey('Xs2yquAgsHByNzx68WJC55WHjHBvG9JsMB7CWjTLyPy'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 8
+    },
+    [Quote['AAVE']]: {
+        mint: new PublicKey('AavE1kKKnesPw4MuRJmJ9jZs9QzEE8CPxQ3ViczUDfc1'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 8
+    },
+    [Quote['Pnut']]: {
+        mint: new PublicKey('2qEHjDLDLbuBgRYvsxhc5D6uDWAivNFZGan56P1tpump'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['MOODENG']]: {
+        mint: new PublicKey('ED5nyyWEzpPPiWimP8vYm7sD7TD3LAt3Q3gRTWHzPJBY'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['ZEREBRO']]: {
+        mint: new PublicKey('8x5VqbHA8D7NkD52uNuS5nnt3PwA8pLD34ymskeSo2Wn'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['ALCH']]: {
+        mint: new PublicKey('HNg5PYJmtqcmzXrv6S9zP1CDKk5BgDuyFBxbvNApump'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['neet']]: {
+        mint: new PublicKey('Ce2gx9KGXJ6C9Mp5b5x1sn9Mg87JwEbrQby4Zqo3pump'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['pippin']]: {
+        mint: new PublicKey('Dfh5DzRgSvvCFDoYc2ciTkMrbDfRKybA4SoFbPmApump'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['PUMPCADE']]: {
+        mint: new PublicKey('Eg2ymQ2aQqjMcibnmTt8erC6Tvk9PVpJZCxvVPJz2agu'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['OTC']]: {
+        mint: new PublicKey('MukLDtJ8Cx9DxLbeyLRSWPSposTMWuwHANbuaudpump'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['Bert']]: {
+        mint: new PublicKey('HgBRWfYxEfvPhtqkaeymCQtHCrKE46qQ43pKe8HCpump'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['GOAT']]: {
+        mint: new PublicKey('CzLSujWBLFsSjncfkh59rUFqvafWcY5tzedWJSuypump'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['aura']]: {
+        mint: new PublicKey('DtR4D9FtVoTX2569gaL837ZgrB6wNjj6tkmnX9Rdk9B2'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['CHILLGUY']]: {
+        mint: new PublicKey('Df6yfrKC8kZE3KNkrHERKzAetSxbrWeniQfyJY4Jpump'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['fone']]: {
+        mint: new PublicKey('CTPoyCwkjMvoJwU4xvZZqoD8tiYk6yDchySiN5gGpump'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['Buttcoin']]: {
+        mint: new PublicKey('Cm6fNnMk7NfzStP9CZpsQA2v3jjzbcYGAxdJySmHpump'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['ACT']]: {
+        mint: new PublicKey('GJAFwWjJ3vnTsrQVabjBVK2TYB1YtRCQXRDfDgUnpump'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['TripleT']]: {
+        mint: new PublicKey('J8PSdNP3QewKq2Z1JJJFDMaqF7KcaiJhR7gbr5KZpump'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['VINE']]: {
+        mint: new PublicKey('6AJcP7wuLwmRYLBNbi825wgguaPsWzPBEHcHndpRpump'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['Cupsey']]: {
+        mint: new PublicKey('6NwarBvDkXhByqVp2Qkq5i9XbtA2B3Bwe8SWGu9vpump'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['hSOL']]: {
+        mint: new PublicKey('he1iusmfkpAdwvxLNGV8Y1iSbj4rUy6yMhEA3fotn9A'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 9
+    },
+    [Quote['SKR']]: {
+        mint: new PublicKey('SKRbvo6Gf7GondiT3BbTfuRDPqLWei4j2Qy2NPGZhW3'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['Bonk']]: {
+        mint: new PublicKey('DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 5
+    },
+    [Quote['$WIF']]: {
+        mint: new PublicKey('EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['TRUMP']]: {
+        mint: new PublicKey('6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['MET']]: {
+        mint: new PublicKey('METvsvVRapdj9cFLzq4Tr43xK4tAjQfwX76z3n6mWQL'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['ALON']]: {
+        mint: new PublicKey('8XtRWb4uAAJFMP4QQhoYYCWR6XXb7ybcCdiqPwz9s5WS'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['CHILLHOUSE']]: {
+        mint: new PublicKey('GkyPYa7NnCFbduLknCfBfP7p8564X1VZhwZYJ6CZpump'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['SPX']]: {
+        mint: new PublicKey('J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 8
+    },
+    [Quote['GIGA']]: {
+        mint: new PublicKey('63LfDmNb3MQ8mw9MtZ2To9bEA2M71kZUUGq5tiJxcqj9'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 5
+    },
+    [Quote['PENGU']]: {
+        mint: new PublicKey('2zMMhcVQEXDtdE6vsFS7S7D5oUodfJHE8vd1gnBouauv'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['RAY']]: {
+        mint: new PublicKey('4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['TOAD']]: {
+        mint: new PublicKey('A13oRB9FFaiUjfi6LdCg6p9ka1u8SfGkUFs4SKvPpump'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['USDUC']]: {
+        mint: new PublicKey('CB9dDufT3ZuQXqqSfa1c5kY935TEreyBw9XJXxHKpump'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['Tokabu']]: {
+        mint: new PublicKey('H8xQ6poBjB9DTPMDTKWzWPrnxu4bDEhybxiouF8Ppump'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['67']]: {
+        mint: new PublicKey('9AvytnUKsLxPxFHFqS6VLxaxt5p6BhYNr53SD2Chpump'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['gork']]: {
+        mint: new PublicKey('76EDL5qNcte2ZH29quTaFzagXjWAEY83CATEjyA6pump'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['KINS']]: {
+        mint: new PublicKey('Tqj8yFmagrg7oorpQkVGYR52r96RFTamvWfth9bpump'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['Percolator']]: {
+        mint: new PublicKey('8PzFWyLpCVEmbZmVJcaRTU5r69XKJx1rd7YGpWvnpump'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['Jotchua']]: {
+        mint: new PublicKey('BcHEaaTCvycPwwsJ9yQTXdHP9X2gCLkznDbZ8VySpump'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['STONK']]: {
+        mint: new PublicKey('6GmAFSYs4gk3FDao5FzzySQpPZaWsa4rUJHacpMpUNgx'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 9
+    },
+    [Quote['FLWS']]: {
+        mint: new PublicKey('FLWSojG1gB5VStYR3Sb4nQFRt43UBYkqih1j2CpVLqgd'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['LINK']]: {
+        mint: new PublicKey('LinkhB3afbBKb2EQQu7s7umdZceV3wcvAUJhQAfQ23L'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 9
+    },
+    [Quote['SCHH']]: {
+        mint: new PublicKey('SCHHJ3jRdSjeFEVAaLrnYdx3Brphn92Ys7z1qkiCtPX'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['SOLANGELES']]: {
+        mint: new PublicKey('8wxkvAfEns76yBzu4MnbV7VnXWjg3iDPA9uwAQ6cpump'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['PTN']]: {
+        mint: new PublicKey('PTNzAfFAB4LvoUQEUUGrFMyUoRLExMYjH6CcfyQfsVP'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['FLY']]: {
+        mint: new PublicKey('FLYRq3en8r2Z69gN3KyAnDrvnitEJNkwPYY7favinHeD'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['BROS']]: {
+        mint: new PublicKey('BRVaZKg6J9iF2BEsdpsxJ9NyvN9PPxPZuoQUX2v8qqkk'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['AMD']]: {
+        mint: new PublicKey('AMD8XwJXgQ9WV45Wyj9yFLejxzf2J6VM1PJY8bJEjeES'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['LUV']]: {
+        mint: new PublicKey('LUV9GB51PNZNRyzzyYK3rtqFfvDvWtRiXZ34wVq2HrX'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['WULF']]: {
+        mint: new PublicKey('WULFeyfrj1VJKD9HhRTcW8R4g5HefUA11HDEdBv2WxD'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['RUM']]: {
+        mint: new PublicKey('RUMsPfFZFnN1ZmGANwP7FNMJMjKH4m9RiMePrtVtLe7'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['PAID']]: {
+        mint: new PublicKey('98kfF7rmsg1QDUEoCqNE7g7M1FdrTt92TEp2CLzypump'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['USO']]: {
+        mint: new PublicKey('USNv3NkKA27Dh4nsHJDPhW4VoEcTQmjoZyJt2dqdwFu'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['PEPE']]: {
+        mint: new PublicKey('PEPEqnuuCDbBC89p1u9vpnP1KQ2oj1xTcQBsjt9X55m'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 4
+    },
+    [Quote['BB']]: {
+        mint: new PublicKey('BBosJLw8ZzoATiEyywiifx7AgmrD2Cm3XjFWbhbRhChy'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['CATE']]: {
+        mint: new PublicKey('Ai66LHZG9MCzg1WKdawwqduVAXpNDUuV8M3uyq5ppump'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['JEANPHIL']]: {
+        mint: new PublicKey('GTBxUiw6wJdmmkCGZgRHLyYxqu1vG4KtRpeox6yDpump'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['baton']]: {
+        mint: new PublicKey('Hg5Ja55T5wESq4vyFoiVCMeHXtGyVA69X2UHq8hgpump'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['pill']]: {
+        mint: new PublicKey('DvdmEnztCmXwBnAbedD48XVGZJSxq31zNvnyftXdpump'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['CODEC']]: {
+        mint: new PublicKey('69LjZUUzxj3Cb3Fxeo1X4QpYEQTboApkhXTysPpbpump'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['NEAR']]: {
+        mint: new PublicKey('3ZLekZYq2qkZiSpnSvabjit34tUkjSwD1JFuW9as9wBG'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 9
+    },
+    [Quote['MANIFEST']]: {
+        mint: new PublicKey('BCdwQBAn8dYB5YjTsoB6TdHAWokxv28k2oZUodERpump'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['INJ']]: {
+        mint: new PublicKey('1NJMqVM4PadjuzYmeB7zV7q7DV8oB3ExaQCd9x6KsLz'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 9
+    },
+    [Quote['MICHI']]: {
+        mint: new PublicKey('AywAYdNJnSLSXwKWYxDciPjqGRnwp4iZdQptuuQTpump'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['BP']]: {
+        mint: new PublicKey('BPxxfRCXkUVhig4HS1Lh7kZqV6SPJhzfEk4x6fVBjPCy'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 9
+    },
+    [Quote['UNI']]: {
+        mint: new PublicKey('uniHfuPhEQSrtpzXpJZDCSq53yaejKKpNhFUiKoHKHV'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 8
+    },
+    [Quote['FWDI']]: {
+        mint: new PublicKey('FWDtiB5fXHdVAewPqvHPL2dh4aBC1C6GacQbePoQXKjz'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['BABA']]: {
+        mint: new PublicKey('BABANGA4JE7Kkam4nTrALAwAVgsNJUuFJnnkF7S16BZp'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['BOBO']]: {
+        mint: new PublicKey('4nV5gNwwP68zUDat26ySChREqVaQaLudfJBkSgEzpump'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['CYPH']]: {
+        mint: new PublicKey('CYPHuMmCL1GxJWa2tsPhLKykC7GrHJTCHwbXD4g5uawK'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['ARB']]: {
+        mint: new PublicKey('ARBzQTYDCW2KnVEjs1Mc81LekB1ibVFZKbSVmorkoT9d'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 8
+    },
+    [Quote['LMAO!']]: {
+        mint: new PublicKey('H74CYmXgMkYHYuSRsZt6RJb4NYp2u72Vw8BS5huApump'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['ZAUTH']]: {
+        mint: new PublicKey('DNhQZ1CE9qZ2FNrVhsCXwQJ2vZG8ufZkcYakTS5Jpump'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['Jimothy']]: {
+        mint: new PublicKey('Ge87EtsjwRQbHaqQmKRno69RFTwh9bfSsm99XNxTpump'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['ZEC']]: {
+        mint: new PublicKey('A7bdiYdS5GjqGFtxf17ppRHtDKPkkRqbKtR27dxvQXaS'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 8
+    },
+    [Quote['LMT']]: {
+        mint: new PublicKey('LMT3i1BHgixFqPUgcyteJhnEz2dpy9i3cYy4pi9BoeV'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['CARDS']]: {
+        mint: new PublicKey('CARDSccUMFKoPRZxt5vt3ksUbxEFEcnZ3H2pd3dKxYjp'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['RBLX']]: {
+        mint: new PublicKey('RBLXDGRD64AtRamHMFVcjqne3Ar7NLWtFtYNtsrf1cE'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['SUI']]: {
+        mint: new PublicKey('suifhC9gU1VbJAPYPTBkHJyyyStKGLLYPVDTmPoqbvA'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 8
+    },
+    [Quote['URA']]: {
+        mint: new PublicKey('URARfsinxCRw4JpvQhuT4CxavdZXZEMjv9ZwWmWpwag'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['COPX']]: {
+        mint: new PublicKey('CzLTZppPdZtTjyq3WGpHLstoc3GLhu7zH5Zg6xUa6Gv5'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['IONQ']]: {
+        mint: new PublicKey('NQ5hSuXQZrbnrwcDVk2qN73njjd3E3v3badYHnj5thF'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['APE']]: {
+        mint: new PublicKey('C1MHyoTJpRTeS9AQCyspNVu2EWAYCZwmJ1jNkEArFP1f'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 9
+    },
+    [Quote['ARM']]: {
+        mint: new PublicKey('ARMbSB1MBRQrY6PNMao1HdQ431VafC6JRJCsGZ2Yv3iJ'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['USELESS']]: {
+        mint: new PublicKey('Dz9mQ9NzkBcCsuGPFJ3r1bS4wgqKMHBPiVuniW8Mbonk'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['CLAW']]: {
+        mint: new PublicKey('739dnZEG4yaBWFsY8L8ZwrfhGG6dhtCSercW8Umspump'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['biketyson']]: {
+        mint: new PublicKey('CbyTNf7UPzvewHh4Zp6umogM2RWahhmGRJWLJnPwpump'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['Fartcoin']]: {
+        mint: new PublicKey('9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['TROLL']]: {
+        mint: new PublicKey('5UUH9RTDiSpq6HKS6bp4NdU9PNJpXRXuiw6ShBTBhgH2'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['CRWV']]: {
+        mint: new PublicKey('CRWVJeR2yEZuDUKYfGuKCHvLz8ywn4LGvovHfy5WiFmi'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['ZAMA']]: {
+        mint: new PublicKey('4Zp52aF4hZi9fzH19xpbWKYKQvgLyCN67KFbrQDqeTKh'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 9
+    },
+    [Quote['IREN']]: {
+        mint: new PublicKey('RENzhrJQgmAnfcLhU1U5XwAMc6TC15UA6jCbPBaasnj'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['SQQQ']]: {
+        mint: new PublicKey('SQQQAa3gUxgnqcEsdjPA4RQNQBgB97TnG2hJhk2WaGE'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['NPC']]: {
+        mint: new PublicKey('7GUnr7krtQhJwd6ASY2VUprd9t4c64zcgCsjdmZepump'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['cbLTC']]: {
+        mint: new PublicKey('cbLTC4T5NpzSUtQ7ekgEMZGaUPVJY1ko6BUikqa4gGf'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 8
+    },
+    [Quote['WOJAK']]: {
+        mint: new PublicKey('8J69rbLTzWWgUJziFY8jeu5tDwEPBwUz4pKBMr5rpump'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['e/acc']]: {
+        mint: new PublicKey('CbcyNo7m1amFWqEQm2m4PLv1UNvpcL3C1Ujm6AkzpKoU'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['HODL']]: {
+        mint: new PublicKey('Hh3oTaqDCKKfdBgsQEvxp9sUwyNf8x9qmKqEMLBWpump'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['EWY']]: {
+        mint: new PublicKey('EWY4owSJYMpwN33qGDu5gGxpkQkpMJu8ZUsQJaNZG5dv'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['NOK']]: {
+        mint: new PublicKey('N7Q5fYX7YRnDQksfdBKnoUb3awm92n7QNAD35X3Rq1X'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['cbADA']]: {
+        mint: new PublicKey('cbADAmv9issuPfhFwyQG3xac4DGPd1LDSt1oz7vwJsg'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['RKLB']]: {
+        mint: new PublicKey('RKLBnAXGqv31iZomqsuAWkQm1aqC7JwwvbCfzGdqAhz'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['NFLX']]: {
+        mint: new PublicKey('NFLX7qV57zuVxCoHy3s1jiGZyALraLNwttbxdvmYJLJ'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['BE']]: {
+        mint: new PublicKey('BEBVfXZ8uCxRBuunEbW9wcq9r7W9ySNo14oJBJkDgpZx'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['QNT']]: {
+        mint: new PublicKey('qntUzPUsJ51abNP7VYNxkmsQ4RnvEZAhavUxsCxpxH4'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 8
+    },
+    [Quote['ONDO']]: {
+        mint: new PublicKey('ondohH8Vssxiqcy5u6Efi4AYN17KZrzQtv2a91dnrgW'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 8
+    },
+    [Quote['PUSA']]: {
+        mint: new PublicKey('PUSAG1stksTcAoK9MjinEHUwAYRJsbovywYCk37m6hy'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['BLK']]: {
+        mint: new PublicKey('BLKKYfF41c6xRPrtX1rdYbxLE1xxEdZUnxQsB5hcZ8Nf'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['Agency']]: {
+        mint: new PublicKey('7VertkgF9KLhxxJXHX6uaWuoYZTP9LdGj2bWmVXVpump'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['CLAUDIA']]: {
+        mint: new PublicKey('H7TuvDxEKygh27zGfGcjKG8JGWgrbyKpPtvJEpGosfas'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['SHIB']]: {
+        mint: new PublicKey('shib5gSoVKPjwkXrxRk7SbQFzb2R9rQB3TgQWYX4RwW'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 4
+    },
+    [Quote['EWZ']]: {
+        mint: new PublicKey('EWZzCki1igp2y73UyUM4RCG4QUVMQAtnrQUVNaDHzDxJ'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['swordcat']]: {
+        mint: new PublicKey('5tCju6YNxHq5zrA6tGndr6F7TK42mpUFmeE31cSFpump'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['PLAGUE']]: {
+        mint: new PublicKey('CscZaq5twomhUkvCY8Jdd1tge32L4Yj9FbkFFEZQpump'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['CBRS']]: {
+        mint: new PublicKey('CBRSFBbQPpp77NpMcwbTN6fhBHmZM94oFLJvruytw4Fi'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['VVV']]: {
+        mint: new PublicKey('VVV4UdRywr7SLafPHzqXwRCw7myXkmgCtitXUvj8g8c'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 8
+    },
+    [Quote['RACE']]: {
+        mint: new PublicKey('RACEyWiM2ztEZcJx2AHXU2eWjhxU57x3vXn92b39dLD'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['WLD']]: {
+        mint: new PublicKey('WLDTE73PPdfFFjhpBz8Yuhvx5N45gvgEgyMXqwa3rFn'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 8
+    },
+    [Quote['ASTER']]: {
+        mint: new PublicKey('ASTERYpc2EhivYWSbtuWPuCMdXtZGmHwtH93NqYVw45Z'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 8
+    },
+    [Quote['RIOT']]: {
+        mint: new PublicKey('RUKx7nBgm94pwRPbVm99xYVdcTDTUyGs8Cw3VSYQXHf'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['W']]: {
+        mint: new PublicKey('85VBFQZC9TZkfaptBWjvUw7YbZjy52A6mjtPGjstQAmQ'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['STRK']]: {
+        mint: new PublicKey('HsRpHQn6VbyMs5b5j5SV6xQ2VvpvvCCzu19GjytVSCoz'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 9
+    },
+    [Quote['XPL']]: {
+        mint: new PublicKey('XPLTrL1ZH3tZJBdFWbbtrNjK9qoqZWfuhQJnXibbdfT'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 8
+    },
+    [Quote['PSOL']]: {
+        mint: new PublicKey('pSo1f9nQXWgXibFtKf7NWYxb5enAM4qfP6UJSiXRQfL'),
+        token_program: TOKEN_PROGRAM_ID,
+        decimals: 9
+    },
+    [Quote['CMG']]: {
+        mint: new PublicKey('CMGi497VQA9RiHVWpQi5B847vN8RLaEwcMhB5kEUhkAQ'),
+        token_program: TOKEN_2022_PROGRAM_ID,
+        decimals: 6
+    },
+    [Quote['TSM']]: {
+        mint: new PublicKey('TSM2Hiuf7Z9REcwZFQvsBEekBYCYziWBABfFnj6V6gQ'),
         token_program: TOKEN_2022_PROGRAM_ID,
         decimals: 6
     }

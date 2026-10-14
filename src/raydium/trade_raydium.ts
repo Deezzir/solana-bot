@@ -12,7 +12,7 @@ import * as trade from '../common/trade_common';
 import { get_quote_info, normalize_quote_mint, prepare_quote_account, quote_metrics } from '../common/trade_common';
 import {
     COMMITMENT,
-    IPFS,
+    PUBLIC_IPFS,
     METAPLEX_META_SEED,
     METAPLEX_PROGRAM_ID,
     RENT_PROGRAM_ID,
@@ -48,6 +48,7 @@ import {
     ASSOCIATED_TOKEN_PROGRAM_ID,
     decode_token_account,
     createAssociatedTokenAccountIdempotentInstruction,
+    createCloseAccountInstruction,
     TOKEN_PROGRAM_ID
 } from '../common/token';
 import base58 from 'bs58';
@@ -289,10 +290,13 @@ export class RaydiumProvider implements trade.IProgramProvider {
     }
 
     public async get_rewards(trader: Keypair): Promise<RaydiumClaimableAsset[]> {
-        const pools = await trade.get_program_accounts_v2(RAYDIUM_CPMM_PROGRAM_ID, [
-            { memcmp: { offset: CPMMStateStruct.get_offset('pool_creator'), bytes: trader.publicKey.toBase58() } },
-            { memcmp: { offset: 0, bytes: base58.encode(RAYDIUM_CPMM_POOL_STATE_HEADER) } }
-        ]);
+        const pools = await global.CONNECTION.getProgramAccounts(RAYDIUM_CPMM_PROGRAM_ID, {
+            commitment: COMMITMENT,
+            filters: [
+                { memcmp: { offset: CPMMStateStruct.get_offset('pool_creator'), bytes: trader.publicKey.toBase58() } },
+                { memcmp: { offset: 0, bytes: base58.encode(RAYDIUM_CPMM_POOL_STATE_HEADER) } }
+            ]
+        });
         const assets = pools.map(({ pubkey, account }) => {
             const state = CPMMStateStruct.decode(account.data);
             const claimable: RaydiumClaimableAsset[] = [];
@@ -327,6 +331,7 @@ export class RaydiumProvider implements trade.IProgramProvider {
 
         const instructions: TransactionInstruction[] = [];
         const claimed_pools = new Set<string>();
+        let sol_ata: PublicKey | undefined;
         for (const asset of assets) {
             if (claimed_pools.has(asset.pool.toBase58())) continue;
             claimed_pools.add(asset.pool.toBase58());
@@ -334,6 +339,8 @@ export class RaydiumProvider implements trade.IProgramProvider {
             if (state.creator_fees_token_0 === 0n && state.creator_fees_token_1 === 0n) continue;
             const creator_token_0 = await trade.calc_ata(trader.publicKey, state.token_0_mint, state.token_0_program);
             const creator_token_1 = await trade.calc_ata(trader.publicKey, state.token_1_mint, state.token_1_program);
+            if (state.token_0_mint.equals(SOL_MINT)) sol_ata = creator_token_0;
+            if (state.token_1_mint.equals(SOL_MINT)) sol_ata = creator_token_1;
             instructions.push(
                 createAssociatedTokenAccountIdempotentInstruction(
                     trader,
@@ -375,6 +382,8 @@ export class RaydiumProvider implements trade.IProgramProvider {
                 })
             );
         }
+
+        if (sol_ata) instructions.push(createCloseAccountInstruction(sol_ata, trader.publicKey, trader.publicKey));
 
         if (instructions.length === 0) throw new Error('Invalid assets were provided, no tx was derived');
         return instructions;
@@ -1021,7 +1030,7 @@ export class RaydiumProvider implements trade.IProgramProvider {
         return [
             new TransactionInstruction({
                 programId: RAYDIUM_LAUNCHPAD_PROGRAM_ID,
-                data: this.create_data(token_name, token_symbol, `${IPFS}${meta_cid}`, fundraising),
+                data: this.create_data(token_name, token_symbol, `${PUBLIC_IPFS}/ipfs/${meta_cid}`, fundraising),
                 keys: [
                     { pubkey: creator.publicKey, isSigner: true, isWritable: true },
                     { pubkey: creator.publicKey, isSigner: false, isWritable: false },

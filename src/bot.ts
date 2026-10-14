@@ -384,7 +384,7 @@ async function main() {
         .addOption(get_priority_option())
         .action(async (options) => {
             const { print, from, to, list, priority } = options;
-            await commands.claim_fees(common.filter_wallets(wallets, from, to, list), print, priority);
+            await commands.claim_rewards(common.filter_wallets(wallets, from, to, list), print, priority);
         });
 
     program

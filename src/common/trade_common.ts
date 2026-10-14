@@ -50,13 +50,13 @@ import {
     JITO_BUNDLE_INTERVAL_MS,
     JITO_MIN_TIP,
     SOL_MINT,
-    SENDER_ENDPOINTS,
     SENDER_TIP_ACCOUNTS,
     SYSTEM_PROGRAM_ID,
     COMPUTE_BUDGET_PROGRAM_ID,
     PRIORITY_FEE_TTL_MS,
     CACHE_SIZE_MAX,
     ACCOUNT_READ_CACHE_TTL_MS,
+    HELIUS_API_KEY,
     HELIUS_RPC,
     NETWORK,
     SENDER_ENDPOINT,
@@ -77,7 +77,7 @@ import {
 import * as common from './common';
 import bs58 from 'bs58';
 import { rate_limit_request } from './rate_limit';
-import { get_quote_by_mint } from '../quote';
+import * as quote from '../quote';
 
 // Types and interfaces
 
@@ -89,10 +89,10 @@ type TransactionOptions = {
 type StringPublicKeys<T> = T extends PublicKey
     ? string
     : T extends bigint
-      ? number | bigint
-      : T extends object
-        ? { [K in keyof T]: StringPublicKeys<T[K]> }
-        : T;
+    ? number | bigint
+    : T extends object
+    ? { [K in keyof T]: StringPublicKeys<T[K]> }
+    : T;
 
 export type RawParsedTransaction = StringPublicKeys<ParsedTransactionWithMeta>;
 type RawInstruction = RawParsedTransaction['transaction']['message']['instructions'][number];
@@ -284,7 +284,7 @@ export type CreateTokenInstructions = {
 
 // Transaction errors
 
-class RelayRejectionError extends Error {}
+class RelayRejectionError extends Error { }
 
 export class TransactionSubmissionError extends Error {
     readonly signatures: readonly string[];
@@ -307,7 +307,7 @@ class TransactionSimulationError extends Error {
     }
 }
 
-export class CompileTransactionError extends Error {}
+export class CompileTransactionError extends Error { }
 
 // RPC requests and transaction decoding
 
@@ -340,11 +340,11 @@ export function deserialize_parsed_transaction(raw: RawParsedTransaction): Parse
                 ...transaction.message,
                 transactionConfig: config
                     ? {
-                          computeUnitLimit: config.computeUnitLimit ?? undefined,
-                          loadedAccountsDataSizeLimit: config.loadedAccountsDataSizeLimit ?? undefined,
-                          heapSize: config.heapSize ?? undefined,
-                          priorityFeeLamports: priority_fee == null ? undefined : common.rpc_bigint(priority_fee)
-                      }
+                        computeUnitLimit: config.computeUnitLimit ?? undefined,
+                        loadedAccountsDataSizeLimit: config.loadedAccountsDataSizeLimit ?? undefined,
+                        heapSize: config.heapSize ?? undefined,
+                        priorityFeeLamports: priority_fee == null ? undefined : common.rpc_bigint(priority_fee)
+                    }
                     : undefined,
                 accountKeys: transaction.message.accountKeys.map((account) => ({
                     ...account,
@@ -359,26 +359,26 @@ export function deserialize_parsed_transaction(raw: RawParsedTransaction): Parse
         },
         meta: meta
             ? {
-                  ...meta,
-                  fee: common.rpc_bigint(meta.fee),
-                  preBalances: meta.preBalances.map(common.rpc_bigint),
-                  postBalances: meta.postBalances.map(common.rpc_bigint),
-                  computeUnitsConsumed:
-                      meta.computeUnitsConsumed === undefined
-                          ? undefined
-                          : common.rpc_bigint(meta.computeUnitsConsumed),
-                  costUnits: meta.costUnits === undefined ? undefined : common.rpc_bigint(meta.costUnits),
-                  innerInstructions: meta.innerInstructions?.map((group) => ({
-                      ...group,
-                      instructions: group.instructions.map(deserialize_instruction)
-                  })),
-                  loadedAddresses: meta.loadedAddresses
-                      ? {
-                            writable: meta.loadedAddresses.writable.map((address) => new PublicKey(address)),
-                            readonly: meta.loadedAddresses.readonly.map((address) => new PublicKey(address))
-                        }
-                      : undefined
-              }
+                ...meta,
+                fee: common.rpc_bigint(meta.fee),
+                preBalances: meta.preBalances.map(common.rpc_bigint),
+                postBalances: meta.postBalances.map(common.rpc_bigint),
+                computeUnitsConsumed:
+                    meta.computeUnitsConsumed === undefined
+                        ? undefined
+                        : common.rpc_bigint(meta.computeUnitsConsumed),
+                costUnits: meta.costUnits === undefined ? undefined : common.rpc_bigint(meta.costUnits),
+                innerInstructions: meta.innerInstructions?.map((group) => ({
+                    ...group,
+                    instructions: group.instructions.map(deserialize_instruction)
+                })),
+                loadedAddresses: meta.loadedAddresses
+                    ? {
+                        writable: meta.loadedAddresses.writable.map((address) => new PublicKey(address)),
+                        readonly: meta.loadedAddresses.readonly.map((address) => new PublicKey(address))
+                    }
+                    : undefined
+            }
             : null
     };
 }
@@ -570,7 +570,7 @@ export async function retry_get_tx(
                 commitment: COMMITMENT
             });
             if (transaction) return transaction;
-        } catch (error) {}
+        } catch (error) { }
         retries--;
         await common.sleep(TRADE_RETRY_INTERVAL_MS * (retries + 1));
     }
@@ -886,6 +886,13 @@ export async function get_token_meta(mint: PublicKey): Promise<MintAsset> {
     }
 }
 
+export async function get_quote_name_by_mint(mint: PublicKey): Promise<string> {
+    const stored_name = quote.get_quote_name_by_mint(mint);
+    if (stored_name !== undefined) return stored_name;
+    const asset = await get_token_meta(mint);
+    return asset.token_name ?? "Unknown"
+}
+
 // Relay configuration, tips and transport
 
 function get_transaction_relay(): TransactionRelay {
@@ -1007,14 +1014,11 @@ async function send_sender<T>(
     params: unknown[],
     mev_protect = false
 ): Promise<T> {
-    const endpoints = SENDER_ENDPOINT ? [SENDER_ENDPOINT] : SENDER_ENDPOINTS;
-
-    const requests = endpoints.map((endpoint) => {
-        const url = new URL(`${endpoint}/fast`);
-        url.searchParams.append('mev-protect', mev_protect ? 'true' : 'false');
-        return relay_rpc<T>(url, method, params);
-    });
-    return first_relay_response(requests);
+    const url = new URL(SENDER_ENDPOINT);
+    if (!url.pathname.endsWith('/fast')) url.pathname = `${url.pathname.replace(/\/$/, '')}/fast`;
+    if (url.protocol === 'https:' && !url.searchParams.has('api-key')) url.searchParams.set('api-key', HELIUS_API_KEY);
+    url.searchParams.set('mev-protect', mev_protect ? 'true' : 'false');
+    return relay_rpc<T>(url, method, params);
 }
 
 async function send_sender_bundle(serialized_txs: string[]): Promise<unknown> {
@@ -1251,9 +1255,9 @@ async function prepare_tx(
     if (version === 1) {
         const limits = bundle
             ? {
-                  computeUnitLimit: compute_unit_limit ?? MAX_COMPUTE_UNIT_LIMIT,
-                  loadedAccountsDataSizeLimit: MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES
-              }
+                computeUnitLimit: compute_unit_limit ?? MAX_COMPUTE_UNIT_LIMIT,
+                loadedAccountsDataSizeLimit: MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES
+            }
             : await estimate_resource_limits_v1(instructions, signers[0].publicKey, ctx, compute_unit_limit);
         const fee = use_priority_fee
             ? await get_priority_fee_v1(instructions, signers[0].publicKey, limits.computeUnitLimit, priority, provider)
@@ -1265,7 +1269,7 @@ async function prepare_tx(
             (bundle ? MAX_COMPUTE_UNIT_LIMIT : await estimate_compute_unit_limit(instructions, signers, ctx, alts));
         let price = use_priority_fee
             ? (global.PRIORITY_FEE ??
-              (await get_priority_fee({ priority_level: priority, transaction: { instructions, signers, alts } }, ctx)))
+                (await get_priority_fee({ priority_level: priority, transaction: { instructions, signers, alts } }, ctx)))
             : undefined;
         if (provider === TransactionRelay.Sender)
             price = Math.max(price ?? 0, Math.ceil((SENDER_MAX_MIN_PRIORITY_FEE * 1_000_000) / units));
@@ -1313,7 +1317,7 @@ export async function get_max_transaction_version(): Promise<0 | 1> {
             value.data.length >= 9 &&
             value.data[0] === 1 &&
             new DataView(value.data.buffer, value.data.byteOffset, value.data.byteLength).getBigUint64(1, true) <=
-                context.slot
+            context.slot
             ? 1
             : 0;
     } catch {
@@ -1351,9 +1355,9 @@ function compile_tx(
         message.staticAccountKeys.length +
         (message.version === 0
             ? message.addressTableLookups.reduce(
-                  (count, lookup) => count + lookup.writableIndexes.length + lookup.readonlyIndexes.length,
-                  0
-              )
+                (count, lookup) => count + lookup.writableIndexes.length + lookup.readonlyIndexes.length,
+                0
+            )
             : 0);
     if (account_count > MAX_TRANSACTION_ACCOUNTS || message.header.numRequiredSignatures > MAX_TRANSACTION_SIGNATURES)
         throw new CompileTransactionError('Transaction account or signer limit exceeded.');
@@ -1393,9 +1397,9 @@ export function pack_tx_groups<T>(
     const overhead =
         version === 0
             ? [
-                  ComputeBudgetProgram.setComputeUnitLimit({ units: MAX_COMPUTE_UNIT_LIMIT }),
-                  ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 0 })
-              ]
+                ComputeBudgetProgram.setComputeUnitLimit({ units: MAX_COMPUTE_UNIT_LIMIT }),
+                ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 0 })
+            ]
             : [];
     const validate_capacity = (instructions: TransactionInstruction[], first: T) => {
         const fee_payer = typeof payer === 'function' ? payer(first) : payer;
@@ -1561,8 +1565,8 @@ export async function send_bundle(
             error instanceof TransactionSubmissionError
                 ? error.outcome
                 : error instanceof RelayRejectionError
-                  ? 'rejected'
-                  : 'unknown'
+                    ? 'rejected'
+                    : 'unknown'
         );
     }
 }
@@ -2145,7 +2149,7 @@ export function normalize_quote_mint(value?: string | PublicKey): PublicKey {
 }
 
 export async function get_quote_info(mint: PublicKey) {
-    const known = get_quote_by_mint(mint) ?? quote_cache.get(mint.toBase58());
+    const known = quote.get_quote_by_mint(mint) ?? quote_cache.get(mint.toBase58());
     if (known) return known;
     const account = await global.CONNECTION.getAccountInfo(mint, COMMITMENT);
     if (!account || (!account.owner.equals(TOKEN_PROGRAM_ID) && !account.owner.equals(TOKEN_2022_PROGRAM_ID)))

@@ -66,7 +66,7 @@ export class Executor {
     constructor(
         private readonly provider: IProgramProvider,
         private enable_funding: boolean = false
-    ) {}
+    ) { }
 
     public get_lta_addresses(): PublicKey[] {
         return this.provider.get_lta_addresses();
@@ -76,9 +76,9 @@ export class Executor {
         const limit = this.provider.get_compute_unit_limit();
         return funded
             ? Math.min(
-                  MAX_COMPUTE_UNIT_LIMIT,
-                  (limit ?? MAX_COMPUTE_UNIT_LIMIT) + EXECUTOR_JUPITER_COMPUTE_UNIT_ALLOWANCE
-              )
+                MAX_COMPUTE_UNIT_LIMIT,
+                (limit ?? MAX_COMPUTE_UNIT_LIMIT) + EXECUTOR_JUPITER_COMPUTE_UNIT_ALLOWANCE
+            )
             : limit;
     }
 
@@ -534,8 +534,8 @@ export class Executor {
                 quote_balance_raw >= quote_amount_raw
                     ? 'ready'
                     : this.enable_funding && sol_balance_raw >= sol_needed_raw
-                      ? 'needs_funding'
-                      : 'insufficient';
+                        ? 'needs_funding'
+                        : 'insufficient';
 
             return {
                 status,
@@ -566,11 +566,11 @@ export class Executor {
         const generated =
             version === 0
                 ? await generate_trade_lta(
-                      creator,
-                      buyers.map(({ buyer }) => buyer),
-                      mint.publicKey,
-                      token_program
-                  )
+                    creator,
+                    buyers.map(({ buyer }) => buyer),
+                    mint.publicKey,
+                    token_program
+                )
                 : undefined;
         try {
             const tables = generated ? [generated, ...alts] : alts;
@@ -665,12 +665,12 @@ export class Executor {
                 quote_shortfall_raw === quote_amount_raw
                     ? budget_quote
                     : await quote_jupiter(
-                          { amount: sol_needed_raw.toString(), decimals: 9, uiAmount: null },
-                          SOL_MINT,
-                          quote_mint,
-                          slippage,
-                          'ExactIn'
-                      );
+                        { amount: sol_needed_raw.toString(), decimals: 9, uiAmount: null },
+                        SOL_MINT,
+                        quote_mint,
+                        slippage,
+                        'ExactIn'
+                    );
             if (BigInt(quote.inAmount) > sol_amount_raw)
                 throw new Error('Funding quote exceeds the SOL budget. Prefund the quote token before buying.');
             if (BigInt(quote.otherAmountThreshold) < quote_shortfall_raw)
@@ -698,7 +698,7 @@ export class Executor {
         const sol_needed_raw =
             quote_shortfall_raw !== 0n
                 ? (quote_shortfall_raw * sol_amount_raw + required_min_quote_amount_raw - 1n) /
-                  required_min_quote_amount_raw
+                required_min_quote_amount_raw
                 : 0n;
         return { sol_needed_raw, quote_shortfall_raw };
     }

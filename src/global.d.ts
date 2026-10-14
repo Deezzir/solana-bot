@@ -4,7 +4,7 @@ import type { TransactionRelay } from './constants';
 import type { Program } from './common/common';
 
 declare global {
-    var RL: Interface;
+    var RL: Interface | undefined;
     var CONNECTION: Connection;
     var NO_COLORS: boolean;
     var PROGRAM: Program;

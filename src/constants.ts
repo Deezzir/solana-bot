@@ -12,7 +12,7 @@ function get_env_variable(var_name: string, default_value: string = ''): any {
 
 // NETWORK CONSTANTS
 export const NETWORK: 'mainnet' | 'devnet' = process.argv.slice(2).includes('--devnet') ? 'devnet' : 'mainnet';
-const HELIUS_API_KEY = get_env_variable('HELIUS_API_KEY');
+export const HELIUS_API_KEY = get_env_variable('HELIUS_API_KEY');
 export const HELIUS_RPC =
     NETWORK === 'mainnet'
         ? `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`
@@ -32,8 +32,9 @@ export const WALLETS_RESCUE_DIR_PATH = '.rescue';
 export const WALLETS_FILE_HEADERS = ['name', 'private_key', 'is_reserve', 'public_key', 'created_at'];
 
 // IPFS CONSTANTS
-export const IPFS = 'https://ipfs.io/ipfs/';
+export const PUBLIC_IPFS = 'https://ipfs.io';
 export const IPFS_API = 'https://uploads.pinata.cloud/v3/files';
+export const IPFS_GATEWAY = get_env_variable('PINATA_IPFS_GATEWAY', 'https://ipfs.io/ipfs');
 export const IPFS_JWT = get_env_variable('PINATA_IPFS_JWT');
 
 // TRADE COMMON CONSTANTS
@@ -92,16 +93,17 @@ export const JITO_ENDPOINTS = [
     'https://singapore.mainnet.block-engine.jito.wtf/api/v1',
     'https://tokyo.mainnet.block-engine.jito.wtf/api/v1'
 ];
-export const SENDER_ENDPOINTS = [
+export const SENDER_ENDPOINT = process.env['SENDER_ENDPOINT'] || 'https://sender.helius-rpc.com';
+export const SENDER_BENCHMARK_ENDPOINTS = [
     'http://slc-sender.helius-rpc.com',
     'http://ewr-sender.helius-rpc.com',
     'http://lon-sender.helius-rpc.com',
     'http://fra-sender.helius-rpc.com',
     'http://ams-sender.helius-rpc.com',
     'http://sg-sender.helius-rpc.com',
-    'http://tyo-sender.helius-rpc.com'
+    'http://tyo-sender.helius-rpc.com',
+    'https://sender.helius-rpc.com'
 ];
-export const SENDER_ENDPOINT: string | null = process.env['SENDER_ENDPOINT'] || null;
 export const SENDER_MAX_MIN_TIP: number = 1000000 / LAMPORTS_PER_SOL;
 export const SENDER_MAX_BUNDLE_SIZE = 4;
 export const SENDER_MAX_MIN_PRIORITY_FEE = 5000;
@@ -218,7 +220,6 @@ export const METEORA_DAMM_V2_CLAIM_REWARD_DISCRIMINATOR = new Uint8Array([149, 9
 
 // PUMP CONSTANTS
 export const PUMP_API_URL = 'https://frontend-api-v3.pump.fun';
-export const PUMP_IPFS_API_URL = 'https://frontend-api-v3.pump.fun/ipfs/token-metadata';
 export const PUMP_TOKEN_DECIMALS = 6;
 export const PUMP_DEFAULT_MINT_META = {
     market_cap: 27.95,

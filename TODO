@@ -2,6 +2,7 @@
 
 - Smart snipe/trade logic
 - GUI
-- Pump native multi-hot
+- Pump native multi-hop
 - Pump synthetic migration
 - Pump pump-coin quotes
+- Support Pump depth 1 and depth 2 coins swaps
