@@ -6,7 +6,7 @@
       "name": "solana-bot",
       "dependencies": {
         "@solana-program/token": "^0.16.1",
-        "@solana-program/token-2022": "^0.17.0",
+        "@solana-program/token-2022": "^0.20.0",
         "@solana/web3.js": "3.0.0-rc.3",
         "bs58": "^6.0.0",
         "commander": "^15.0.0",
@@ -62,7 +62,7 @@
 
     "@inquirer/type": ["@inquirer/type@4.0.7", "", { "peerDependencies": { "@types/node": ">=18" }, "optionalPeers": ["@types/node"] }, "sha512-t28inv14nMQ1PhKpsJPY+kEs/c00qzeCOS2gTNRyTjG5d6qsVA2fItxW4hkvGZ5lvanGLdtCzVIx5dwdRpN1+g=="],
 
-    "@noble/curves": ["@noble/curves@2.4.0", "", { "dependencies": { "@noble/hashes": "2.4.0" } }, "sha512-P4/62zrgfH33CneE3Dn4WhJVA22YUU0eR51wKIan4NVRvwsA0YnPTwWGpNbpuacSujmSFLvyzpyuR30+fbq2Ew=="],
+    "@noble/curves": ["@noble/curves@1.9.7", "", { "dependencies": { "@noble/hashes": "1.8.0" } }, "sha512-gbKGcRUYIjA3/zCCNaWDciTMFI0dCkvou3TL8Zmy5Nc7sJ47a0jtOeZoTaMxkuqRo9cRhjOdZJXegxYE5FN/xw=="],
 
     "@noble/hashes": ["@noble/hashes@1.8.0", "", {}, "sha512-jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A=="],
 
@@ -78,7 +78,7 @@
 
     "@solana-program/loader-v3": ["@solana-program/loader-v3@0.6.1", "", { "peerDependencies": { "@solana/kit": "^8.0.0" } }, "sha512-UdRqSVllXnMcVjybHA0/ZwcqgvijVuGqcsAxOjusveFM5HEFYxrgt3D01g/1rtsIX24IirV1y5NkfitI2I95Uw=="],
 
-    "@solana-program/record": ["@solana-program/record@0.4.1", "", { "dependencies": { "@solana-program/system": "^0.14.0" }, "peerDependencies": { "@solana/kit": "^8.0.0" } }, "sha512-3iurtMAc3POMKVSZBqpNZQeoxAYVIxi0VZNOjkdaZqxr5glCxkWWruT8JekDwNFM0FnXxvtdu7tFFn3j6Kpegg=="],
+    "@solana-program/record": ["@solana-program/record@0.6.0", "", { "dependencies": { "@solana-program/system": "^0.16.0" }, "peerDependencies": { "@solana/kit": "^8.5.0" } }, "sha512-8NeDjYA8OVWiL7sZqURsYFPXoT/i1c2A1Wt4k5MOMEItehX8fUOj7uCspU85lC+so+tsEmJ09qO0t8vN8kk/ZQ=="],
 
     "@solana-program/stake": ["@solana-program/stake@0.9.1", "", { "peerDependencies": { "@solana/kit": "^8.0.0" } }, "sha512-iguVMu4a4minZM9+7ttciKFVpoq4QOKbmsK2RxhwzauDuXhqYEJufk8GSXvZt3Q3ec7qep2Jq09SfCmutFtuwg=="],
 
@@ -86,9 +86,9 @@
 
     "@solana-program/token": ["@solana-program/token@0.16.1", "", { "dependencies": { "@solana-program/system": "^0.14.0" }, "peerDependencies": { "@solana/kit": "^8.0.0" } }, "sha512-X9dsvbh+VDq4SuCfvxn95P1DCvtBYHJOBiVmgBJMfW8l/lp8uSwEhy9IurpcdltnGi5kNIkCm4sk4YOXKAMiCw=="],
 
-    "@solana-program/token-2022": ["@solana-program/token-2022@0.17.0", "", { "dependencies": { "@noble/curves": "^2.4.0", "@solana-program/record": "^0.4.0", "@solana-program/system": "^0.14.0", "@solana-program/zk-elgamal-proof": "^0.4.0" }, "peerDependencies": { "@solana/kit": "^8.0.0", "@solana/sysvars": "^8.0.0", "@solana/zk-sdk": "^0.5.1" }, "optionalPeers": ["@solana/zk-sdk"] }, "sha512-LAtSQVLuWLSANAzvyOURR4yDik3eVHtgYiAMADmcayX4ljeN3CEdOtQvbfmB95wDa4R/N0PUhbyXTMWsELKkpw=="],
+    "@solana-program/token-2022": ["@solana-program/token-2022@0.20.0", "", { "dependencies": { "@solana-program/record": "^0.6.0", "@solana-program/system": "^0.16.0", "@solana-program/zk-elgamal-proof": "^0.5.0" }, "peerDependencies": { "@solana/kit": "^8.5.0", "@solana/sysvars": "^8.0.0", "@solana/zk-sdk": "^0.5.4" }, "optionalPeers": ["@solana/zk-sdk"] }, "sha512-MMi+1szfgSHUdtk1drBbQsMVdTOOdGjzgH9i3IN42EZC07x5ZrXcgraZanrFSoS+DnSlTF+vFVOvmFE38rQBXA=="],
 
-    "@solana-program/zk-elgamal-proof": ["@solana-program/zk-elgamal-proof@0.4.0", "", { "dependencies": { "@solana-program/system": "^0.14.0" }, "peerDependencies": { "@solana/kit": "^8.0.0" } }, "sha512-bf2Q3f25xcCNaLm/MR4lwoAguJzEW2eeLdrJb6rUjMcA63qcgyJOWl6To7Bn4e+0OyWBa+J7YP2BUhi//VPz3g=="],
+    "@solana-program/zk-elgamal-proof": ["@solana-program/zk-elgamal-proof@0.5.0", "", { "dependencies": { "@solana-program/system": "^0.16.0" }, "peerDependencies": { "@solana/kit": "^8.5.0" } }, "sha512-2shlu/0a/WFjERyFyhZevXG7WXRUz0kmy5DPEse3TOjH0s4fTU+Uk9kE5ijPhF85Fh662m4xT1ZZm+KBGq5y1g=="],
 
     "@solana/accounts": ["@solana/accounts@8.3.0", "", { "dependencies": { "@solana/addresses": "8.3.0", "@solana/codecs-core": "8.3.0", "@solana/codecs-strings": "8.3.0", "@solana/errors": "8.3.0", "@solana/rpc-spec": "8.3.0", "@solana/rpc-types": "8.3.0" }, "peerDependencies": { "typescript": ">=5.4.0" }, "optionalPeers": ["typescript"] }, "sha512-HNVCs4yyE5kTRHVD3ApuKuByuO85GHE6Ns7I/yMB9vXhFgZjGzFhOGi/YCjlWpIk3RqTyX7wGniHyEb49R3ELQ=="],
 
@@ -362,11 +362,13 @@
 
     "yaml": ["yaml@1.10.2", "", {}, "sha512-r3vXyErRCYJ7wg28yvBY5VSoAF8ZvlcW9/BwUzEtUsjvX/DKs24dIkuwjtuprwJJHsbyUbLApepYTR1BN4uHrg=="],
 
-    "@noble/curves/@noble/hashes": ["@noble/hashes@2.4.0", "", {}, "sha512-X5XaVWZIBCT7HHZGm5I7ZQXDwLG+bGXuSrMQAW+7Zvl87h1kmc1ZB1VSRJcpUfoUrGQp4Fkoxm5kZ+Ms+aW+eA=="],
+    "@solana-program/record/@solana-program/system": ["@solana-program/system@0.16.0", "", { "peerDependencies": { "@solana/kit": "^8.5.0" } }, "sha512-/RG6q2E2vG/XpdOt8Jj/kbQktPlL5JyJuNGAeN9wDcxKDKQtrGTJpDrJgQUxiEy23fsPNXQbLN8XeCtYoMof3Q=="],
+
+    "@solana-program/token-2022/@solana-program/system": ["@solana-program/system@0.16.0", "", { "peerDependencies": { "@solana/kit": "^8.5.0" } }, "sha512-/RG6q2E2vG/XpdOt8Jj/kbQktPlL5JyJuNGAeN9wDcxKDKQtrGTJpDrJgQUxiEy23fsPNXQbLN8XeCtYoMof3Q=="],
+
+    "@solana-program/zk-elgamal-proof/@solana-program/system": ["@solana-program/system@0.16.0", "", { "peerDependencies": { "@solana/kit": "^8.5.0" } }, "sha512-/RG6q2E2vG/XpdOt8Jj/kbQktPlL5JyJuNGAeN9wDcxKDKQtrGTJpDrJgQUxiEy23fsPNXQbLN8XeCtYoMof3Q=="],
 
     "@solana/rpc-transport-http/undici-types": ["undici-types@8.10.2", "", {}, "sha512-7/+aSjzkUoLc92hV22bTW4aGanXf800zbwguhcICs0OAoCF9wDOE4wkopQ+SqfhXZm8mCK8gHpdTs7pZUWzK3w=="],
-
-    "@solana/web3.js/@noble/curves": ["@noble/curves@1.9.7", "", { "dependencies": { "@noble/hashes": "1.8.0" } }, "sha512-gbKGcRUYIjA3/zCCNaWDciTMFI0dCkvou3TL8Zmy5Nc7sJ47a0jtOeZoTaMxkuqRo9cRhjOdZJXegxYE5FN/xw=="],
 
     "@types/through/@types/node": ["@types/node@22.19.13", "", { "dependencies": { "undici-types": "~6.21.0" } }, "sha512-akNQMv0wW5uyRpD2v2IEyRSZiR+BeGuoB6L310EgGObO44HSMNT8z1xzio28V8qOrgYaopIDNA18YgdXd+qTiw=="],
 
