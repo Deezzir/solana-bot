@@ -197,11 +197,14 @@ export class Provider implements trade.IProgramProvider {
     }
 
     public async get_mint_meta(mint: PublicKey): Promise<JupiterMintMeta | undefined> {
+        let token_meta: trade.MintAsset;
         try {
-            return await this.default_mint_meta(mint);
+            token_meta = await trade.get_token_meta(mint);
         } catch (error) {
-            return undefined;
+            if (error instanceof trade.MintNotFoundError) return undefined;
+            throw error;
         }
+        return this.default_mint_meta(mint, undefined, token_meta);
     }
 
     public async get_random_mints(_count: number): Promise<JupiterMintMeta[]> {
@@ -231,18 +234,24 @@ export class Provider implements trade.IProgramProvider {
         return this.default_mint_meta(mint);
     }
 
-    public async default_mint_meta(mint: PublicKey): Promise<JupiterMintMeta> {
+    public async default_mint_meta(
+        mint: PublicKey,
+        _data?: object,
+        token_meta?: trade.MintAsset
+    ): Promise<JupiterMintMeta> {
         const sol_price = await common.fetch_sol_price();
-        const meta = await trade.get_token_meta(mint).catch(() => {
-            return {
-                token_name: 'Unknown',
-                token_symbol: 'Unknown',
-                token_supply: 10 ** 16,
-                price_per_token: 0.0,
-                token_decimal: 6,
-                token_program: TOKEN_PROGRAM_ID
-            };
-        });
+        const meta =
+            token_meta ??
+            (await trade.get_token_meta(mint).catch(() => {
+                return {
+                    token_name: 'Unknown',
+                    token_symbol: 'Unknown',
+                    token_supply: 10 ** 16,
+                    price_per_token: 0.0,
+                    token_decimal: 6,
+                    token_program: TOKEN_PROGRAM_ID
+                };
+            }));
 
         const usd_market_cap = meta.price_per_token * (meta.token_supply / 10 ** meta.token_decimal);
         const market_cap = sol_price ? usd_market_cap / sol_price : 0;
@@ -265,7 +274,7 @@ export class Provider implements trade.IProgramProvider {
         throw new Error('Not supported');
     }
 
-    public async create_token_metadata(meta: common.IPFSMetadata, image_path: string): Promise<string> {
+    public async create_token_metadata(meta: common.IPFSMetadata, image_path: string | undefined): Promise<string> {
         return await common.upload_metadata_ipfs(meta, image_path);
     }
 

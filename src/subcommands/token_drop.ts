@@ -112,7 +112,7 @@ async function drop_tokens_csv<T extends AirdropUser | PresaleUser>(
     let pending = records.filter((r) => !r.tx).slice(0, DROP_RECORDS_PER_ITERATION);
 
     if (pending.length === 0) {
-        common.error(common.yellow('No records to process'));
+        common.warn(common.yellow('No records to process.'));
         return;
     }
 
@@ -126,7 +126,11 @@ async function drop_tokens_csv<T extends AirdropUser | PresaleUser>(
                     .send_tokens(token_amount, mint_meta.mint, drop, receiver, undefined, mint_meta.token_program)
                     .then((sig) => {
                         record.tx = sig;
-                        common.log(common.green(`Sent ${record.tokensToSend} to ${receiver.toBase58()} | tx: ${sig}`));
+                        common.print_summary(common.green('Tokens sent'), [
+                            ['Receiver', receiver.toBase58()],
+                            ['Amount', `${record.tokensToSend} ${mint_meta.token_symbol}`],
+                            ['Signature', String(sig)]
+                        ]);
                     });
             } catch (error: any) {
                 common.error(common.red(`Failed to send tokens to ${record.wallet}: ${error.message}`));
@@ -156,12 +160,15 @@ async function airdrop_csv(
 ): Promise<void> {
     const count = count_airdrop_records(airdrop_path);
     if (count === 0) {
-        common.error(common.yellow('No airdrop records found.'));
+        common.warn(common.yellow('No airdrop records found.'));
         return;
     }
 
     const token_amount = calc_airdrop_amount(percent, balance, count);
-    common.log(`\nAirdrop | Token amount: ${token_amount} | Records: ${count}`);
+    common.print_summary('Airdrop', [
+        ['Amount per recipient', `${token_amount} ${mint.token_symbol}`],
+        ['Records', count]
+    ]);
     await common.to_confirm('Press ENTER to start the airdrop...');
 
     update_airdrop_balance_csv(token_amount, airdrop_path);
@@ -178,12 +185,16 @@ async function presale_csv(
 ): Promise<void> {
     const count = count_presale_records(presale_path);
     if (count === 0) {
-        common.error(common.yellow('No presale records found.'));
+        common.warn(common.yellow('No presale records found.'));
         return;
     }
 
     const { presale_tokens, presale_sol } = calc_presale_amounts(percent, balance, presale_path);
-    common.log(`\nPresale | Token amount: ${presale_tokens} | Total SOL: ${presale_sol} | Records: ${count}`);
+    common.print_summary('Presale drop', [
+        ['Token amount', `${presale_tokens} ${mint.token_symbol}`],
+        ['Total contributed', `${presale_sol} SOL`],
+        ['Records', count]
+    ]);
     await common.to_confirm('Press ENTER to start the presale drop...');
 
     update_presale_balance_csv(presale_tokens, presale_sol, presale_path);

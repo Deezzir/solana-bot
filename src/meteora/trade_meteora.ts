@@ -786,7 +786,7 @@ export class Provider implements trade.IProgramProvider {
         return { instructions: create_instructions, mint_meta, ltas };
     }
 
-    public create_token_metadata(meta: common.IPFSMetadata, image_path: string): Promise<string> {
+    public create_token_metadata(meta: common.IPFSMetadata, image_path: string | undefined): Promise<string> {
         return common.upload_metadata_ipfs(meta, image_path);
     }
 
@@ -799,14 +799,15 @@ export class Provider implements trade.IProgramProvider {
     }
 
     public async get_mint_meta(mint: PublicKey): Promise<MeteoraMintMeta | undefined> {
+        let token_meta: trade.MintAsset;
         try {
-            let mint_meta = await this.default_mint_meta(mint);
-            mint_meta = await this.update_mint_meta(mint_meta);
-            return mint_meta;
+            token_meta = await trade.get_token_meta(mint);
         } catch (error) {
-            console.error(`Error fetching mint meta: ${error}`);
-            return undefined;
+            if (error instanceof trade.MintNotFoundError) return undefined;
+            throw error;
         }
+        const mint_meta = await this.default_mint_meta(mint, undefined, token_meta);
+        return this.update_mint_meta(mint_meta);
     }
 
     public get_compute_unit_limit(): number | undefined {
@@ -982,25 +983,31 @@ export class Provider implements trade.IProgramProvider {
         return mint_meta;
     }
 
-    public async default_mint_meta(mint: PublicKey, data?: object): Promise<MeteoraMintMeta> {
+    public async default_mint_meta(
+        mint: PublicKey,
+        data?: object,
+        token_meta?: trade.MintAsset
+    ): Promise<MeteoraMintMeta> {
         const decoded = data as { name?: string; symbol?: string; pool?: string; quote_mint?: string } | undefined;
-        const meta = decoded
-            ? {
-                  token_name: typeof decoded.name === 'string' ? decoded.name : 'Unknown',
-                  token_symbol: typeof decoded.symbol === 'string' ? decoded.symbol : 'Unknown',
-                  token_supply: 10 ** 18,
-                  token_decimal: 9,
-                  token_program: TOKEN_PROGRAM_ID
-              }
-            : await trade.get_token_meta(mint).catch(() => {
-                  return {
-                      token_name: 'Unknown',
-                      token_symbol: 'Unknown',
+        const meta =
+            token_meta ??
+            (decoded
+                ? {
+                      token_name: typeof decoded.name === 'string' ? decoded.name : 'Unknown',
+                      token_symbol: typeof decoded.symbol === 'string' ? decoded.symbol : 'Unknown',
                       token_supply: 10 ** 18,
                       token_decimal: 9,
                       token_program: TOKEN_PROGRAM_ID
-                  };
-              });
+                  }
+                : await trade.get_token_meta(mint).catch(() => {
+                      return {
+                          token_name: 'Unknown',
+                          token_symbol: 'Unknown',
+                          token_supply: 10 ** 18,
+                          token_decimal: 9,
+                          token_program: TOKEN_PROGRAM_ID
+                      };
+                  }));
 
         return new MeteoraMintMeta({
             mint: mint.toString(),

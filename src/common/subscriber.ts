@@ -12,7 +12,8 @@ export interface Subscriber {
 interface JsonRpcResponse {
     jsonrpc: '2.0';
     id: number;
-    result: number | boolean;
+    result?: number | boolean;
+    error?: { code: number; message: string };
 }
 
 interface TransactionSubscribeResult {
@@ -56,6 +57,7 @@ export class LogsSubscriber implements Subscriber {
     private sub_id: number | null = null;
     private commitment: Commitment;
     private address: PublicKey;
+    private ready_abort: AbortController | null = null;
 
     constructor(address: PublicKey, commitment: Commitment) {
         this.address = address;
@@ -63,6 +65,8 @@ export class LogsSubscriber implements Subscriber {
     }
 
     async subscribe(on_logs: (logs: string[], signature?: string) => void): Promise<void> {
+        const ready_abort = new AbortController();
+        this.ready_abort = ready_abort;
         this.sub_id = global.CONNECTION.onLogs(
             this.address,
             async ({ err, logs, signature }) => {
@@ -72,14 +76,19 @@ export class LogsSubscriber implements Subscriber {
             this.commitment
         );
         if (this.sub_id === undefined) throw new Error('Failed to subscribe to logs');
+        try {
+            await global.CONNECTION.awaitSubscriptionReady(this.sub_id, { abortSignal: ready_abort.signal });
+        } finally {
+            if (this.ready_abort === ready_abort) this.ready_abort = null;
+        }
     }
 
     async unsubscribe(): Promise<void> {
-        if (this.sub_id !== null) {
-            global.CONNECTION.removeOnLogsListener(this.sub_id)
-                .then(() => (this.sub_id = null))
-                .catch((err) => common.error(common.red(`Failed to unsubscribe from onLogs: ${err}`)));
-        }
+        this.ready_abort?.abort();
+        this.ready_abort = null;
+        const sub_id = this.sub_id;
+        this.sub_id = null;
+        if (sub_id !== null) await global.CONNECTION.removeOnLogsListener(sub_id);
     }
 }
 
@@ -92,8 +101,10 @@ export class TxSubscriber implements Subscriber {
     private ping_interval_ms: number = 30000;
     private reconnecting: boolean = false;
     private reconnect_attempts: number = 0;
+    private reconnect_timeout: ReturnType<typeof setTimeout> | null = null;
     private subscription_id: number | null = null;
     private stopped: boolean = true;
+    private pending_ready: { resolve: () => void; reject: (error: Error) => void } | null = null;
 
     static readonly PingID = 421;
     static readonly SubscribeID = 420;
@@ -142,12 +153,14 @@ export class TxSubscriber implements Subscriber {
             max_delay_ms: 30000
         });
         this.reconnect_attempts++;
-        setTimeout(() => {
+        this.reconnect_timeout = setTimeout(() => {
+            this.reconnect_timeout = null;
             if (this.stopped) return;
             this.reconnecting = false;
-            this.subscribe(on_logs).catch((err) =>
-                common.error(common.red(`Failed to reconnect to WebSocket: ${err}`))
-            );
+            this.subscribe(on_logs).catch((err) => {
+                common.error(common.red(`Failed to reconnect to WebSocket: ${err}`));
+                if (!this.stopped) this.reconnect(on_logs);
+            });
         }, delay);
     }
 
@@ -176,59 +189,78 @@ export class TxSubscriber implements Subscriber {
     }
 
     async subscribe(on_logs: (message: TransactionSubscribeMessage) => void): Promise<void> {
-        this.stopped = false;
-        this.subscription_id = null;
-        this.ws = new WebSocket(WS_URL);
+        return new Promise<void>((resolve, reject) => {
+            this.pending_ready = { resolve, reject };
+            this.stopped = false;
+            this.subscription_id = null;
+            this.ws = new WebSocket(WS_URL);
 
-        this.ws.onopen = () => {
-            this.start_ping();
-            const request = this.prepare_request();
-            this.ws!.send(JSON.stringify(request));
-        };
+            this.ws.onopen = () => {
+                try {
+                    this.start_ping();
+                    const request = this.prepare_request();
+                    this.ws!.send(JSON.stringify(request));
+                } catch (error) {
+                    this.reject_ready(error instanceof Error ? error : new Error(String(error)));
+                    common.error(common.red(`Failed to send WebSocket subscription: ${error}`));
+                }
+            };
 
-        this.ws.onmessage = (event: MessageEvent) => {
-            const raw = typeof event.data === 'string' ? event.data : event.data.toString();
-            try {
-                const message: TransactionSubscribeMessage = JSON.parse(raw);
-                if ('id' in message && message.id === TxSubscriber.PingID) return;
-                if ('id' in message && message.id === TxSubscriber.SubscribeID) {
-                    if (typeof message.result !== 'number')
-                        throw new Error('Invalid transaction subscription response.');
-                    this.subscription_id = message.result;
-                    this.reconnect_attempts = 0;
+            this.ws.onmessage = (event: MessageEvent) => {
+                const raw = typeof event.data === 'string' ? event.data : event.data.toString();
+                try {
+                    const message: TransactionSubscribeMessage = JSON.parse(raw);
+                    if ('id' in message && message.id === TxSubscriber.PingID) return;
+                    if ('id' in message && message.id === TxSubscriber.SubscribeID) {
+                        if (message.error) throw new Error(`Transaction subscription failed: ${message.error.message}`);
+                        if (typeof message.result !== 'number')
+                            throw new Error('Invalid transaction subscription response.');
+                        this.subscription_id = message.result;
+                        this.reconnect_attempts = 0;
+                        this.pending_ready?.resolve();
+                        this.pending_ready = null;
+                        return;
+                    }
+                    if (!('method' in message) || message.params.subscription !== this.subscription_id) return;
+                    on_logs(message);
+                } catch (error) {
+                    this.reject_ready(error instanceof Error ? error : new Error(String(error)));
+                    common.error(common.red(`Failed to process WebSocket message: ${error}`));
                     return;
                 }
-                if (!('method' in message) || message.params.subscription !== this.subscription_id) return;
-                on_logs(message);
-            } catch (e) {
-                common.error(common.red(`Failed to parse WebSocket message: ${raw}`));
-                return;
-            }
-        };
+            };
 
-        this.ws.onerror = (event: Event) => {
-            if (event instanceof ErrorEvent) {
-                common.error(common.red(`WebSocket error: ${event.message}`));
-            } else {
-                common.error(common.red(`WebSocket error: ${event.type}`));
-            }
-            if (!this.stopped && this.ws && this.ws.readyState !== WebSocket.OPEN) this.reconnect(on_logs);
-        };
+            this.ws.onerror = (event: Event) => {
+                const error = new Error(`WebSocket error: ${event instanceof ErrorEvent ? event.message : event.type}`);
+                this.reject_ready(error);
+                common.error(common.red(error.message));
+                if (!this.stopped && this.ws && this.ws.readyState !== WebSocket.OPEN) this.reconnect(on_logs);
+            };
 
-        this.ws.onclose = (event: CloseEvent) => {
-            if (this.stopped) return;
-            const reason = event.reason || 'unknown';
-            common.warn(`WebSocket closed. Code: ${event.code}, Reason: ${reason}. Attempting to reconnect...`);
-            if (this.ping_interval) clearInterval(this.ping_interval);
-            this.reconnect(on_logs);
-        };
+            this.ws.onclose = (event: CloseEvent) => {
+                if (this.stopped) return;
+                const reason = event.reason || 'unknown';
+                this.reject_ready(new Error(`WebSocket closed before subscription activation: ${reason}`));
+                common.warn(`WebSocket closed. Code: ${event.code}, Reason: ${reason}. Attempting to reconnect...`);
+                if (this.ping_interval) clearInterval(this.ping_interval);
+                this.reconnect(on_logs);
+            };
+        });
+    }
+
+    private reject_ready(error: Error): void {
+        this.pending_ready?.reject(error);
+        this.pending_ready = null;
     }
 
     async unsubscribe(): Promise<void> {
         this.stopped = true;
+        this.reject_ready(new Error('Transaction subscription cancelled before activation.'));
         this.subscription_id = null;
         if (this.ping_interval) clearInterval(this.ping_interval);
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.close();
+        if (this.reconnect_timeout) clearTimeout(this.reconnect_timeout);
+        this.reconnect_timeout = null;
+        if (this.ws && this.ws.readyState < WebSocket.CLOSING) this.ws.close();
         this.ws = null;
         this.reconnecting = false;
         this.reconnect_attempts = 0;

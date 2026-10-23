@@ -71,7 +71,7 @@ CLI for token trading, creation, sniping, volume, wallet transfers and reward cl
       wallet-pnl|pnl <address>                                       Get the PNL of the wallet
       transfer|tr <amount> <receiver> <sender_index>                 Transfer SOL from the specified wallet to the receiver
       transfer-token|tt <mint> <amount> <receiver> <sender_index>    Transfer the token from the specified wallet to the receiver
-      create-metadata|cm <json_path> <image_path>                    Upload the metadata of the token using the provided JSON file and image
+      create-metadata|cm <json_path>                                 Upload the metadata of the token using the provided JSON file and image
       promote|pr <count> <cid> <creator_index>                       Create promotion tokens using the provided wallet
       create-token|ct [options] <cid> <creator_index>                Create a token
       create-lta|clta <authority_index>                              Create a Address Lookup Table Account
@@ -157,22 +157,21 @@ The `snipe` subcommand optionally accepts a JSON config with the following field
 
 ### Optional fields
 
-| Field            | Type      | Default               | Notes                                       |
-| ---------------- | --------- | --------------------- | ------------------------------------------- |
-| `trade_interval` | `number`  | `0`                   | Required if `is_buy_once = false`           |
-| `mcap_threshold` | `number`  | `Infinity`            | USD market cap; must be ≥ `SNIPE_MIN_MCAP` |
-| `start_interval` | `number`  | `0`                   | Must be ≥ 0                                 |
-| `spend_limit`    | `number`  | `Infinity`            | SOL-denominated; must be ≥ `min_buy`       |
-| `max_buy`        | `number`  | `min_buy`             | Must be ≥ `min_buy`                         |
-| `is_buy_once`    | `boolean` | `false`               | If `true`, `trade_interval` must not be set |
-| `sell_slippage`  | `number`  | `SNIPE_SELL_SLIPPAGE` | 0.0 – `TRADE_MAX_SLIPPAGE`                  |
-| `buy_slippage`   | `number`  | `SNIPE_BUY_SLIPPAGE`  | 0.0 – `TRADE_MAX_SLIPPAGE`                  |
-| `priority_level` | `string`  | `Default`             | See **Priority Levels** below               |
-| `protection_tip` | `number`  | `undefined`           | Must be ≥ 0.0                               |
-| `mev_protect`    | `boolean` | `false`               | Requires a positive protection tip         |
-| `funding`        | `boolean` | `false`               | Fund quote shortfalls and convert sell proceeds to SOL |
-
-The initial snipe attempt prioritizes latency and may use SOL-default metadata. For a non-SOL quote it can fail until asynchronous metadata refresh resolves the actual pool.
+| Field            | Type      | Default               | Notes                                                    |
+| ---------------- | --------- | --------------------- | ---------------------------------------------------------|
+| `trade_interval` | `number`  | `0`                   | Required if `is_buy_once = false`                        |
+| `mcap_threshold` | `number`  | `Infinity`            | USD market cap; must be ≥ `SNIPE_MIN_MCAP`               |
+| `start_interval` | `number`  | `0`                   | Must be ≥ 0                                              |
+| `spend_limit`    | `number`  | `Infinity`            | SOL-denominated; must be ≥ `min_buy`                     |
+| `max_buy`        | `number`  | `min_buy`             | Must be ≥ `min_buy`                                      |
+| `is_buy_once`    | `boolean` | `false`               | If `true`, `trade_interval` must not be set              |
+| `sell_slippage`  | `number`  | `SNIPE_SELL_SLIPPAGE` | 0.0 – `TRADE_MAX_SLIPPAGE`                               |
+| `buy_slippage`   | `number`  | `SNIPE_BUY_SLIPPAGE`  | 0.0 – `TRADE_MAX_SLIPPAGE`                               |
+| `priority_level` | `string`  | `Default`             | See **Priority Levels** below                            |
+| `protection_tip` | `number`  | `undefined`           | Must be ≥ 0.0                                            |
+| `mev_protect`    | `boolean` | `false`               | Requires a positive protection tip                       |
+| `funding`        | `boolean` | `false`               | Fund quote shortfalls and convert sell proceeds to SOL   |
+| `quote_mint`     | `string`  | Auto-detected         | Optional expected quote mint; must be a valid public key |
 
 ---
 

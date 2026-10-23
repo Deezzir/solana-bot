@@ -164,9 +164,9 @@ async function calculate_profit_loss(
 
 export async function get_wallet_pnl(public_key: PublicKey, sol_price: number): Promise<WalletPNL> {
     try {
-        common.log(`Fetching all signatures for wallet ${public_key.toString()}...`);
+        common.log('Fetching wallet transaction history...');
         const signatures = await get_all_signatures(public_key);
-        common.log(`Found ${signatures.length} total transactions\n`);
+        common.log(`Found ${signatures.length} transactions.`);
 
         const signature_chunks = common.chunks(
             signatures.map((sig) => sig.signature),

@@ -89,10 +89,10 @@ type TransactionOptions = {
 type StringPublicKeys<T> = T extends PublicKey
     ? string
     : T extends bigint
-    ? number | bigint
-    : T extends object
-    ? { [K in keyof T]: StringPublicKeys<T[K]> }
-    : T;
+      ? number | bigint
+      : T extends object
+        ? { [K in keyof T]: StringPublicKeys<T[K]> }
+        : T;
 
 export type RawParsedTransaction = StringPublicKeys<ParsedTransactionWithMeta>;
 type RawInstruction = RawParsedTransaction['transaction']['message']['instructions'][number];
@@ -208,7 +208,7 @@ export interface IProgramProvider {
         config?: object,
         creator_buy?: boolean
     ): Promise<CreateTokenInstructions>;
-    create_token_metadata(meta: common.IPFSMetadata, image_path: string): Promise<string>;
+    create_token_metadata(meta: common.IPFSMetadata, image_path: string | undefined): Promise<string>;
     get_random_mints(count: number): Promise<IMintMeta[]>;
     get_mint_meta(mint: PublicKey): Promise<IMintMeta | undefined>;
     update_mint_meta(mint_meta: IMintMeta): Promise<IMintMeta>;
@@ -218,7 +218,7 @@ export interface IProgramProvider {
         commitment?: Commitment
     ): Promise<() => void>;
     update_mint_meta_reserves(mint_meta: IMintMeta, amount: TokenAmount, op: TradeOp): IMintMeta;
-    default_mint_meta(mint: PublicKey, data?: object): Promise<IMintMeta>;
+    default_mint_meta(mint: PublicKey, data?: object, token_meta?: MintAsset): Promise<IMintMeta>;
     get_rewards(trader: Keypair): Promise<ClaimableAsset[]>;
     claim_rewards_instructions(trader: Keypair, assets: ClaimableAsset[]): Promise<TransactionInstruction[]>;
     estimate_buy_output(mint_meta: IMintMeta, quote_amount: TokenAmount, slippage: number): Promise<OutputEstimate>;
@@ -282,9 +282,16 @@ export type CreateTokenInstructions = {
     ltas: AddressLookupTableAccount[];
 };
 
-// Transaction errors
+// Errors
 
-class RelayRejectionError extends Error { }
+export class MintNotFoundError extends Error {
+    constructor(mint: PublicKey) {
+        super(`Mint ${mint} not found.`);
+        this.name = 'MintNotFoundError';
+    }
+}
+
+class RelayRejectionError extends Error {}
 
 export class TransactionSubmissionError extends Error {
     readonly signatures: readonly string[];
@@ -307,7 +314,7 @@ class TransactionSimulationError extends Error {
     }
 }
 
-export class CompileTransactionError extends Error { }
+export class CompileTransactionError extends Error {}
 
 // RPC requests and transaction decoding
 
@@ -340,11 +347,11 @@ export function deserialize_parsed_transaction(raw: RawParsedTransaction): Parse
                 ...transaction.message,
                 transactionConfig: config
                     ? {
-                        computeUnitLimit: config.computeUnitLimit ?? undefined,
-                        loadedAccountsDataSizeLimit: config.loadedAccountsDataSizeLimit ?? undefined,
-                        heapSize: config.heapSize ?? undefined,
-                        priorityFeeLamports: priority_fee == null ? undefined : common.rpc_bigint(priority_fee)
-                    }
+                          computeUnitLimit: config.computeUnitLimit ?? undefined,
+                          loadedAccountsDataSizeLimit: config.loadedAccountsDataSizeLimit ?? undefined,
+                          heapSize: config.heapSize ?? undefined,
+                          priorityFeeLamports: priority_fee == null ? undefined : common.rpc_bigint(priority_fee)
+                      }
                     : undefined,
                 accountKeys: transaction.message.accountKeys.map((account) => ({
                     ...account,
@@ -359,26 +366,26 @@ export function deserialize_parsed_transaction(raw: RawParsedTransaction): Parse
         },
         meta: meta
             ? {
-                ...meta,
-                fee: common.rpc_bigint(meta.fee),
-                preBalances: meta.preBalances.map(common.rpc_bigint),
-                postBalances: meta.postBalances.map(common.rpc_bigint),
-                computeUnitsConsumed:
-                    meta.computeUnitsConsumed === undefined
-                        ? undefined
-                        : common.rpc_bigint(meta.computeUnitsConsumed),
-                costUnits: meta.costUnits === undefined ? undefined : common.rpc_bigint(meta.costUnits),
-                innerInstructions: meta.innerInstructions?.map((group) => ({
-                    ...group,
-                    instructions: group.instructions.map(deserialize_instruction)
-                })),
-                loadedAddresses: meta.loadedAddresses
-                    ? {
-                        writable: meta.loadedAddresses.writable.map((address) => new PublicKey(address)),
-                        readonly: meta.loadedAddresses.readonly.map((address) => new PublicKey(address))
-                    }
-                    : undefined
-            }
+                  ...meta,
+                  fee: common.rpc_bigint(meta.fee),
+                  preBalances: meta.preBalances.map(common.rpc_bigint),
+                  postBalances: meta.postBalances.map(common.rpc_bigint),
+                  computeUnitsConsumed:
+                      meta.computeUnitsConsumed === undefined
+                          ? undefined
+                          : common.rpc_bigint(meta.computeUnitsConsumed),
+                  costUnits: meta.costUnits === undefined ? undefined : common.rpc_bigint(meta.costUnits),
+                  innerInstructions: meta.innerInstructions?.map((group) => ({
+                      ...group,
+                      instructions: group.instructions.map(deserialize_instruction)
+                  })),
+                  loadedAddresses: meta.loadedAddresses
+                      ? {
+                            writable: meta.loadedAddresses.writable.map((address) => new PublicKey(address)),
+                            readonly: meta.loadedAddresses.readonly.map((address) => new PublicKey(address))
+                        }
+                      : undefined
+              }
             : null
     };
 }
@@ -570,7 +577,7 @@ export async function retry_get_tx(
                 commitment: COMMITMENT
             });
             if (transaction) return transaction;
-        } catch (error) { }
+        } catch (error) {}
         retries--;
         await common.sleep(TRADE_RETRY_INTERVAL_MS * (retries + 1));
     }
@@ -719,7 +726,8 @@ export async function get_cost_basis(
     account: PublicKey,
     mint: PublicKey,
     _commitment: Finality = 'finalized',
-    _token_program: PublicKey = TOKEN_PROGRAM_ID
+    _token_program: PublicKey = TOKEN_PROGRAM_ID,
+    sol_price?: number
 ): Promise<CostBasis | null> {
     const txs: (ParsedTransactionWithMeta | null)[] = [];
     let pagination_token: string | undefined;
@@ -746,12 +754,53 @@ export async function get_cost_basis(
     } while (pagination_token);
     if (txs.length === 0) return null;
 
-    const changes = txs
-        .filter((tx) => tx !== null)
-        .map((tx) => calc_token_balance_changes(tx, account, mint.toBase58()))
-        .filter((change) => change !== null);
+    const purchases: TxBalanceChanges[] = [];
+    const quote_prices = new Map<string, number>();
+    for (const tx of txs) {
+        if (!tx?.meta) continue;
+        const change = calc_token_balance_changes(tx, account, mint.toBase58());
+        if (!change || change.change_tokens <= 0) continue;
 
-    const purchases = changes.filter((change) => change.change_tokens > 0 && change.change_sol < 0);
+        const quote_changes = new Map<string, { amount: bigint; decimals: number }>();
+        for (const [balances, direction] of [
+            [tx.meta.preTokenBalances ?? [], -1n],
+            [tx.meta.postTokenBalances ?? [], 1n]
+        ] as const) {
+            for (const balance of balances) {
+                if (
+                    balance.owner !== account.toBase58() ||
+                    balance.mint === mint.toBase58() ||
+                    balance.mint === SOL_MINT.toBase58()
+                )
+                    continue;
+                const previous = quote_changes.get(balance.mint);
+                quote_changes.set(balance.mint, {
+                    amount: (previous?.amount ?? 0n) + direction * BigInt(balance.uiTokenAmount.amount),
+                    decimals: balance.uiTokenAmount.decimals
+                });
+            }
+        }
+
+        let quote_spendings = 0;
+        for (const [quote_mint, { amount, decimals }] of quote_changes) {
+            if (amount >= 0n) continue;
+            sol_price ??= await common.fetch_sol_price();
+            if (!Number.isFinite(sol_price) || sol_price <= 0)
+                throw new Error('A positive SOL USD price is required to value non-SOL token purchases.');
+            let price = quote_prices.get(quote_mint);
+            if (price === undefined) {
+                price = await quote_price(new PublicKey(quote_mint));
+                if (!Number.isFinite(price) || price <= 0)
+                    throw new Error(`A positive USD price is required for quote mint ${quote_mint}.`);
+                quote_prices.set(quote_mint, price);
+            }
+            quote_spendings -= ((Number(amount) / 10 ** decimals) * price) / sol_price;
+        }
+
+        const change_sol = change.change_sol - quote_spendings;
+        if (change_sol >= 0) continue;
+        purchases.push({ ...change, change_sol });
+    }
     const total_tokens = purchases.reduce((sum: number, cur: TxBalanceChanges) => sum + cur.change_tokens, 0);
     if (total_tokens === 0) return null;
     const total_fees = purchases.reduce((sum: number, cur: TxBalanceChanges) => sum + cur.fees, 0);
@@ -854,7 +903,8 @@ export async function get_token_balance(
 
 export async function get_token_meta(mint: PublicKey): Promise<MintAsset> {
     const mint_info = await global.CONNECTION.getAccountInfo(mint, COMMITMENT);
-    if (!mint_info || (!mint_info.owner.equals(TOKEN_PROGRAM_ID) && !mint_info.owner.equals(TOKEN_2022_PROGRAM_ID)))
+    if (!mint_info) throw new MintNotFoundError(mint);
+    if (!mint_info.owner.equals(TOKEN_PROGRAM_ID) && !mint_info.owner.equals(TOKEN_2022_PROGRAM_ID))
         throw new Error(`Invalid token program for mint ${mint}`);
     try {
         const result = await helius_rpc<HeliusAsset>('getAsset', [mint.toString()]);
@@ -890,7 +940,7 @@ export async function get_quote_name_by_mint(mint: PublicKey): Promise<string> {
     const stored_name = quote.get_quote_name_by_mint(mint);
     if (stored_name !== undefined) return stored_name;
     const asset = await get_token_meta(mint);
-    return asset.token_name ?? "Unknown"
+    return asset.token_name ?? 'Unknown';
 }
 
 // Relay configuration, tips and transport
@@ -1255,9 +1305,9 @@ async function prepare_tx(
     if (version === 1) {
         const limits = bundle
             ? {
-                computeUnitLimit: compute_unit_limit ?? MAX_COMPUTE_UNIT_LIMIT,
-                loadedAccountsDataSizeLimit: MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES
-            }
+                  computeUnitLimit: compute_unit_limit ?? MAX_COMPUTE_UNIT_LIMIT,
+                  loadedAccountsDataSizeLimit: MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES
+              }
             : await estimate_resource_limits_v1(instructions, signers[0].publicKey, ctx, compute_unit_limit);
         const fee = use_priority_fee
             ? await get_priority_fee_v1(instructions, signers[0].publicKey, limits.computeUnitLimit, priority, provider)
@@ -1269,7 +1319,7 @@ async function prepare_tx(
             (bundle ? MAX_COMPUTE_UNIT_LIMIT : await estimate_compute_unit_limit(instructions, signers, ctx, alts));
         let price = use_priority_fee
             ? (global.PRIORITY_FEE ??
-                (await get_priority_fee({ priority_level: priority, transaction: { instructions, signers, alts } }, ctx)))
+              (await get_priority_fee({ priority_level: priority, transaction: { instructions, signers, alts } }, ctx)))
             : undefined;
         if (provider === TransactionRelay.Sender)
             price = Math.max(price ?? 0, Math.ceil((SENDER_MAX_MIN_PRIORITY_FEE * 1_000_000) / units));
@@ -1317,7 +1367,7 @@ export async function get_max_transaction_version(): Promise<0 | 1> {
             value.data.length >= 9 &&
             value.data[0] === 1 &&
             new DataView(value.data.buffer, value.data.byteOffset, value.data.byteLength).getBigUint64(1, true) <=
-            context.slot
+                context.slot
             ? 1
             : 0;
     } catch {
@@ -1355,9 +1405,9 @@ function compile_tx(
         message.staticAccountKeys.length +
         (message.version === 0
             ? message.addressTableLookups.reduce(
-                (count, lookup) => count + lookup.writableIndexes.length + lookup.readonlyIndexes.length,
-                0
-            )
+                  (count, lookup) => count + lookup.writableIndexes.length + lookup.readonlyIndexes.length,
+                  0
+              )
             : 0);
     if (account_count > MAX_TRANSACTION_ACCOUNTS || message.header.numRequiredSignatures > MAX_TRANSACTION_SIGNATURES)
         throw new CompileTransactionError('Transaction account or signer limit exceeded.');
@@ -1397,9 +1447,9 @@ export function pack_tx_groups<T>(
     const overhead =
         version === 0
             ? [
-                ComputeBudgetProgram.setComputeUnitLimit({ units: MAX_COMPUTE_UNIT_LIMIT }),
-                ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 0 })
-            ]
+                  ComputeBudgetProgram.setComputeUnitLimit({ units: MAX_COMPUTE_UNIT_LIMIT }),
+                  ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 0 })
+              ]
             : [];
     const validate_capacity = (instructions: TransactionInstruction[], first: T) => {
         const fee_payer = typeof payer === 'function' ? payer(first) : payer;
@@ -1565,8 +1615,8 @@ export async function send_bundle(
             error instanceof TransactionSubmissionError
                 ? error.outcome
                 : error instanceof RelayRejectionError
-                    ? 'rejected'
-                    : 'unknown'
+                  ? 'rejected'
+                  : 'unknown'
         );
     }
 }

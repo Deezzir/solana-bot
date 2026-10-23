@@ -226,6 +226,7 @@ describe('Executor creation and rewards', () => {
 
     test('prepares creator and initial buyers sequentially using updated reserves', async () => {
         const { executor, fake } = setup_create();
+        install_balances(5_000_000_000n);
         const initial_buyer = await Keypair.fromSeed(new Uint8Array(32).fill(44));
         await executor.create_token(mint, buyer, 'Token', 'TOK', 'cid', 1, [[initial_buyer, 2]], 0.001);
         expect(fake.buy_calls.map(([amount, wallet, meta]) => [amount.amount, wallet, meta.token_quote_mc])).toEqual([
@@ -247,6 +248,7 @@ describe('Executor creation and rewards', () => {
 
     test.each([false, true])('deactivates a generated creation ALT after bundle failure=%s', async (fails) => {
         const { executor } = setup_create();
+        install_balances(5_000_000_000n);
         global.TRANSACTION_VERSION = 0;
         const table = { key: usdc_mint, state: { addresses: [] } } as unknown as AddressLookupTableAccount;
         spyOn(trade, 'generate_trade_lta').mockResolvedValue(table);
@@ -259,6 +261,17 @@ describe('Executor creation and rewards', () => {
         if (fails) await expect(pending).rejects.toThrow('bundle rejected');
         else expect(await pending).toBe('create-bundle-signature');
         expect(deactivate).toHaveBeenCalledWith(buyer, [table]);
+    });
+
+    test('rejects an unfunded initial buy before submitting creation', async () => {
+        const { executor, fake } = setup_create();
+        install_balances(0n);
+        await expect(executor.create_token(mint, buyer, 'Token', 'TOK', 'cid', 1)).rejects.toThrow(
+            'Insufficient buy funding or SOL for fees'
+        );
+        expect(fake.buy_calls).toHaveLength(0);
+        expect(trade.retry_send_tx).not.toHaveBeenCalled();
+        expect(trade.retry_send_bundle).not.toHaveBeenCalled();
     });
 
     test('rejects a funded creation bundle that exceeds transaction capacity before submission', async () => {

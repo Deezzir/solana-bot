@@ -132,7 +132,7 @@ function backup_spider_tree(tree: SpiderTree): string {
     const ok = _backup_spider_tree(tree.head);
     if (!ok) throw new Error('Something went wrong during the spider transfer');
 
-    common.log(`Successfully backed the keys up for the spider transfer`);
+    common.print_summary('Spider recovery wallets saved', [['Recovery file', target_file]]);
     return target_file;
 }
 
@@ -278,9 +278,9 @@ export async function execute_spider_fund_sol(
     const target_file = backup_spider_tree(tree);
 
     try {
-        common.log(`Processing inner transfers...\n`);
+        common.log('Processing intermediate transfers...');
         const final_entries = await process_inner_transfers(tree);
-        common.log(`\nProcessing final transfers...\n`);
+        common.log('Processing final transfers...');
         await process_final_transfers(common.zip(wallets, final_entries));
     } catch (error) {
         common.error(common.red(`Failed to process transfers: ${error}`));

@@ -11,6 +11,7 @@ import {
     SNIPE_MIN_BUY,
     SNIPE_RETRIES,
     SNIPE_RETRY_INTERVAL_MS,
+    SOL_MINT,
     TransactionRelay
 } from '../constants';
 import { create_executor } from './get_provider';
@@ -82,7 +83,9 @@ async function process_buy(promise: Promise<String>, amount: number) {
     try {
         const sig = await promise;
         try {
-            const balance_change = await trade.get_balance_change(sig.toString(), KEYPAIR.publicKey);
+            const balance_change = MINT_METADATA.quote_mint_pubkey.equals(SOL_MINT)
+                ? await trade.get_balance_change(sig.toString(), KEYPAIR.publicKey)
+                : amount;
             STATE.spendings = (STATE.spendings || 0) + balance_change;
         } catch (error) {
             MESSAGE_BUFFER.push(`[Worker ${CONFIG.id}] Error getting balance change, continuing...`);
@@ -116,7 +119,8 @@ function calc_buy_amount(
     spendings: number = 0,
     spend_limit: number = Infinity
 ): number {
-    const remaining = (spend_limit - spendings) * 0.95;
+    const remaining = spend_limit - spendings;
+    if (remaining < min_buy) return 0;
     let amount: number;
     if (max_buy && max_buy > min_buy) {
         amount = common.normal_random((min_buy + max_buy) / 2, (max_buy - min_buy) / 4);
@@ -124,13 +128,20 @@ function calc_buy_amount(
     } else {
         amount = min_buy;
     }
-    return Math.max(SNIPE_MIN_BUY, parseFloat(Math.min(amount, remaining).toFixed(5)));
+    return Math.min(remaining, Math.max(min_buy, parseFloat(Math.min(amount, remaining * 0.95).toFixed(5))));
 }
 
 const buy = async () => {
     if (STATE.mode !== 'buy') return;
 
     const amount = STATE.buy_amount;
+    let buy_amount: number | TokenAmount = amount;
+    if (!CONFIG.funding && CONFIG.quote_valuation && MINT_METADATA.quote_mint_pubkey.toBase58() === CONFIG.quote_mint) {
+        const { sol_amount, token_amount } = CONFIG.quote_valuation;
+        const quote_amount =
+            (trade.sol_to_lamports(amount) * BigInt(token_amount.amount)) / trade.sol_to_lamports(sol_amount);
+        buy_amount = { ...token_amount, amount: quote_amount.toString(), uiAmount: null };
+    }
     parentPort?.postMessage(`[Worker ${CONFIG.id}] Buying ${amount} SOL of the token`);
     let bought = false;
 
@@ -139,7 +150,7 @@ const buy = async () => {
         let count = SNIPE_TRADE_BATCH;
         while (count > 0 && STATE.mode === 'buy') {
             const buy_promise = EXECUTOR.buy_token(
-                amount,
+                buy_amount,
                 KEYPAIR,
                 MINT_METADATA,
                 CONFIG.buy_slippage,
@@ -254,7 +265,7 @@ const control_loop = async () =>
             STATE.mode === 'buy' &&
             (STATE.buys === 0 || !CONFIG.is_buy_once) &&
             (STATE.spendings || 0) < CONFIG.spend_limit &&
-            STATE.buy_amount > SNIPE_MIN_BUY;
+            STATE.buy_amount >= CONFIG.min_buy;
         const process = async () => {
             if (!MINT_METADATA) return;
 
@@ -309,7 +320,7 @@ const control_loop = async () =>
 
 async function main() {
     const balance = trade.lamports_to_sol(await trade.get_balance(KEYPAIR.publicKey, COMMITMENT));
-    CONFIG.spend_limit = Math.min(balance, CONFIG.spend_limit) - SNIPE_MIN_BUY;
+    if (balance < SNIPE_MIN_BUY) throw new Error('Insufficient SOL fee reserve');
 
     await trade.get_ltas(EXECUTOR.get_lta_addresses());
     await warm_sender_connection();

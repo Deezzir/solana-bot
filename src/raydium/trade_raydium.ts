@@ -451,13 +451,15 @@ export class RaydiumProvider implements trade.IProgramProvider {
     }
 
     public async get_mint_meta(mint: PublicKey): Promise<RaydiumMintMeta | undefined> {
+        let token_meta: trade.MintAsset;
         try {
-            let mint_meta = await this.default_mint_meta(mint);
-            mint_meta = await this.update_mint_meta(mint_meta);
-            return mint_meta;
+            token_meta = await trade.get_token_meta(mint);
         } catch (error) {
-            return undefined;
+            if (error instanceof trade.MintNotFoundError) return undefined;
+            throw error;
         }
+        const mint_meta = await this.default_mint_meta(mint, undefined, token_meta);
+        return this.update_mint_meta(mint_meta);
     }
 
     public async get_random_mints(count: number): Promise<RaydiumMintMeta[]> {
@@ -503,7 +505,7 @@ export class RaydiumProvider implements trade.IProgramProvider {
         return { instructions: create_instructions, mint_meta, ltas };
     }
 
-    public async create_token_metadata(meta: common.IPFSMetadata, image_path: string): Promise<string> {
+    public async create_token_metadata(meta: common.IPFSMetadata, image_path: string | undefined): Promise<string> {
         return await common.upload_metadata_ipfs(meta, image_path);
     }
 
@@ -782,26 +784,32 @@ export class RaydiumProvider implements trade.IProgramProvider {
         }
     }
 
-    public async default_mint_meta(mint: PublicKey, data?: object): Promise<RaydiumMintMeta> {
+    public async default_mint_meta(
+        mint: PublicKey,
+        data?: object,
+        token_meta?: trade.MintAsset
+    ): Promise<RaydiumMintMeta> {
         const decoded = data as Record<string, unknown> | undefined;
-        const meta = decoded
-            ? {
-                  token_name: typeof decoded.name === 'string' ? decoded.name : 'Unknown',
-                  token_symbol: typeof decoded.symbol === 'string' ? decoded.symbol : 'Unknown',
-                  token_decimal: (decoded.token_decimals as number | undefined) ?? TRADE_DEFAULT_TOKEN_DECIMALS,
-                  token_program:
-                      typeof decoded.token_program === 'string'
-                          ? new PublicKey(decoded.token_program)
-                          : TOKEN_PROGRAM_ID
-              }
-            : await trade.get_token_meta(mint).catch(() => {
-                  return {
-                      token_name: 'Unknown',
-                      token_symbol: 'Unknown',
-                      token_program: TOKEN_PROGRAM_ID,
-                      token_decimal: TRADE_DEFAULT_TOKEN_DECIMALS
-                  };
-              });
+        const meta =
+            token_meta ??
+            (decoded
+                ? {
+                      token_name: typeof decoded.name === 'string' ? decoded.name : 'Unknown',
+                      token_symbol: typeof decoded.symbol === 'string' ? decoded.symbol : 'Unknown',
+                      token_decimal: (decoded.token_decimals as number | undefined) ?? TRADE_DEFAULT_TOKEN_DECIMALS,
+                      token_program:
+                          typeof decoded.token_program === 'string'
+                              ? new PublicKey(decoded.token_program)
+                              : TOKEN_PROGRAM_ID
+                  }
+                : await trade.get_token_meta(mint).catch(() => {
+                      return {
+                          token_name: 'Unknown',
+                          token_symbol: 'Unknown',
+                          token_program: TOKEN_PROGRAM_ID,
+                          token_decimal: TRADE_DEFAULT_TOKEN_DECIMALS
+                      };
+                  }));
         const quote_mint = new PublicKey((decoded?.quote_mint as string | undefined) ?? SOL_MINT);
         const pool =
             typeof decoded?.pool === 'string' ? new PublicKey(decoded.pool) : await this.calc_pool(mint, quote_mint);

@@ -39,19 +39,13 @@ export async function burn_token(mint: PublicKey, burner: Keypair, amount?: numb
     const mint_meta = await trade.get_token_meta(mint);
     if (!mint_meta) throw new Error(`Mint metadata not found for the mint: ${mint.toString()}.`);
 
-    common.log(common.yellow(`Burning the token by the mint ${mint.toString()}...`));
-    common.log(
-        common.yellow(
-            `Burning ${amount ? `${amount} tokens` : `${percent! * 100}% of ${mint_meta.token_symbol.toUpperCase()}`}...`
-        )
-    );
-
     const token_amount = await trade.get_token_balance(burner.publicKey, mint, COMMITMENT, mint_meta.token_program);
-    common.log(
-        common.bold(
-            `\nBurner address: ${burner.publicKey.toString()} | Balance: ${token_amount.uiAmount || 0} ${mint_meta.token_symbol.toUpperCase()}\n`
-        )
-    );
+    common.print_summary('Burn tokens', [
+        ['Mint', mint.toBase58()],
+        ['Wallet', burner.publicKey.toBase58()],
+        ['Balance', `${token_amount.uiAmount || 0} ${mint_meta.token_symbol.toUpperCase()}`],
+        ['Burn amount', amount ? `${amount} tokens` : `${percent! * 100}%`]
+    ]);
     if (!token_amount || token_amount.uiAmount === 0 || !token_amount.uiAmount) throw new Error('No tokens to burn');
 
     const amount_to_burn = amount
@@ -65,7 +59,10 @@ export async function burn_token(mint: PublicKey, burner: Keypair, amount?: numb
 export async function clean(wallets: common.Wallet[], burn: boolean = false): Promise<void> {
     if (wallets.length === 0) throw new Error('No wallets available.');
 
-    common.log(common.yellow(`${burn ? 'Burning tokens and closing' : 'Closing'} token accounts for the wallets...`));
+    common.print_summary('Clean token accounts', [
+        ['Wallets', wallets.length],
+        ['Mode', burn ? 'Burn tokens and close accounts' : 'Close empty accounts']
+    ]);
     const unsold_mints = new Map<string, { amount: bigint; decimals: number }>();
     const unclosed_wallets: common.Wallet[] = [];
     const unsold_wallets: common.Wallet[] = [];
@@ -121,9 +118,12 @@ export async function clean(wallets: common.Wallet[], burn: boolean = false): Pr
         );
     }
 
-    common.log(
-        common.bold(`\nTotal closed accounts: ${total_closed_cnt} | Total failed accounts: ${total_failed_cnt}`)
-    );
+    common.print_summary('Cleanup results', [
+        ['Closed accounts', total_closed_cnt],
+        ['Failed accounts', total_failed_cnt],
+        ['Unclosed wallets', unclosed_wallets.length],
+        ['Wallets with tokens', unsold_wallets.length]
+    ]);
 
     if (unclosed_wallets.length > 0) {
         common.log(common.red(`\nUnclosed Wallets:`));
@@ -159,6 +159,10 @@ export async function claim_rewards(
         [common.Program.Pump, common.Program.Meteora, common.Program.Raydium, common.Program.Bonk],
         'Reward claims'
     );
+    common.print_summary(print_only ? 'Available rewards' : 'Claim rewards', [
+        ['Program', global.PROGRAM],
+        ['Wallets', wallets.length]
+    ]);
     const executor = create_executor();
     let total_sol_raw = 0n;
     let failed = 0;
@@ -175,11 +179,14 @@ export async function claim_rewards(
                     common.log(`${prefix}: ${status} ${amount} ${token_label} (${asset.source})`);
                 }
             };
+            if (assets.length === 0) {
+                common.log(`${prefix} | No rewards available`);
+                continue;
+            }
             if (print_only) {
                 log_assets('available');
                 continue;
             }
-            if (assets.length === 0) continue;
             const signature = await executor.claim_rewards(wallet.keypair, assets, priority);
             log_assets('claimed');
             common.log(common.green(`${prefix}: signature ${signature}`));
@@ -189,18 +196,22 @@ export async function claim_rewards(
         }
         await common.sleep(COMMANDS_INTERVAL_MS);
     }
-    common.log(
-        common.bold(`${print_only ? 'Available' : 'Claimed'} SOL dev fees: ${trade.lamports_to_sol(total_sol_raw)} SOL`)
-    );
+    common.print_summary('Reward results', [
+        [print_only ? 'Available SOL' : 'Claimed SOL', `${trade.lamports_to_sol(total_sol_raw)} SOL`],
+        ['Failed wallets', failed]
+    ]);
     if (!print_only && failed > 0) throw new Error(`${failed} reward claim(s) failed.`);
 }
 
-export async function create_token_metadata(json: common.IPFSMetadata, image_path: string) {
+export async function create_token_metadata(json: common.IPFSMetadata, image_path: string | undefined) {
     const executor = create_executor();
-    common.log(common.yellow('Uploading metadata...'));
-    common.log(JSON.stringify(json, null, 2));
+    common.print_summary('Upload token metadata', [
+        ['Metadata', JSON.stringify(json, null, 2)],
+        ['Image', image_path || 'None']
+    ]);
+    common.log(common.yellow('Uploading metadata...\n'));
     const cid = await executor.create_token_metadata(json, image_path);
-    common.log(`CID: ${common.bold(cid)}`);
+    common.print_summary(common.green('Metadata uploaded'), [['CID', cid]]);
 }
 
 export async function create_token(
@@ -220,29 +231,40 @@ export async function create_token(
     );
     if (wallets && (!min || !max)) throw new Error('Both min and max should be provided, when bundle buy is enabled.');
 
-    common.log('Creating a token...\n');
     dev_buy = dev_buy || 0;
 
     const executor = create_executor();
     const balance = trade.lamports_to_sol(await trade.get_balance(dev.keypair.publicKey, COMMITMENT));
     const meta = await common.fetch_ipfs_json(meta_cid);
 
-    if (dev_buy && dev_buy > balance) throw new Error(`Dev balance is not enough to buy for ${dev_buy} SOL`);
-
-    common.log(common.yellow(`Dev: ${dev.keypair.publicKey.toString()} | Balance: ${balance.toFixed(2)} SOL`));
-    common.log(common.bold(`Dev Buy: ${dev_buy.toFixed(2)} SOL\n`));
+    common.print_summary('Create token', [
+        ['Program', global.PROGRAM],
+        ['Developer', `${dev.name} (${dev.id})`],
+        ['Wallet', dev.keypair.publicKey.toBase58()],
+        ['Balance', `${balance} SOL`],
+        ['Developer buy', `${dev_buy} SOL`]
+    ]);
 
     let entries: [Keypair, number][] | undefined;
     if (wallets) {
-        common.log(common.yellow('Bundle buy'));
-        common.log(common.bold(`Wallets count: ${wallets.length} | Amounts between ${min} and ${max} SOL...`));
+        common.print_summary('Bundle buy', [
+            ['Wallets', wallets.length],
+            ['Buy per wallet', `${min} - ${max} SOL`],
+            ['Bundle tip', bundle_tip === undefined ? 'Default' : `${bundle_tip} SOL`]
+        ]);
         entries = wallets.map((w) => [w.keypair, common.uniform_random(min ?? 0, max ?? 0)]);
     }
 
     mint = mint || (await Keypair.generate());
-    common.log(common.yellow(`\nMint address: ${mint.publicKey.toString()}`));
-    common.log(common.yellow(`Token Name: ${meta.name} | Symbol: ${meta.symbol}`));
-    common.log(common.bold(`Token Meta: ${JSON.stringify(meta, common.json_bigint, 2)}`));
+    common.print_summary('Token details', [
+        ['Mint', mint.publicKey.toBase58()],
+        ['Name', meta.name],
+        ['Symbol', meta.symbol],
+        ['Metadata URI', meta_cid],
+        ['Metadata', JSON.stringify(meta, common.json_bigint, 2)]
+    ]);
+
+    await common.to_confirm('Press ENTER to create the token...');
 
     try {
         const sig = await executor.create_token(
@@ -257,8 +279,10 @@ export async function create_token(
             PriorityLevel.HIGH,
             config
         );
-        common.log(common.green(`\nToken created | Signature: ${sig}`));
-        common.log(common.green(`Mint address: ${mint.publicKey.toBase58()}`));
+        common.print_summary(common.green('Token created'), [
+            ['Mint', mint.publicKey.toBase58()],
+            ['Signature', String(sig)]
+        ]);
     } catch (error) {
         throw new Error(`Failed to create token: ${error}`);
     }
@@ -266,14 +290,18 @@ export async function create_token(
 
 export async function promote(times: number, meta_cid: string, dev: Keypair): Promise<void> {
     require_program([common.Program.Pump, common.Program.Bonk], 'Token promotion');
-    common.log(common.yellow(`Creating ${times} tokens with CID ${meta_cid}...\n`));
-
     const executor = create_executor();
     const balance = trade.lamports_to_sol(await trade.get_balance(dev.publicKey, COMMITMENT));
     const meta = await common.fetch_ipfs_json(meta_cid);
 
-    common.log(common.bold(`Dev address: ${dev.publicKey.toString()} | Balance: ${balance.toFixed(5)} SOL`));
-    common.log(common.bold(`Token name: ${meta.name} | Symbol: ${meta.symbol}\n`));
+    common.print_summary('Promote token', [
+        ['Tokens to create', times],
+        ['Developer', dev.publicKey.toBase58()],
+        ['Balance', `${balance} SOL`],
+        ['Name', meta.name],
+        ['Symbol', meta.symbol],
+        ['Metadata URI', meta_cid]
+    ]);
 
     const transactions = [];
     let failed = 0;
@@ -284,7 +312,10 @@ export async function promote(times: number, meta_cid: string, dev: Keypair): Pr
             executor
                 .create_token(mint, dev, meta.name, meta.symbol, meta_cid)
                 .then((sig) =>
-                    common.log(common.green(`Signature: ${sig.toString().padEnd(88, ' ')} | Mint: ${mint.publicKey}`))
+                    common.print_summary(common.green('Token created'), [
+                        ['Mint', mint.publicKey.toBase58()],
+                        ['Signature', String(sig)]
+                    ])
                 )
                 .catch((error) => {
                     failed++;
@@ -326,7 +357,7 @@ export async function token_balance(wallets: common.Wallet[], mint: PublicKey, f
             try {
                 return await Promise.all([
                     trade.get_token_balance(wallet.keypair.publicKey, mint, COMMITMENT, token_program),
-                    trade.get_cost_basis(wallet.keypair.publicKey, mint, COMMITMENT, token_program)
+                    trade.get_cost_basis(wallet.keypair.publicKey, mint, COMMITMENT, token_program, sol_price)
                 ]);
             } catch (error) {
                 throw new Error(`Failed to get token data for wallet ${wallet.id}: ${error}`);
@@ -341,9 +372,11 @@ export async function token_balance(wallets: common.Wallet[], mint: PublicKey, f
     if (format === 'csv') {
         common.log(`id,name,pubkey,mint,allocation,token_balance,entry_mcap`);
     } else if (format === 'table') {
-        common.log(common.yellow(`Getting the token balance of the wallets by the mint ${mint.toString()}...`));
-        common.log(common.yellow(`Token: ${token_name} | Symbol: ${token_symbol}`));
-        common.log(common.yellow(`Wallet Count: ${wallet_count}\n`));
+        common.print_summary('Token balances', [
+            ['Mint', mint.toBase58()],
+            ['Token', `${token_name} (${token_symbol})`],
+            ['Wallets with tokens', wallet_count]
+        ]);
 
         common.print_header([
             { title: 'Id', width: common.COLUMN_WIDTHS.id },
@@ -373,7 +406,7 @@ export async function token_balance(wallets: common.Wallet[], mint: PublicKey, f
                     { content: common.format_name(wallet.name), width: common.COLUMN_WIDTHS.name },
                     { content: wallet.keypair.publicKey.toString(), width: common.COLUMN_WIDTHS.publicKey },
                     { content: `${allocation}%`, width: common.COLUMN_WIDTHS.allocation, align: 'right' },
-                    { content: ui_balance.toFixed(2), width: common.COLUMN_WIDTHS.tokenBalance, align: 'right' },
+                    { content: ui_balance.toFixed(decimals), width: common.COLUMN_WIDTHS.tokenBalance, align: 'right' },
                     { content: 'N/A', width: common.COLUMN_WIDTHS.entryMcap, align: 'right' }
                 ]);
             }
@@ -401,7 +434,7 @@ export async function token_balance(wallets: common.Wallet[], mint: PublicKey, f
                 { content: common.format_name(wallet.name), width: common.COLUMN_WIDTHS.name },
                 { content: wallet.keypair.publicKey.toString(), width: common.COLUMN_WIDTHS.publicKey },
                 { content: `${alloc.toFixed(2)}%`, width: common.COLUMN_WIDTHS.allocation, align: 'right' },
-                { content: ui_balance.toFixed(2), width: common.COLUMN_WIDTHS.tokenBalance, align: 'right' },
+                { content: ui_balance.toFixed(decimals), width: common.COLUMN_WIDTHS.tokenBalance, align: 'right' },
                 {
                     content: `${(entry_mcap / 1000).toFixed(2)}K$`,
                     width: common.COLUMN_WIDTHS.entryMcap,
@@ -426,29 +459,32 @@ export async function token_balance(wallets: common.Wallet[], mint: PublicKey, f
     const allocation_cur = (total_tokens_cur / (supply / 10 ** decimals)) * 100;
     const average_entry_mcap_all =
         (((((total_spendings_all - total_fees_all) / total_tokens_all) * supply) / 10 ** decimals) * sol_price) /
-        1000 || 0;
+            1000 || 0;
     const average_entry_mcap_cur =
         (((((total_spendings_cur - total_fees_cur) / total_tokens_cur) * supply) / 10 ** decimals) * sol_price) /
-        1000 || 0;
+            1000 || 0;
 
-    common.log('\nALL:');
-    common.log(`    Average Entry MC: ${common.bold(average_entry_mcap_all.toFixed(1) + 'K$')}`);
-    common.log(`    Total Balance: ${common.bold(common.format_currency(total_tokens_all))} ${token_symbol}`);
-    common.log(`    Total Cost: ${common.red(common.format_currency(total_spendings_all) + ' SOL')}`);
-    common.log(`    Total Allocation: ${common.bold(allocation_all.toFixed(2) + '%')}`);
-
-    common.log('\nCURRENT:');
-    common.log(`    Average Entry MC: ${common.bold(average_entry_mcap_cur.toFixed(1) + 'K$')}`);
-    common.log(`    Total Balance: ${common.bold(common.format_currency(total_tokens_cur))} ${token_symbol}`);
-    common.log(`    Total Cost: ${common.red(common.format_currency(total_spendings_cur) + ' SOL')}`);
-    common.log(`    Total Allocation: ${common.bold(allocation_cur.toFixed(2) + '%')}\n`);
+    common.print_summary('All holdings', [
+        ['Average entry MC', `$${average_entry_mcap_all.toFixed(1)}K`],
+        ['Total balance', `${common.format_currency(total_tokens_all)} ${token_symbol}`],
+        ['Total cost', `${common.format_currency(total_spendings_all)} SOL`],
+        ['Total allocation', `${allocation_all.toFixed(2)}%`]
+    ]);
+    common.print_summary('Current holdings', [
+        ['Average entry MC', `$${average_entry_mcap_cur.toFixed(1)}K`],
+        ['Total balance', `${common.format_currency(total_tokens_cur)} ${token_symbol}`],
+        ['Total cost', `${common.format_currency(total_spendings_cur)} SOL`],
+        ['Total allocation', `${allocation_cur.toFixed(2)}%`]
+    ]);
 }
 
 export async function transfer_sol(amount: number, receiver: PublicKey, sender: Keypair): Promise<void> {
     if (sender.publicKey.equals(receiver)) throw new Error('Sender and receiver addresses are the same.');
-    common.log(
-        common.yellow(`Transferring ${amount} SOL from ${sender.publicKey.toString()} to ${receiver.toString()}...`)
-    );
+    common.print_summary('Transfer SOL', [
+        ['From', sender.publicKey.toBase58()],
+        ['To', receiver.toBase58()],
+        ['Amount', `${amount} SOL`]
+    ]);
     const balance = await trade.get_balance(sender.publicKey, COMMITMENT);
     const lamports = trade.sol_to_lamports(amount);
     if (balance < lamports) throw new Error(`Sender balance is not enough to transfer ${amount} SOL`);
@@ -466,11 +502,12 @@ export async function transfer_token(
     const mint_meta = await trade.get_token_meta(mint);
     if (!mint_meta) throw new Error(`Mint metadata not found`);
 
-    common.log(
-        common.yellow(
-            `Transferring ${amount} ${mint_meta.token_symbol} from ${sender.publicKey.toString()} to ${receiver.toString()}...`
-        )
-    );
+    common.print_summary('Transfer tokens', [
+        ['Mint', mint.toBase58()],
+        ['From', sender.publicKey.toBase58()],
+        ['To', receiver.toBase58()],
+        ['Amount', `${amount} ${mint_meta.token_symbol}`]
+    ]);
 
     const token_balance = await trade.get_token_balance(sender.publicKey, mint, COMMITMENT, mint_meta.token_program);
     if (!token_balance.uiAmount) throw new Error(`Sender has no token balance for ${mint_meta.token_name}`);
@@ -511,8 +548,7 @@ export async function balance(wallets: common.Wallet[], format: OutputFormat): P
             return;
         }
         case 'table': {
-            common.log(common.yellow('Getting the balance of the wallets...'));
-            common.log(common.yellow(`Wallet Count: ${wallets.length}\n`));
+            common.print_summary('Wallet balances', [['Wallets', wallets.length]]);
 
             common.print_header([
                 { title: 'Id', width: common.COLUMN_WIDTHS.id },
@@ -548,8 +584,10 @@ export async function balance(wallets: common.Wallet[], format: OutputFormat): P
                 { width: common.COLUMN_WIDTHS.usdBalance }
             ]);
 
-            common.log(`\nTotal balance: ${common.bold(common.format_currency(total) + ' SOL')}`);
-            common.log(`Total USD value: ${common.bold('$' + common.format_currency(total * sol_price))}\n`);
+            common.print_summary('Balance totals', [
+                ['SOL', `${common.format_currency(total)} SOL`],
+                ['USD', `$${common.format_currency(total * sol_price)}`]
+            ]);
             return;
         }
         default:
@@ -572,14 +610,14 @@ export async function sell_token_once(
     const mint_meta = await executor.get_mint_meta(mint);
     if (!mint_meta) throw new Error(`Mint metadata not found for program: ${global.PROGRAM}.`);
 
-    common.log(common.yellow(`Selling the token by the mint ${mint.toString()}...`));
-    common.log(common.yellow(`Selling ${percent * 100}% of the ${mint_meta.token_symbol.toUpperCase()}...`));
     const token_amount = await trade.get_token_balance(seller.publicKey, mint, COMMITMENT, mint_meta.token_program);
-    common.log(
-        common.bold(
-            `\nSeller address: ${seller.publicKey.toString()} | Balance: ${token_amount.uiAmount || 0} ${mint_meta.token_symbol.toUpperCase()}\n`
-        )
-    );
+    common.print_summary('Sell tokens', [
+        ['Mint', mint.toBase58()],
+        ['Wallet', seller.publicKey.toBase58()],
+        ['Balance', `${token_amount.uiAmount || 0} ${mint_meta.token_symbol.toUpperCase()}`],
+        ['Sell amount', `${percent * 100}%`],
+        ['Slippage', `${slippage * 100}%`]
+    ]);
     if (!token_amount || token_amount.uiAmount === 0 || !token_amount.uiAmount) throw new Error('No tokens to sell');
 
     const token_amount_to_sell = trade.get_token_amount_by_percent(token_amount, percent);
@@ -613,16 +651,20 @@ export async function buy_token_once(
     const mint_meta = await executor.get_mint_meta(mint);
     if (!mint_meta) throw new Error(`Mint metadata not found for program: ${global.PROGRAM}.`);
 
-    common.log(common.yellow(`Buying ${amount} SOL of the token with mint ${mint.toString()}...`));
-
     const balances = await executor.has_enough_balances(amount, buyer.publicKey, mint_meta, slippage);
-    let balance_msg = `\nBuyer address: ${buyer.publicKey.toString()} | Balance: ${trade.lamports_to_sol(balances.sol_balance_raw).toFixed(5)} SOL`;
+    let balance_msg = `${trade.lamports_to_sol(balances.sol_balance_raw)} SOL`;
     if (!mint_meta.quote_mint_pubkey.equals(SOL_MINT)) {
         const quote_ui_amount = Number(balances.quote_balance_raw) / 10 ** balances.quote_amount.decimals;
         const quote_ticker = await trade.get_quote_name_by_mint(mint_meta.quote_mint_pubkey);
         balance_msg += `, ${quote_ui_amount.toFixed(5)} ${quote_ticker}`;
     }
-    common.log(common.bold(balance_msg));
+    common.print_summary('Buy tokens', [
+        ['Mint', mint.toBase58()],
+        ['Wallet', buyer.publicKey.toBase58()],
+        ['Balance', balance_msg],
+        ['Buy amount', `${amount} SOL`],
+        ['Slippage', `${slippage * 100}%`]
+    ]);
 
     if (balances.status === 'insufficient') throw new Error(`Buyer balances is not enough to buy ${amount} SOL`);
 
@@ -670,7 +712,12 @@ export async function warmup(
     if (max < min) throw new Error('Invalid min and max values.');
     if (interval && bundle_tip) throw new Error('Interval and bundle tip cannot be used together.');
 
-    common.log(common.yellow(`Warming up ${wallets.length} accounts...`));
+    common.print_summary('Warm up wallets', [
+        ['Wallets', wallets.length],
+        ['Tokens per wallet', `${min} - ${max}`],
+        ['Mode', bundle_tip ? 'Bundle' : 'Sequential'],
+        ['Priority', priority]
+    ]);
 
     const token_counts = Array.from({ length: wallets.length }, () => Math.floor(Math.random() * (max - min) + min));
     if (token_counts.length !== wallets.length) throw new Error();
@@ -702,7 +749,7 @@ export async function warmup(
                         slippage,
                         priority
                     );
-                    common.log(common.green(`Bundle completed for ${wallet.name}, signature: ${signature} `));
+                    common.log(common.green(`Bundle completed for ${wallet.name} | Signature: ${signature}`));
                 } else {
                     const [buy_sig, sell_sig] = await executor.buy_sell(
                         amount,
@@ -712,16 +759,16 @@ export async function warmup(
                         interval ? interval * 1000 : undefined,
                         priority
                     );
-                    common.log(
-                        common.green(
-                            `Trade completed for ${wallet.name}\nBuy signature: ${buy_sig} \nSell signature: ${sell_sig} `
-                        )
-                    );
+                    common.print_summary(common.green('Warmup trade completed'), [
+                        ['Wallet', `${wallet.name} (${wallet.id})`],
+                        ['Buy signature', String(buy_sig)],
+                        ['Sell signature', String(sell_sig)]
+                    ]);
                 }
             } catch (error) {
-                common.log(
+                common.error(
                     common.red(
-                        `Failed to trade token '${mint.token_name}' for ${wallet.name}(${wallet.id}), continuing...`
+                        `Failed to trade '${mint.token_name}' for ${wallet.name} (${wallet.id}): ${error}. Continuing...`
                     )
                 );
             }
@@ -732,8 +779,10 @@ export async function warmup(
 export async function collect(wallets: common.Wallet[], receiver: PublicKey): Promise<void> {
     if (wallets.length === 0) throw new Error('No wallets available.');
 
-    common.log(common.yellow(`Collecting all the SOL from the accounts...`));
-    common.log(common.yellow(`Receiver address: ${receiver.toString()} \n`));
+    common.print_summary('Collect SOL', [
+        ['Wallets', wallets.length],
+        ['Receiver', receiver.toBase58()]
+    ]);
 
     const transactions = [];
     const failed: string[] = [];
@@ -768,7 +817,12 @@ export async function collect_token(wallets: common.Wallet[], mint: PublicKey, r
     const mint_meta = await trade.get_token_meta(mint);
     if (!mint_meta) throw new Error(`Mint metadata not found`);
 
-    common.log(common.yellow(`Collecting ${mint_meta.token_symbol} from the accounts to ${receiver}...`));
+    common.print_summary('Collect tokens', [
+        ['Token', mint_meta.token_symbol],
+        ['Mint', mint.toBase58()],
+        ['Wallets', wallets.length],
+        ['Receiver', receiver.toBase58()]
+    ]);
     const transactions = [];
     const failed: string[] = [];
 
@@ -836,7 +890,14 @@ export async function buy_token(
     ]);
     let mint_meta = await executor.get_mint_meta(mint);
     if (!mint_meta) throw new Error(`Mint metadata not found for program: ${global.PROGRAM}.`);
-    common.log(common.yellow(`Buying the tokens by the mint ${mint.toString()}...`));
+    common.print_summary('Buy tokens', [
+        ['Mint', mint.toBase58()],
+        ['Wallets', wallets.length],
+        ['Buy per wallet', amount ? `${amount} SOL` : `${min} - ${max} SOL`],
+        ['Slippage', `${SLIPPAGE * 100}%`],
+        ['Mode', bundle_tip ? 'Bundle' : 'Sequential'],
+        ['Priority', priority]
+    ]);
 
     if (!bundle_tip)
         return await mass_trade.seq_buy(mint_meta, entries, executor, SLIPPAGE, priority, protection_tip, mev_protect);
@@ -863,8 +924,14 @@ export async function sell_token(
     let mint_meta = await executor.get_mint_meta(mint);
     if (!mint_meta) throw new Error(`Mint metadata not found for program: ${global.PROGRAM}.`);
 
-    common.log(common.yellow(`Selling all the tokens from the accounts by the mint ${mint.toString()}...`));
-    common.log(common.yellow(`Selling ${percent * 100}% of the tokens...\n`));
+    common.print_summary('Sell tokens', [
+        ['Mint', mint.toBase58()],
+        ['Wallets', wallets.length],
+        ['Sell per wallet', `${percent * 100}%`],
+        ['Slippage', `${slippage * 100}%`],
+        ['Mode', bundle_tip ? 'Bundle' : 'Sequential'],
+        ['Priority', priority]
+    ]);
 
     if (!bundle_tip)
         return await mass_trade.seq_sell(
@@ -897,36 +964,39 @@ export async function fund_sol(
     let amounts: number[] = [];
 
     const balance = trade.lamports_to_sol(await trade.get_balance(funder.publicKey, COMMITMENT));
-    common.log(common.yellow(`Funder address: ${funder.publicKey.toString()} | Balance: ${balance.toFixed(5)} SOL\n`));
+    common.print_summary('Fund wallets', [
+        ['Funder', funder.publicKey.toBase58()],
+        ['Balance', `${balance} SOL`],
+        ['Wallets', wallets.length],
+        ['Total funding', `${total_amount} SOL`],
+        ['Allocation', is_random ? 'Random' : `${amount} SOL per wallet`],
+        ['Route', is_spider ? 'Spider' : depth ? `${depth} intermediate wallets` : 'Direct']
+    ]);
     if (balance < total_amount) {
         throw new Error(`Payer balance is not enough to top up ${total_amount} SOL to ${wallets.length} wallets`);
     }
 
     if (is_random) {
-        common.log(common.yellow(`Funding random amounts of SOL to every ${wallets.length} wallet...`));
         amounts = common.random_amounts(total_amount, wallets.length);
     } else {
-        common.log(common.yellow(`Funding ${amount} SOL to every ${wallets.length} wallet...`));
         amounts = Array.from({ length: wallets.length }, () => amount);
     }
 
     if (is_spider) {
-        common.log('Running spider:\n');
         const rescue_wallets = await transfers.execute_spider_fund_sol(wallets, amount, funder);
-        common.log(`\nPerforming cleanup of the temporary wallets...\n`);
+        common.print_summary('Collect remaining SOL from temporary wallets');
         await collect(rescue_wallets, funder.publicKey);
         return;
     }
 
     if (depth && bundle_tip) {
-        common.log(`Running fund with depth ${depth}: \n`);
         const rescue_wallets = await transfers.execute_depth_sol_fund(
             common.zip(wallets, amounts),
             funder,
             depth,
             bundle_tip
         );
-        common.log(`\nPerforming cleanup of the temporary wallets...\n`);
+        common.print_summary('Collect remaining SOL from temporary wallets');
         await collect(rescue_wallets, funder.publicKey);
         return;
     }
@@ -952,32 +1022,27 @@ export async function distribute_token(
 
     const balance = await trade.get_token_balance(funder.publicKey, mint, COMMITMENT, mint_meta.token_program);
     if (!balance.uiAmount) throw new Error(`Distributer has no token balance for ${mint_meta.token_name}`);
-    common.log(
-        common.yellow(
-            `Distributer address: ${funder.publicKey.toString()} | Balance: ${balance.uiAmount.toFixed(5)} ${mint_meta.token_symbol} \n`
-        )
-    );
     const total_amount = balance.uiAmount * percent;
+    common.print_summary('Distribute tokens', [
+        ['Mint', mint.toBase58()],
+        ['Distributor', funder.publicKey.toBase58()],
+        ['Balance', `${balance.uiAmount} ${mint_meta.token_symbol}`],
+        ['Wallets', wallets.length],
+        ['Total distribution', `${total_amount} ${mint_meta.token_symbol} (${percent * 100}%)`],
+        ['Allocation', is_random ? 'Random' : 'Equal'],
+        ['Route', depth ? `${depth} intermediate wallets` : 'Direct']
+    ]);
 
     if (is_random) {
-        common.log(
-            common.yellow(
-                `Distributing random amount of ${mint_meta.token_symbol} to every ${wallets.length} wallet...`
-            )
-        );
         amounts = common
             .random_amounts(total_amount, wallets.length)
             .map((amount) => trade.get_token_amount(amount, mint_meta.token_decimal));
     } else {
         const amount = total_amount / wallets.length;
-        common.log(
-            common.yellow(`Distributing ${amount} ${mint_meta.token_symbol} to every ${wallets.length} wallet...`)
-        );
         amounts = Array.from({ length: wallets.length }, () => trade.get_token_amount(amount, mint_meta.token_decimal));
     }
 
     if (depth && bundle_tip) {
-        common.log(`Running distribute with depth ${depth}: \n`);
         const rescue_wallets = await transfers.execute_depth_dist_token(
             common.zip(wallets, amounts),
             mint_meta,
@@ -985,7 +1050,7 @@ export async function distribute_token(
             depth,
             bundle_tip
         );
-        common.log(`\nPerforming cleanup of the temporary wallets...\n`);
+        common.print_summary('Collect remaining SOL from temporary wallets');
         await collect(rescue_wallets, funder.publicKey);
         return;
     }
@@ -1002,6 +1067,10 @@ export async function snipe(
     const worker_count = wallets.filter((wallet) => !wallet.is_reserve).length;
     if (worker_count === 0) throw new Error('No non-reserve wallets available for sniping.');
 
+    common.print_summary('Snipe tokens', [
+        ['Program', global.PROGRAM],
+        ['Available wallets', worker_count]
+    ]);
     const sol_price = await common.fetch_sol_price();
     const sniper = get_sniper(subscriber_type);
     await sniper.setup_config(worker_count, json_config);
@@ -1015,7 +1084,11 @@ export async function generate(
     secrets_path?: string,
     index?: number
 ): Promise<void> {
-    common.log(common.yellow(`Generating ${count + (create_reserve ? 1 : 0)} keypairs...\n`));
+    common.print_summary('Generate wallets', [
+        ['Output', file_path],
+        ['Source', secrets_path ? 'Import private keys' : `${count} new wallets`],
+        ['Create reserve', create_reserve ? 'Yes' : 'No']
+    ]);
 
     const wallets: Partial<common.Wallet>[] = [];
     const starting_index = index || 1;
@@ -1066,14 +1139,19 @@ export async function generate(
         }
     });
 
-    common.log(common.green('Wallet generation completed\n'));
+    common.print_summary(common.green('Wallet generation completed'), [
+        ['Wallets', wallets.length],
+        ['Saved to', file_path]
+    ]);
 }
 
 export async function wallet_pnl(public_key: PublicKey): Promise<void> {
     const sol_price = await common.fetch_sol_price();
 
-    common.log(common.yellow(`Getting the wallet ${public_key.toString()} PnL...`));
-    common.log(`SOL price: $${common.format_currency(sol_price)} \n`);
+    common.print_summary('Wallet PnL', [
+        ['Wallet', public_key.toBase58()],
+        ['SOL price', `$${common.format_currency(sol_price)}`]
+    ]);
 
     const wallet_pnl = await pnl.get_wallet_pnl(public_key, sol_price);
 
@@ -1145,19 +1223,16 @@ export async function wallet_pnl(public_key: PublicKey): Promise<void> {
     const total_invested_usd = total_invested_sol * sol_price;
     const total_pnl = total_invested_usd > 0 ? (total / total_invested_usd) * 100 : 0;
 
-    let accent = total_realized > 0 ? common.green : common.red;
-    common.log(`\nTotal Realized: ${accent('$' + common.format_currency(total_realized))}`);
-
-    accent = total_unrealized > 0 ? common.green : common.red;
-    common.log(`Total Unrealized: ${accent('$' + common.format_currency(total_unrealized))}`);
-
-    accent = total >= 0 ? common.green : common.red;
-    common.log(
-        `Total Profit: ${accent('$' + common.format_currency(total))} | ${accent(common.format_currency(total / sol_price) + ' SOL')}`
-    );
-
-    accent = total_pnl > 0 ? common.green : common.red;
-    common.log(`Total PnL: ${accent(total_pnl.toFixed(2) + '%')}\n`);
+    common.print_summary('PnL totals', [
+        ['Realized', (total_realized >= 0 ? common.green : common.red)(`$${common.format_currency(total_realized)}`)],
+        [
+            'Unrealized',
+            (total_unrealized >= 0 ? common.green : common.red)(`$${common.format_currency(total_unrealized)}`)
+        ],
+        ['Profit (USD)', (total >= 0 ? common.green : common.red)(`$${common.format_currency(total)}`)],
+        ['Profit (SOL)', (total >= 0 ? common.green : common.red)(`${common.format_currency(total / sol_price)} SOL`)],
+        ['PnL', (total_pnl >= 0 ? common.green : common.red)(`${total_pnl.toFixed(2)}%`)]
+    ]);
 }
 
 export async function start_volume(
@@ -1174,28 +1249,31 @@ export async function start_volume(
 
     if (simulate) {
         const sol_price = await common.fetch_sol_price();
-        common.log(common.yellow(`Simulating the ${volume_type_name} Volume Bot...\n`));
+        common.print_summary('Simulate volume', [['Mode', volume_type_name]]);
         const results = await volume.simulate(sol_price, volume_config, executor, wallets);
 
-        common.log(common.bold('Simulation Results:'));
-        common.log(`SOL price: $${common.format_currency(sol_price)}`);
-        common.log(`Total SOL utilization: ${common.format_currency(results.total_sol_utilization)}`);
+        const summary: [string, string | number][] = [
+            ['SOL price', `$${common.format_currency(sol_price)}`],
+            ['SOL utilization', `${common.format_currency(results.total_sol_utilization)} SOL`]
+        ];
         if (funder && !natural) {
             const funder_balance = trade.lamports_to_sol(await trade.get_balance(funder.publicKey, COMMITMENT));
-            common.log(`Post Funder balance: ${common.format_currency(funder_balance - results.total_fee_sol)}`);
+            summary.push([
+                'Funder balance after fees',
+                `${common.format_currency(funder_balance - results.total_fee_sol)} SOL`
+            ]);
         }
-        let accent = common.red;
-        common.log(
-            `\nTotal spent on fees: ${accent('$' + common.format_currency(results.total_fee_usd))} | ${accent(common.format_currency(results.total_fee_sol) + 'SOL')}`
+        summary.push(
+            ['Fees (USD)', `$${common.format_currency(results.total_fee_usd)}`],
+            ['Fees (SOL)', `${common.format_currency(results.total_fee_sol)} SOL`],
+            ['Volume (USD)', `$${common.format_currency(results.total_volume_usd)}`],
+            ['Volume (SOL)', `${common.format_currency(results.total_volume_sol)} SOL`]
         );
-        accent = common.green;
-        common.log(
-            `Total volume: ${accent('$' + common.format_currency(results.total_volume_usd))} | ${accent(common.format_currency(results.total_volume_sol) + 'SOL')}\n`
-        );
+        common.print_summary('Simulation results', summary);
         return;
     }
 
-    common.log(common.yellow(`Starting the ${volume_type_name} Volume Bot...`));
+    common.print_summary('Start volume bot', [['Mode', volume_type_name]]);
 
     let rescue_wallets: common.Wallet[] = [];
     switch (volume_config.type) {
@@ -1215,7 +1293,7 @@ export async function start_volume(
             throw new Error('Invalid Volume Bot type.');
     }
     if (rescue_wallets.length && funder) {
-        common.log(`\nPerforming cleanup of the temporary wallets...\n`);
+        common.print_summary('Collect remaining SOL from temporary wallets');
         await collect(rescue_wallets, funder.publicKey);
     }
 }
@@ -1227,6 +1305,10 @@ export async function benchmark(
     update_interval = 10
 ): Promise<void> {
     const public_key = new PublicKey(test_public_key);
+    common.print_summary('RPC benchmark', [
+        ['Requests', NUM_REQUESTS],
+        ['Concurrency', batch_size]
+    ]);
 
     let total_call_time = 0;
     let min_time = Number.MAX_VALUE;
@@ -1263,14 +1345,15 @@ export async function benchmark(
                 const avgTime = total_call_time / (i + 1 - errors);
                 const tps = (i + 1 - errors) / (total_call_time / 1000);
 
-                process.stdout.write(
-                    `\r[${i + 1}/${NUM_REQUESTS}] | ` +
+                const progress =
+                    `[${i + 1}/${NUM_REQUESTS}] | ` +
                     `Errors: ${errors} | ` +
                     `Avg Time: ${avgTime.toFixed(2)} ms | ` +
                     `Min Time: ${min_time.toFixed(2)} ms | ` +
                     `Max Time: ${max_time.toFixed(2)} ms | ` +
-                    `TPS: ${tps.toFixed(2)}`
-                );
+                    `TPS: ${tps.toFixed(2)}`;
+                if (process.stdout.isTTY) process.stdout.write(`\r${progress}`);
+                else common.log(progress);
             }
         }
     }
@@ -1283,15 +1366,16 @@ export async function benchmark(
     const avg_time = successful === 0 ? 0 : total_elapsed_time / successful;
     const tps = successful === 0 ? 0 : successful / (total_elapsed_time / 1000);
 
-    common.log(common.green(`\n\nBenchmark Results:`));
-    common.log(`Total Requests: ${NUM_REQUESTS}`);
-    common.log(`Successful Requests: ${NUM_REQUESTS - errors}`);
-    common.log(`Failed Requests: ${errors}`);
-    common.log(`Total Time: ${total_elapsed_time.toFixed(2)} ms`);
-    common.log(`Average Time per Request: ${avg_time.toFixed(2)} ms`);
-    common.log(`Min Time: ${min_time.toFixed(2)} ms`);
-    common.log(`Max Time: ${max_time.toFixed(2)} ms`);
-    common.log(`Estimated TPS: ${tps.toFixed(2)}`);
+    common.print_summary('Benchmark results', [
+        ['Total requests', NUM_REQUESTS],
+        ['Successful', successful],
+        ['Failed', errors],
+        ['Total time', `${total_elapsed_time.toFixed(2)} ms`],
+        ['Average time per request', `${avg_time.toFixed(2)} ms`],
+        ['Min time', successful ? `${min_time.toFixed(2)} ms` : 'N/A'],
+        ['Max time', successful ? `${max_time.toFixed(2)} ms` : 'N/A'],
+        ['Estimated TPS', tps.toFixed(2)]
+    ]);
 }
 
 export async function drop(
@@ -1302,14 +1386,8 @@ export async function drop(
     airdrop_percent: number = 0,
     presale_percent: number = 0
 ): Promise<void> {
-    common.log(common.yellow(`Dropping the mint ${mint.toString()}...`));
-    common.log(
-        common.yellow(`Airdrop percent: ${airdrop_percent * 100}% | Presale percent: ${presale_percent * 100}%`)
-    );
-
     const mint_meta = await trade.get_token_meta(mint);
     if (!mint_meta) throw new Error(`Mint metadata not found`);
-    common.log(`Token name: ${mint_meta.token_name} | Symbol: ${mint_meta.token_symbol}\n`);
 
     let token_balance: number = 0;
     try {
@@ -1320,11 +1398,14 @@ export async function drop(
             mint_meta.token_program
         );
         token_balance = balance.uiAmount || 0;
-        common.log(
-            common.yellow(
-                `Drop address: ${drop.publicKey.toString()} | Balance: ${token_balance} ${mint_meta.token_symbol}\n`
-            )
-        );
+        common.print_summary('Token drop', [
+            ['Mint', mint.toBase58()],
+            ['Token', `${mint_meta.token_name} (${mint_meta.token_symbol})`],
+            ['Wallet', drop.publicKey.toBase58()],
+            ['Balance', `${token_balance} ${mint_meta.token_symbol}`],
+            ['Airdrop', `${airdrop_percent * 100}%`],
+            ['Presale', `${presale_percent * 100}%`]
+        ]);
     } catch (err) {
         throw new Error('Failed to get dropper balance');
     }
@@ -1341,63 +1422,61 @@ export async function drop(
 }
 
 export async function create_lta(wallet: common.Wallet): Promise<void> {
-    common.log(common.yellow(`Creating Address Lookup Table...`));
-    common.log(`Authority address: ${wallet.keypair.publicKey.toString()}`);
+    common.print_summary('Create address lookup table', [['Authority', wallet.keypair.publicKey.toBase58()]]);
 
     let [lta, create_sig] = await trade.create_lta(wallet.keypair);
-    common.log(`\nAddress Lookup Table created, signature: ${create_sig}`);
-    common.log(common.green(`Address: ${lta.toBase58()}`));
+    common.print_summary(common.green('Address lookup table created'), [
+        ['Address', lta.toBase58()],
+        ['Signature', String(create_sig)]
+    ]);
 }
 
 export async function extend_lta(wallet: common.Wallet, lta: PublicKey, address_file_path: any): Promise<void> {
     const addresses = common.read_pubkeys(address_file_path);
     if (addresses.length === 0) throw new Error('No addresses provided.');
 
-    common.log(common.yellow(`Extending Address Lookup Table for ${addresses.length} addresses...`));
-    common.log(`Authority: ${wallet.keypair.publicKey.toString()}`);
-    common.log(`Address Lookup Table: ${lta.toBase58()}`);
+    common.print_summary('Extend address lookup table', [
+        ['Authority', wallet.keypair.publicKey.toBase58()],
+        ['Lookup table', lta.toBase58()],
+        ['Addresses to add', addresses.length]
+    ]);
 
     const extend_sigs = await trade.extend_lta(lta, wallet.keypair, addresses);
-    common.log(common.green(`\nAddress Lookup Table extended, signatures:`));
-    extend_sigs.forEach((sig) => common.log(common.green(`${sig}`)));
+    common.print_summary(common.green('Address lookup table extended'), [['Signatures', extend_sigs.join('\n')]]);
 }
 
 export async function deactivate_ltas(wallet: common.Wallet): Promise<void> {
-    common.log(common.yellow(`Deactivating Address Lookup Tables...`));
-    common.log(`Authority: ${wallet.keypair.publicKey.toString()}`);
+    common.print_summary('Deactivate address lookup tables', [['Authority', wallet.keypair.publicKey.toBase58()]]);
 
     const ltas = await trade.get_ltas_by_authority(wallet.keypair.publicKey, true);
     if (ltas.length === 0) throw new Error('No Active Address Lookup Tables found for the authority.');
-    common.log(`\nFound ${ltas.length} active Address Lookup Tables created by the authority`);
+    common.log(`Found ${ltas.length} active address lookup tables.`);
 
     const deactivate_sigs = await trade.deactivate_ltas(wallet.keypair, ltas);
 
-    common.log(`\nAddress Lookup Tables deactivated, signatures:`);
-    deactivate_sigs.forEach((sig) => common.log(`${sig}`));
-
-    common.log(
-        common.green(`\nDeactivated Address Lookup Tables:\n${ltas.map((lta) => lta.key.toBase58()).join('\n')}`)
-    );
+    common.print_summary(common.green('Address lookup tables deactivated'), [
+        ['Signatures', deactivate_sigs.join('\n')],
+        ['Lookup tables', ltas.map((lta) => lta.key.toBase58()).join('\n')]
+    ]);
 }
 
 export async function close_ltas(wallet: common.Wallet): Promise<void> {
-    common.log(common.yellow(`Closing Address Lookup Tables...`));
-    common.log(`Authority: ${wallet.keypair.publicKey.toString()}`);
+    common.print_summary('Close address lookup tables', [['Authority', wallet.keypair.publicKey.toBase58()]]);
 
     const ltas = await trade.get_ltas_by_authority(wallet.keypair.publicKey, false);
     if (ltas.length === 0) throw new Error('No Deactivated Address Lookup Tables found for the authority.');
-    common.log(`\nFound ${ltas.length} deactivated Address Lookup Tables created by the authority`);
+    common.log(`Found ${ltas.length} deactivated address lookup tables.`);
 
     const close_sigs = await trade.close_ltas(wallet.keypair, ltas);
 
-    common.log(`\nAddress Lookup Tables closed, signatures:`);
-    close_sigs.forEach((sig) => common.log(`${sig}`));
-
-    common.log(common.green(`\nClosed Address Lookup Tables:\n${ltas.map((lta) => lta.key.toBase58()).join('\n')}`));
+    common.print_summary(common.green('Address lookup tables closed'), [
+        ['Signatures', close_sigs.join('\n')],
+        ['Lookup tables', ltas.map((lta) => lta.key.toBase58()).join('\n')]
+    ]);
 }
 
 export async function get_sender_endpoint(): Promise<void> {
-    common.log(common.yellow(`Finding the lowest latency endpoint...\n`));
+    common.log(common.bold('Measuring Sender endpoint latency...'));
 
     const measure_latency = async (url: string, samples: number = 5): Promise<number> => {
         const m: number[] = [];
@@ -1429,20 +1508,40 @@ export async function get_sender_endpoint(): Promise<void> {
     );
 
     results.sort((a, b) => a.latency - b.latency);
+    const endpoint_width = Math.max('Endpoint'.length, ...results.map((result) => result.endpoint.length));
+    const latency_width = 12;
+    common.print_header([
+        { title: 'Endpoint', width: endpoint_width },
+        { title: 'Latency', width: latency_width, align: 'right' }
+    ]);
     for (const result of results) {
-        common.log(`${result.endpoint.padEnd(32)} - ${result.latency.toFixed(2).padStart(7)} ms`);
+        common.print_row([
+            { content: result.endpoint, width: endpoint_width },
+            {
+                content: Number.isFinite(result.latency) ? `${result.latency.toFixed(2)} ms` : 'Unavailable',
+                width: latency_width,
+                align: 'right'
+            }
+        ]);
     }
+    common.print_footer([{ width: endpoint_width }, { width: latency_width }]);
     if (!Number.isFinite(results[0].latency)) {
         common.warn('No Sender endpoints responded.');
         return;
     }
-    common.log(common.green(`\nLowest latency endpoint: ${results[0].endpoint} - ${results[0].latency.toFixed(2)} ms`));
     const https_endpoint = results.find(
         (result) => result.endpoint.startsWith('https:') && Number.isFinite(result.latency)
     );
+    const selection: [string, string][] = [['Fastest', `${results[0].endpoint} (${results[0].latency.toFixed(2)} ms)`]];
     if (https_endpoint) {
-        common.log(`\nSet SENDER_ENDPOINT=${https_endpoint.endpoint} in your .env for authenticated HTTPS routing`);
-    } else {
+        selection.push(
+            ['HTTPS routing', `${https_endpoint.endpoint} (${https_endpoint.latency.toFixed(2)} ms)`],
+            ['Set in .env', `SENDER_ENDPOINT=${https_endpoint.endpoint}`]
+        );
+    }
+    common.log('');
+    common.print_summary('Sender endpoint selection', selection);
+    if (!https_endpoint) {
         common.warn('No HTTPS Sender endpoint responded; existing configuration is unchanged.');
     }
 }

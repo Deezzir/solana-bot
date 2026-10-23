@@ -66,7 +66,7 @@ export class Executor {
     constructor(
         private readonly provider: IProgramProvider,
         private enable_funding: boolean = false
-    ) { }
+    ) {}
 
     public get_lta_addresses(): PublicKey[] {
         return this.provider.get_lta_addresses();
@@ -76,9 +76,9 @@ export class Executor {
         const limit = this.provider.get_compute_unit_limit();
         return funded
             ? Math.min(
-                MAX_COMPUTE_UNIT_LIMIT,
-                (limit ?? MAX_COMPUTE_UNIT_LIMIT) + EXECUTOR_JUPITER_COMPUTE_UNIT_ALLOWANCE
-            )
+                  MAX_COMPUTE_UNIT_LIMIT,
+                  (limit ?? MAX_COMPUTE_UNIT_LIMIT) + EXECUTOR_JUPITER_COMPUTE_UNIT_ALLOWANCE
+              )
             : limit;
     }
 
@@ -102,7 +102,7 @@ export class Executor {
         return this.provider.get_random_mints(count);
     }
 
-    public create_token_metadata(meta: IPFSMetadata, image_path: string): Promise<string> {
+    public create_token_metadata(meta: IPFSMetadata, image_path: string | undefined): Promise<string> {
         return this.provider.create_token_metadata(meta, image_path);
     }
 
@@ -124,7 +124,7 @@ export class Executor {
     }
 
     public async buy_token(
-        sol_amount: number,
+        amount: number | TokenAmount,
         buyer: Keypair,
         mint_meta: IMintMeta,
         slippage: number,
@@ -132,7 +132,7 @@ export class Executor {
         protection_tip?: number,
         mev_protect?: boolean
     ): Promise<String> {
-        const [instructions, ltas] = await this.buy_token_instructions(sol_amount, buyer, mint_meta, slippage);
+        const [instructions, ltas] = await this.buy_token_instructions(amount, buyer, mint_meta, slippage);
         if (instructions.length !== 1 && instructions.length !== 2)
             throw new Error('Expected 1 or 2 sets of instructions for buy_token.');
 
@@ -323,17 +323,19 @@ export class Executor {
     }
 
     public async buy_token_instructions(
-        sol_amount: number,
+        amount: number | TokenAmount,
         buyer: Keypair,
         mint_meta: IMintMeta,
         slippage: number
     ): Promise<[TransactionInstruction[][], AddressLookupTableAccount[]?]> {
-        const [quote_amount, funding_instructions, funding_ltas] = await this.prepare_buy_funding(
-            sol_amount,
-            buyer,
-            mint_meta,
-            slippage
-        );
+        const [quote_amount, funding_instructions, funding_ltas]: [
+            TokenAmount,
+            TransactionInstruction[][],
+            AddressLookupTableAccount[]
+        ] =
+            typeof amount === 'number'
+                ? await this.prepare_buy_funding(amount, buyer, mint_meta, slippage)
+                : [amount, [], []];
         const [instructions, ltas] = await this.provider.buy_token_instructions(
             quote_amount,
             buyer,
@@ -432,12 +434,16 @@ export class Executor {
             sol_amount > 0
         );
         const prepare_buy = async (buyer: Keypair, amount: number): Promise<InitialBuy> => {
-            const [quote_amount, funding, funding_ltas] = await this.prepare_buy_funding(
-                amount,
-                buyer,
-                mint_meta,
-                COMMANDS_BUY_SLIPPAGE
-            );
+            const balances = await this.has_enough_balances(amount, buyer.publicKey, mint_meta, COMMANDS_BUY_SLIPPAGE);
+            if (balances.status === 'insufficient' || balances.sol_balance_raw === 0n)
+                throw new Error(`Insufficient buy funding or SOL for fees: ${buyer.publicKey}`);
+            const [quote_amount, funding, funding_ltas]: [
+                TokenAmount,
+                TransactionInstruction[][],
+                AddressLookupTableAccount[]
+            ] = this.enable_funding
+                ? await this.prepare_buy_funding(amount, buyer, mint_meta, COMMANDS_BUY_SLIPPAGE)
+                : [balances.quote_amount, [], []];
             const [buy_instructions, buy_ltas] = await this.provider.buy_token_instructions(
                 quote_amount,
                 buyer,
@@ -497,7 +503,7 @@ export class Executor {
     public async has_enough_balances(
         sol_amount: number,
         account: PublicKey,
-        mint_meta: IMintMeta,
+        mint_meta: Pick<IMintMeta, 'quote_mint_pubkey'>,
         slippage = COMMANDS_BUY_SLIPPAGE
     ): Promise<BuyFunding> {
         const sol_amount_raw = sol_to_lamports(sol_amount);
@@ -534,8 +540,8 @@ export class Executor {
                 quote_balance_raw >= quote_amount_raw
                     ? 'ready'
                     : this.enable_funding && sol_balance_raw >= sol_needed_raw
-                        ? 'needs_funding'
-                        : 'insufficient';
+                      ? 'needs_funding'
+                      : 'insufficient';
 
             return {
                 status,
@@ -566,11 +572,11 @@ export class Executor {
         const generated =
             version === 0
                 ? await generate_trade_lta(
-                    creator,
-                    buyers.map(({ buyer }) => buyer),
-                    mint.publicKey,
-                    token_program
-                )
+                      creator,
+                      buyers.map(({ buyer }) => buyer),
+                      mint.publicKey,
+                      token_program
+                  )
                 : undefined;
         try {
             const tables = generated ? [generated, ...alts] : alts;
@@ -665,12 +671,12 @@ export class Executor {
                 quote_shortfall_raw === quote_amount_raw
                     ? budget_quote
                     : await quote_jupiter(
-                        { amount: sol_needed_raw.toString(), decimals: 9, uiAmount: null },
-                        SOL_MINT,
-                        quote_mint,
-                        slippage,
-                        'ExactIn'
-                    );
+                          { amount: sol_needed_raw.toString(), decimals: 9, uiAmount: null },
+                          SOL_MINT,
+                          quote_mint,
+                          slippage,
+                          'ExactIn'
+                      );
             if (BigInt(quote.inAmount) > sol_amount_raw)
                 throw new Error('Funding quote exceeds the SOL budget. Prefund the quote token before buying.');
             if (BigInt(quote.otherAmountThreshold) < quote_shortfall_raw)
@@ -683,7 +689,7 @@ export class Executor {
         }
     }
 
-    private is_non_sol_quote(mint_meta: IMintMeta): boolean {
+    private is_non_sol_quote(mint_meta: Pick<IMintMeta, 'quote_mint_pubkey'>): boolean {
         return !mint_meta.quote_mint_pubkey.equals(SOL_MINT);
     }
 
@@ -698,7 +704,7 @@ export class Executor {
         const sol_needed_raw =
             quote_shortfall_raw !== 0n
                 ? (quote_shortfall_raw * sol_amount_raw + required_min_quote_amount_raw - 1n) /
-                required_min_quote_amount_raw
+                  required_min_quote_amount_raw
                 : 0n;
         return { sol_needed_raw, quote_shortfall_raw };
     }

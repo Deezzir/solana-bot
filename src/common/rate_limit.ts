@@ -1,14 +1,15 @@
 import { ConnectionConfig } from '@solana/web3.js';
-import { RPC_REQUESTS_PER_SECOND } from '../constants';
+import { JUPITER_REQUESTS_PER_SECOND, RPC_REQUESTS_PER_SECOND } from '../constants';
 
 function create_rate_limiter(
     requests_per_second: number,
-    state = new SharedArrayBuffer(BigInt64Array.BYTES_PER_ELEMENT)
+    state = new SharedArrayBuffer(BigInt64Array.BYTES_PER_ELEMENT),
+    slot = 0
 ) {
     if (!Number.isFinite(requests_per_second) || requests_per_second <= 0)
         throw new Error('Requests per second must be greater than zero.');
 
-    const next_start_us = new BigInt64Array(state);
+    const next_start_us = new BigInt64Array(state, slot * BigInt64Array.BYTES_PER_ELEMENT, 1);
     const interval_us = BigInt(Math.ceil(1_000_000 / requests_per_second));
 
     return async <T>(request: () => Promise<T>): Promise<T> => {
@@ -28,13 +29,15 @@ function create_rate_limiter(
 }
 
 export function create_rpc_rate_limit_state(): SharedArrayBuffer {
-    return new SharedArrayBuffer(BigInt64Array.BYTES_PER_ELEMENT);
+    return new SharedArrayBuffer(2 * BigInt64Array.BYTES_PER_ELEMENT);
 }
 
 export let rate_limit_request = create_rate_limiter(RPC_REQUESTS_PER_SECOND);
+export let rate_limit_jupiter_request = create_rate_limiter(JUPITER_REQUESTS_PER_SECOND);
 
 export function configure_rpc_rate_limiter(state: SharedArrayBuffer): void {
     rate_limit_request = create_rate_limiter(RPC_REQUESTS_PER_SECOND, state);
+    rate_limit_jupiter_request = create_rate_limiter(JUPITER_REQUESTS_PER_SECOND, state, 1);
 }
 
 export function rpc_connection_config(config: ConnectionConfig): ConnectionConfig {

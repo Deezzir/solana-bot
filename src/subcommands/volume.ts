@@ -100,20 +100,20 @@ export async function execute_fast(
                 trade.sol_to_lamports(common.uniform_random(volume_config.min_sol_amount, volume_config.max_sol_amount))
             )
         );
-        common.log(common.blue(`\nRunning execution: ${exec + 1}`));
+        common.print_summary(`Volume execution ${exec + 1}/${volume_config.executions}`);
 
         let lta: AddressLookupTableAccount | undefined;
         if ((global.TRANSACTION_VERSION ?? 0) === 0) {
-            common.log(`\nCreating Address Lookup Table Account...`);
+            common.log('Creating address lookup table...');
             lta = await trade.generate_trade_lta(funder, keypairs, volume_config.mint, mint_meta.token_program);
             common.log(common.green(`LTA created: ${lta.key.toBase58()}`));
         }
 
         try {
-            common.log('\nFunding the wallets...');
+            common.log('Funding wallets...');
             await fund_bundles(keypairs_with_amounts, funder, volume_config.bundle_tip, lta);
 
-            common.log(`\nTrading the tokens...`);
+            common.log('Trading tokens...');
             await buy_sell_bundles(
                 keypairs_with_amounts,
                 executor,
@@ -122,7 +122,7 @@ export async function execute_fast(
                 lta
             );
 
-            common.log('\nCollecting the funds from the wallets...');
+            common.log('Collecting remaining wallet funds...');
             await collect_bundles(keypairs, funder, volume_config.bundle_tip, lta);
         } finally {
             if (lta) {
@@ -226,7 +226,10 @@ export async function execute_natural(
                         COMMANDS_SELL_SLIPPAGE,
                         PriorityLevel.HIGH
                     );
-                    common.log(common.green(`Natural sell | ${seller.wallet.name} | ${signature}`));
+                    common.print_summary(common.green('Natural sell completed'), [
+                        ['Wallet', `${seller.wallet.name} (${seller.wallet.id})`],
+                        ['Signature', String(signature)]
+                    ]);
                     sells++;
                 } else
                     common.log(
@@ -264,7 +267,11 @@ export async function execute_natural(
                     COMMANDS_BUY_SLIPPAGE,
                     PriorityLevel.HIGH
                 );
-                common.log(common.green(`Natural buy | ${buyer.wallet.name} | ${amount} SOL | ${signature}`));
+                common.print_summary(common.green('Natural buy completed'), [
+                    ['Wallet', `${buyer.wallet.name} (${buyer.wallet.id})`],
+                    ['Amount', `${amount} SOL`],
+                    ['Signature', String(signature)]
+                ]);
                 buyer.position = {
                     buy_signature: signature.toString(),
                     sell_at: Date.now() + common.uniform_random(hold_min, hold_max) * 1000
@@ -289,9 +296,9 @@ export async function execute_natural(
                     state.last_used = now;
                 }
                 executions++;
-                common.log(
-                    common.blue(`Natural execution ${executions}/${config.executions} | ${count} wallets selected`)
-                );
+                common.print_summary(`Natural execution ${executions}/${config.executions}`, [
+                    ['Selected wallets', count]
+                ]);
             }
             next_execution = now + Math.max(1, common.normal_random(config.delay, config.delay * 0.1) * 1000);
             continue;
@@ -314,7 +321,10 @@ export async function execute_natural(
                 [...failures, ...pending].join('\n')
         );
     }
-    common.log(common.green(`\nNatural volume completed | ${buys.size} buys | ${sells} sells\n`));
+    common.print_summary(common.green('Natural volume completed'), [
+        ['Confirmed buys', buys.size],
+        ['Confirmed sells', sells]
+    ]);
 }
 
 async function get_natural_wallets(
@@ -412,11 +422,10 @@ export async function execute_bump(
         mint_meta,
         await has_transfer_fee(mint_meta)
     );
-    common.log(
-        common.blue(
-            `Bump wallet: ${wallet.publicKey.toBase58()} | Funding: ${trade.lamports_to_sol(budget.funding_amount).toFixed(6)} SOL`
-        )
-    );
+    common.print_summary('Bump wallet', [
+        ['Address', wallet.publicKey.toBase58()],
+        ['Funding', `${trade.lamports_to_sol(budget.funding_amount).toFixed(6)} SOL`]
+    ]);
     await fund_bundles([[wallet, budget.funding_amount]], funder, volume_config.bundle_tip);
 
     for (let exec = 0; exec < volume_config.executions; exec++) {
@@ -456,9 +465,10 @@ export async function execute_bump(
             global.TRANSACTION_VERSION ?? 0,
             { tip_account: tip_instruction.keys[1].pubkey }
         );
-        common.log(
-            common.green(`Bump ${exec + 1}/${volume_config.executions} | ${amount.toFixed(6)} SOL | ${signature}`)
-        );
+        common.print_summary(common.green(`Bump ${exec + 1}/${volume_config.executions} completed`), [
+            ['Amount', `${amount.toFixed(6)} SOL`],
+            ['Signature', String(signature)]
+        ]);
         if (exec + 1 < volume_config.executions)
             await common.sleep(Math.max(volume_config.delay * 1000, trade.get_bundle_interval_ms()));
     }
@@ -929,7 +939,7 @@ async function get_config() {
                   ])
                 : { wallet_cnt: 1 };
 
-        answers = await inquirer.prompt<VolumeConfig>([
+        const prompt_answers = await inquirer.prompt<Omit<VolumeConfig, 'mint'> & { mint: string }>([
             {
                 type: 'input',
                 name: 'mint',
@@ -937,8 +947,7 @@ async function get_config() {
                 validate: async (value: string) => {
                     if (!common.is_valid_pubkey(value)) return 'Please enter a valid public key.';
                     return true;
-                },
-                filter: (value: string) => new PublicKey(value)
+                }
             },
             {
                 type: 'input',
@@ -1026,10 +1035,10 @@ async function get_config() {
                     filter: (value: string) => Number(value)
                 }
             ]);
-            Object.assign(answers, holding);
+            Object.assign(prompt_answers, holding);
         }
 
-        answers = await validate_json_config({ ...answers, mint: answers.mint.toBase58(), type, wallet_cnt });
+        answers = validate_json_config({ ...prompt_answers, type, wallet_cnt });
 
         await common.clear_lines_up(1);
         log_volume_config(answers);

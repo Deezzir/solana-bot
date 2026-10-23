@@ -1,6 +1,8 @@
 import { AddressLookupTableAccount, Keypair, PublicKey, TokenAmount, TransactionInstruction } from '@solana/web3.js';
 import { JUPITER_API_URL } from '../constants';
 import { get_ltas, validate_trade_parameters } from '../common/trade_common';
+import { rate_limit_jupiter_request } from '../common/rate_limit';
+import { sleep } from '../common/common';
 
 type JupiterQuote = {
     inputMint: string;
@@ -51,14 +53,26 @@ async function jupiter_request<T>(path: string, init: RequestInit = {}): Promise
     const api_key = process.env.JUPITER_API_KEY;
     if (!api_key) throw new Error('JUPITER_API_KEY is required to use the Jupiter provider.');
 
-    const response = await fetch(`${JUPITER_API_URL}${path}`, {
-        ...init,
-        headers: { 'x-api-key': api_key, ...init.headers }
-    });
-    const payload = await response.json();
-    if (!response.ok || payload.error || payload.errorCode)
-        throw new Error(payload.error || `Jupiter ${path} request failed with HTTP ${response.status}.`);
-    return payload as T;
+    for (let attempt = 0; ; attempt++) {
+        const response = await rate_limit_jupiter_request(() =>
+            fetch(`${JUPITER_API_URL}${path}`, {
+                ...init,
+                headers: { 'x-api-key': api_key, ...init.headers }
+            })
+        );
+        if (response.status === 429 && attempt < 2) {
+            const retry_after = response.headers.get('retry-after') ?? '1';
+            const seconds = Number(retry_after);
+            const delay = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(retry_after) - Date.now();
+            await response.arrayBuffer();
+            await sleep(Number.isFinite(delay) ? Math.max(1000, delay) : 1000);
+            continue;
+        }
+        const payload = await response.json();
+        if (!response.ok || payload.error || payload.errorCode)
+            throw new Error(payload.error || `Jupiter ${path} request failed with HTTP ${response.status}.`);
+        return payload as T;
+    }
 }
 
 export async function quote_jupiter(
@@ -76,7 +90,7 @@ export async function quote_jupiter(
         swapMode: swap_mode,
         slippageBps: String(slippage * 10000)
     });
-    return await jupiter_request<JupiterQuote>(`quote?${params.toString()}`);
+    return await jupiter_request<JupiterQuote>(`/swap/v1/quote?${params.toString()}`);
 }
 
 export async function swap_jupiter_instructions(
@@ -94,7 +108,7 @@ export async function swap_jupiter_instructions(
             data: Buffer.from(instruction.data, 'base64')
         });
     };
-    const instructions_raw = await jupiter_request<JupiterInstructions>('swap-instructions', {
+    const instructions_raw = await jupiter_request<JupiterInstructions>('/swap/v1/swap-instructions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

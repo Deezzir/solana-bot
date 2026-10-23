@@ -222,7 +222,7 @@ async function main() {
             .default(TransactionRelay.Sender, TransactionRelay.Sender)
     );
     program.addOption(new Option('--nc, --no-colors', 'Disable colored output'));
-    program.addOption(new Option('--v1', 'Use v1 transactions; fail if upstream support cannot be verified'));
+    program.addOption(new Option('--v1', 'Use v1 transactions'));
     program.addOption(new Option('--funding', 'Enable token funding'));
     program.option('--devnet', 'Use Solana devnet');
 
@@ -747,19 +747,24 @@ async function main() {
     program
         .command('create-metadata')
         .alias('cm')
-        .description('Upload the metadata of the token using the provided JSON file and image')
-        .argument('<json_path>', 'Path to the JSON file', (value) => {
+        .description('Upload the metadata of the token to IPFS using the provided JSON file and optional image file')
+        .argument('<json_path>', 'Path to the JSON file with the metadata', (value) => {
             if (!existsSync(value)) throw new InvalidOptionArgumentError('Config file does not exist.');
             const json = common.read_json(value);
             if (!json) throw new InvalidOptionArgumentError('Invalid JSON format.');
             return json as common.IPFSMetadata;
         })
-        .argument('<image_path>', 'Path to the image file', (value) => {
-            if (!existsSync(value)) throw new InvalidOptionArgumentError('Image file does not exist.');
-            return value;
-        })
-        .action(async (json, image_path) => {
-            await commands.create_token_metadata(json, image_path);
+        .option(
+            '-i, --image <image_path>',
+            'Optional path to the image file, required if json.image is not set',
+            (value) => {
+                if (!existsSync(value)) throw new InvalidOptionArgumentError('Image file does not exist.');
+                return value;
+            }
+        )
+        .action(async (json, options) => {
+            const { image } = options;
+            await commands.create_token_metadata(json, image);
         });
 
     program
@@ -796,15 +801,21 @@ async function main() {
             if (!creator_wallet) throw new InvalidArgumentError('Invalid index.');
             return creator_wallet;
         })
-        .option('-m, --mint <mint_private_key>', 'Private key of the mint to create', (value) => {
-            try {
-                const secret = base58.decode(value);
-                if (secret.length !== 64) throw new Error('Invalid secret key length');
-                return secret;
-            } catch {
+        .option(
+            '-m, --mint <mint_private_key>',
+            'Base58 encoded string or JSON file private key of the mint to create',
+            async (value) => {
+                try {
+                    return await common.read_keypair(value);
+                } catch {}
+                try {
+                    const secret = base58.decode(value);
+                    if (secret.length !== 64) throw new Error('Invalid secret key length');
+                    return await Keypair.fromSecretKey(secret);
+                } catch {}
                 throw new InvalidOptionArgumentError(`Invalid private key provided`);
             }
-        })
+        )
         .option('-a, --amount <number>', 'Amount of SOL to buy the token', (value) => {
             const parsed_value = parseFloat(value);
             if (isNaN(parsed_value) || parsed_value <= 0) throw new InvalidOptionArgumentError('Not a number.');
@@ -830,21 +841,12 @@ async function main() {
         .addOption(get_bundle_tip_option())
         .addOption(get_json_config_option())
         .action(async (cid, creator, options) => {
-            const { mint, amount, from, to, list, bundle, min, max, config } = options;
+            const { amount, from, to, list, bundle, min, max, config } = options;
             let buyers: common.Wallet[] | undefined = undefined;
             if (from !== undefined || to !== undefined || list !== undefined)
                 buyers = common.filter_wallets(wallets, from, to, list);
-            await commands.create_token(
-                cid,
-                creator,
-                amount,
-                mint ? await Keypair.fromSecretKey(mint) : undefined,
-                buyers,
-                min,
-                max,
-                bundle,
-                config
-            );
+            const mint = options.mint !== undefined ? await options.mint : undefined;
+            await commands.create_token(cid, creator, amount, mint, buyers, min, max, bundle, config);
         });
 
     program
@@ -995,22 +997,15 @@ async function main() {
         .command('convert-key')
         .alias('ck')
         .description('Convert the private key from JSON file to base58 string')
-        .argument('<json_path>', 'Path to the JSON file', (value) => {
-            if (!existsSync(value)) throw new InvalidOptionArgumentError('Config file does not exist.');
-            const json = common.read_json(value);
-            if (!json) throw new InvalidOptionArgumentError('Invalid JSON format.');
-            if (!Array.isArray(json) || json.length !== 64 || !json.every((n) => typeof n === 'number'))
-                throw new InvalidOptionArgumentError('Invalid private key format. Must be an array of 64 numbers.');
-            return Uint8Array.from(json);
-        })
-        .action(async (json) => console.log(base58.encode((await Keypair.fromSecretKey(json)).secretKey)));
+        .argument('<json_path>', 'Path to the JSON file')
+        .action(async (json) => console.log(base58.encode((await common.read_keypair(json)).secretKey)));
 
     try {
         await program.parseAsync(process.argv.map((arg) => MULTI_CHARACTER_OPTION_ALIASES[arg] ?? arg));
-        if (!process.argv.slice(2).length) {
-            program.outputHelp();
-        }
+        if (!process.argv.slice(2).length) program.outputHelp();
     } catch (error) {
+        if (!(error instanceof InvalidArgumentError || error instanceof InvalidOptionArgumentError))
+            program.showHelpAfterError(false);
         if (error instanceof Error) {
             program.error(error.message);
         } else {

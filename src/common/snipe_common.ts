@@ -1,7 +1,7 @@
 import { Worker } from 'worker_threads';
 import inquirer from 'inquirer';
 import { clearLine, moveCursor } from 'readline';
-import { ParsedTransactionWithMeta, PublicKey } from '@solana/web3.js';
+import { ParsedTransactionWithMeta, PublicKey, TokenAmount } from '@solana/web3.js';
 import {
     COMMITMENT,
     PRIORITY_FEE_TTL_MS,
@@ -19,12 +19,17 @@ import {
 import * as common from './common';
 import {
     IProgramProvider,
+    IMintMeta,
     get_balance,
+    get_quote_info,
+    get_token_balance,
     get_priority_fee_estimate,
     lamports_to_sol,
+    get_sol_token_amount,
     retry_get_tx
 } from './trade_common';
 import { quote_price } from './trade_common';
+import { quote_jupiter } from '../jupiter/swap_jupiter';
 import bs58 from 'bs58';
 import { configure_rpc_rate_limiter, create_rpc_rate_limit_state } from './rate_limit';
 import {
@@ -54,6 +59,7 @@ type BotConfig = {
     token_name: string | undefined;
     token_ticker: string | undefined;
     mint: PublicKey | undefined;
+    quote_mint?: string;
 };
 
 export type WorkerConfig = {
@@ -74,7 +80,14 @@ export type WorkerConfig = {
     transaction_relay: TransactionRelay;
     transaction_version: 0 | 1;
     funding: boolean;
+    quote_mint?: string;
+    quote_valuation?: { sol_amount: number; token_amount: TokenAmount };
     rpc_rate_limit_state: SharedArrayBuffer;
+};
+
+type StartupBalances = {
+    spend_limits: Map<number, number>;
+    quote_valuation?: WorkerConfig['quote_valuation'];
 };
 
 type WorkerJob = {
@@ -84,6 +97,27 @@ type WorkerJob = {
 };
 
 type WorkerMessage = 'stop' | 'buy' | 'mint' | 'sell' | 'config' | 'priority_fee' | 'market_cap';
+
+type MintDetection = {
+    mint: PublicKey;
+    misc?: object;
+    mint_meta?: IMintMeta;
+};
+
+type WaitCreateOptions =
+    | {
+          by_name: {
+              name: string;
+              ticker: string;
+          };
+          by_mint?: never;
+      }
+    | {
+          by_name?: never;
+          by_mint: {
+              mint: PublicKey;
+          };
+      };
 
 export interface ISniper {
     snipe(wallets: common.Wallet[], sol_price: number): Promise<void>;
@@ -203,8 +237,7 @@ export abstract class SniperBase implements ISniper {
 
     private find_create_transaction(
         tx: ParsedTransactionWithMeta,
-        name: string,
-        ticker: string
+        options: WaitCreateOptions
     ): { mint: PublicKey; misc?: object } | null {
         for (const instr of tx.transaction.message.instructions) {
             if (!('accounts' in instr) || !instr.programId.equals(this.program_id)) continue;
@@ -212,70 +245,88 @@ export abstract class SniperBase implements ISniper {
             if (!result) continue;
             const mint = instr.accounts[this.mint_account_index];
             if (!mint) continue;
-            if (result.name.toLowerCase() === name && result.symbol.toLowerCase() === ticker)
-                return { mint, misc: { ...result.misc, name: result.name, symbol: result.symbol } };
+
+            if (options.by_name) {
+                if (
+                    result.name.toLowerCase() === options.by_name.name.toLowerCase() &&
+                    result.symbol.toLowerCase() === options.by_name.ticker.toLowerCase()
+                )
+                    return { mint, misc: { ...result.misc, name: result.name, symbol: result.symbol } };
+            } else {
+                if (options.by_mint.mint.equals(mint))
+                    return { mint, misc: { ...result.misc, name: result.name, symbol: result.symbol } };
+            }
         }
         return null;
     }
 
-    public async wait_create_subscribe(
-        token_name: string,
-        token_ticker: string
-    ): Promise<{ mint: PublicKey; misc?: object } | null> {
-        this.subscriber ??= this.create_subscriber();
-        const name = token_name.toLowerCase();
-        const ticker = token_ticker.toLowerCase();
+    public async wait_create_subscribe(options: WaitCreateOptions): Promise<MintDetection> {
+        const subscriber = (this.subscriber ??= this.create_subscriber());
+        const { promise, resolve, reject } = Promise.withResolvers<MintDetection>();
         let completed = false;
+        const finish = (result: MintDetection) => {
+            if (completed) return;
+            completed = true;
+            resolve(result);
+        };
+        const fail = (error: unknown) => {
+            if (completed) return;
+            completed = true;
+            reject(error);
+        };
+        this.wait_stop_func = () => fail(new Error('User stopped the subscription.'));
         common.log(`Waiting for the new token create for the '${this.provider.get_name()}' program...`);
 
-        switch (this.subscriber.type) {
-            case SubscriberType.Logs:
-                return new Promise<{ mint: PublicKey; misc?: object } | null>((resolve, reject) => {
-                    this.wait_stop_func = () => reject(new Error('User stopped the subscription. Exiting...'));
+        const subscribe = async () => {
+            switch (subscriber.type) {
+                case SubscriberType.Logs: {
                     const on_logs = async (logs: string[], signature?: string) => {
-                        if (!this.is_create_tx(logs)) return;
-                        if (!signature) return;
+                        if (completed || !signature || !this.is_create_tx(logs)) return;
                         try {
                             const tx = await retry_get_tx(signature);
-                            if (!tx || !tx.meta || !tx.transaction.message) return;
-                            const result = this.find_create_transaction(tx, name, ticker);
-                            if (!result || completed) return;
-                            completed = true;
-                            this.wait_stop_func = null;
-                            await this.wait_create_unsubscribe();
-                            common.log(`Caught the new token drop for the '${this.provider.get_name()}' program`);
-                            resolve(result);
+                            if (!tx || !tx.meta || tx.meta.err || !tx.transaction.message) return;
+                            const result = this.find_create_transaction(tx, options);
+                            if (result) finish(result);
                         } catch (err) {
                             common.error(common.red(`Failed fetching the parsed transaction: ${err}`));
                         }
                     };
-                    this.subscriber!.subscribe(on_logs).catch((err) =>
-                        reject(new Error(`Failed to subscribe to logs: ${err}`))
-                    );
-                });
-            case SubscriberType.Tx:
-                return new Promise<{ mint: PublicKey; misc?: object } | null>((resolve, reject) => {
-                    this.wait_stop_func = () => reject(new Error('User stopped the subscription. Exiting...'));
-
-                    const on_logs = async (message: TransactionSubscribeMessage) => {
-                        const tx = deserialize_transaction_notification(message);
-                        if (!tx || tx.meta?.err || !tx.meta?.logMessages || !this.is_create_tx(tx.meta.logMessages))
-                            return;
-                        const result = this.find_create_transaction(tx, name, ticker);
-                        if (!result || completed) return;
-                        completed = true;
-                        this.wait_stop_func = null;
-                        await this.wait_create_unsubscribe();
-                        common.log(`Caught the new token drop for the '${this.provider.get_name()}' program`);
-                        resolve(result);
+                    await subscriber.subscribe(on_logs);
+                    break;
+                }
+                case SubscriberType.Tx: {
+                    const on_logs = (message: TransactionSubscribeMessage) => {
+                        if (completed) return;
+                        try {
+                            const tx = deserialize_transaction_notification(message);
+                            if (!tx || tx.meta?.err || !tx.meta?.logMessages || !this.is_create_tx(tx.meta.logMessages))
+                                return;
+                            const result = this.find_create_transaction(tx, options);
+                            if (result) finish(result);
+                        } catch (error) {
+                            fail(error);
+                        }
                     };
+                    await subscriber.subscribe(on_logs);
+                    break;
+                }
+                default:
+                    throw new Error(`Unsupported subscriber type: ${subscriber.type}`);
+            }
 
-                    this.subscriber!.subscribe(on_logs).catch((err) =>
-                        reject(new Error(`Failed to subscribe to logs: ${err}`))
-                    );
-                });
-            default:
-                throw new Error(`Unsupported subscriber type: ${this.subscriber.type}`);
+            if (options.by_mint && !completed) {
+                const mint_meta = await this.provider.get_mint_meta(options.by_mint.mint);
+                if (mint_meta) finish({ mint: options.by_mint.mint, mint_meta });
+            }
+        };
+
+        try {
+            await Promise.race([subscribe(), promise]);
+            return await promise;
+        } finally {
+            completed = true;
+            this.wait_stop_func = null;
+            await this.wait_create_unsubscribe();
         }
     }
 
@@ -310,19 +361,19 @@ export abstract class SniperBase implements ISniper {
         configure_rpc_rate_limiter(this.rpc_rate_limit_state);
 
         if (this.bot_config.mint) {
-            common.log(common.yellow('Sniping existing mint...'));
+            common.log(common.yellow('Sniping by mint...'));
         } else if (this.bot_config.token_name && this.bot_config.token_ticker) {
             common.log(common.yellow('Sniping token by name and ticker...'));
         }
 
         this.setup_cmd_interface();
 
-        common.log('[Main Worker] Starting the bot...');
+        common.log('Checking selected wallet balances...');
         try {
             await this.workers_start(wallets);
         } catch (error) {
             common.close_readline();
-            throw new Error(`Failed to start the workers: ${error} Exiting...`);
+            throw new Error(`Unable to start sniping: ${error instanceof Error ? error.message : String(error)}`);
         }
         common.log('[Main Worker] Bot started successfully, waiting for the token...');
 
@@ -332,6 +383,7 @@ export abstract class SniperBase implements ISniper {
         let priority_refreshing = false;
         let priority_refresh_timer: NodeJS.Timeout | undefined;
         let market_cap_timer: NodeJS.Timeout | undefined;
+        let unsubscribe: (() => void) | null = null;
         let poll_stopped = false;
         const refresh_priority_fee = async () => {
             if (priority_refreshing) return;
@@ -353,17 +405,19 @@ export abstract class SniperBase implements ISniper {
         }
 
         try {
-            const result =
-                this.bot_config.token_name && this.bot_config.token_ticker
-                    ? await this.wait_create_subscribe(this.bot_config.token_name, this.bot_config.token_ticker)
-                    : { mint: this.bot_config.mint, misc: undefined };
-
-            if (!result || !result.mint) throw new Error('Failed to find the token. Exiting...');
-
+            const result = await this.get_wait_mint(this.bot_config);
             this.bot_config.mint = result.mint;
             common.log(`[Main Worker] Token detected: ${this.bot_config.mint.toString()}`);
 
-            let mint_meta = await this.provider.default_mint_meta(this.bot_config.mint, result.misc);
+            let mint_meta =
+                result.mint_meta ?? (await this.provider.default_mint_meta(this.bot_config.mint, result.misc));
+            if (
+                this.bot_config.quote_mint &&
+                !mint_meta.quote_mint_pubkey.equals(new PublicKey(this.bot_config.quote_mint))
+            )
+                throw new Error(
+                    `Detected quote mint does not match configured quote_mint ${this.bot_config.quote_mint}`
+                );
 
             void this.workers_post_message('buy', {
                 mint_meta: mint_meta.serialize(),
@@ -371,7 +425,6 @@ export abstract class SniperBase implements ISniper {
             });
 
             let migrated: boolean = false;
-            let unsubscribe: (() => void) | null = null;
             let last_subscription_update = 0;
 
             const publish_market_cap = async () => {
@@ -423,16 +476,28 @@ export abstract class SniperBase implements ISniper {
             market_cap_timer = setTimeout(publish_market_cap, 0);
 
             await this.workers_wait();
-
-            if (unsubscribe) unsubscribe();
         } catch (error) {
             throw new Error(`Failed to snipe the token: ${error}`);
         } finally {
             poll_stopped = true;
+            unsubscribe?.();
             if (market_cap_timer) clearTimeout(market_cap_timer);
             if (priority_refresh_timer) clearInterval(priority_refresh_timer);
+            await Promise.all(this.workers.map(({ worker }) => worker.terminate()));
             common.close_readline();
         }
+    }
+
+    private async get_wait_mint(config: BotConfig): Promise<MintDetection> {
+        if (config.token_name && config.token_ticker) {
+            return this.wait_create_subscribe({
+                by_name: { name: config.token_name, ticker: config.token_ticker }
+            });
+        }
+        if (!config.mint) throw new Error('No token information provided in the config');
+        const mint_meta = await this.provider.get_mint_meta(config.mint);
+        if (mint_meta) return { mint: config.mint, mint_meta };
+        return this.wait_create_subscribe({ by_mint: { mint: config.mint } });
     }
 
     private async workers_wait(): Promise<void> {
@@ -445,25 +510,69 @@ export abstract class SniperBase implements ISniper {
         }
     }
 
-    private async check_balances(wallets: common.Wallet[], min_balance: number = 0): Promise<boolean> {
-        let ok = true;
+    private async check_balances(
+        wallets: common.Wallet[],
+        min_balance: number = SNIPE_MIN_BUY
+    ): Promise<StartupBalances | null> {
+        const config = this.bot_config!;
+        const quote_mint = config.quote_mint ? new PublicKey(config.quote_mint) : undefined;
+        const quote = quote_mint && !quote_mint.equals(SOL_MINT) ? await get_quote_info(quote_mint) : undefined;
+        const amount = config.max_buy ?? config.min_buy;
+        const valuation = quote
+            ? await quote_jupiter(get_sol_token_amount(amount), SOL_MINT, quote_mint!, config.buy_slippage)
+            : undefined;
+        if (valuation && BigInt(valuation.outAmount) <= 0n)
+            throw new Error('Cannot value quote balance: zero quoted output');
+        const quote_valuation =
+            quote && valuation
+                ? {
+                      sol_amount: amount,
+                      token_amount: { amount: valuation.outAmount, decimals: quote.decimals, uiAmount: null }
+                  }
+                : undefined;
+        const spend_limits = new Map<number, number>();
         const balance_checks = wallets.map(async (wallet) => {
             const holder = wallet.keypair;
+            const issues: string[] = [];
             try {
                 const sol_balance = lamports_to_sol(await get_balance(holder.publicKey, COMMITMENT));
-                if (sol_balance <= min_balance) {
-                    common.error(
-                        `Address: ${holder.publicKey.toString().padEnd(44, ' ')} has no balance. (wallet ${wallet.id})`
+                let spendable_balance = sol_balance - SNIPE_MIN_BUY;
+                if (quote && valuation) {
+                    const balance = await get_token_balance(
+                        holder.publicKey,
+                        quote_mint!,
+                        COMMITMENT,
+                        quote.token_program
                     );
-                    ok = false;
+                    const quote_balance = (Number(balance.amount) / Number(valuation.outAmount)) * amount;
+                    spendable_balance = quote_balance + (config.funding ? spendable_balance : 0);
+                }
+                if (spendable_balance <= config.min_buy) {
+                    issues.push(`Spendable: ${spendable_balance.toFixed(9)} SOL; required: > ${config.min_buy} SOL`);
+                }
+                spend_limits.set(wallet.id, Math.min(spendable_balance, config.spend_limit));
+                if (sol_balance < min_balance) {
+                    issues.push(
+                        `SOL balance: ${sol_balance.toFixed(9)} SOL; required: >= ${min_balance} SOL for fees and rent`
+                    );
                 }
             } catch (err) {
-                common.error(common.red(`Failed to get the balance: ${err} for 'wallet ${wallet.id}'`));
-                ok = false;
+                issues.push(`Could not read balances: ${err instanceof Error ? err.message : String(err)}`);
             }
+            return issues.length
+                ? `  ${wallet.name} (${wallet.id})  ${holder.publicKey.toBase58()}\n${issues.map((issue) => `    ${issue}`).join('\n')}`
+                : null;
         });
-        await Promise.all(balance_checks);
-        return ok;
+        const failures = (await Promise.all(balance_checks)).filter((result) => result !== null);
+        if (failures.length) {
+            common.error(
+                common.red(
+                    `Wallet preflight failed (${failures.length}/${wallets.length})\n\n${failures.join('\n\n')}\n`
+                )
+            );
+            return null;
+        }
+        return { spend_limits, quote_valuation };
     }
 
     private async workers_post_message(message: WorkerMessage, data: any = {}): Promise<void> {
@@ -518,8 +627,8 @@ export abstract class SniperBase implements ISniper {
         if (wallets.length < this.bot_config.thread_cnt)
             throw new Error(`The number of keys doesn't match the number of threads`);
 
-        const all_has_balances = await this.check_balances(wallets);
-        if (!all_has_balances) throw new Error('Fund the specified accounts, exiting...');
+        const balances = await this.check_balances(wallets);
+        if (!balances) throw new Error('Resolve the reported wallet balances or errors, then retry.');
 
         common.log('[Main Worker] Starting the workers...');
         const started_promises: Promise<void>[] = [];
@@ -530,7 +639,7 @@ export abstract class SniperBase implements ISniper {
                 secret: wallet.keypair.secretKey,
                 id: wallet.id,
                 trade_interval: this.bot_config.trade_interval,
-                spend_limit: this.bot_config.spend_limit,
+                spend_limit: balances.spend_limits.get(wallet.id)!,
                 min_buy: this.bot_config.min_buy,
                 max_buy: this.bot_config.max_buy,
                 mcap_threshold: this.bot_config.mcap_threshold,
@@ -541,6 +650,8 @@ export abstract class SniperBase implements ISniper {
                 protection_tip: this.bot_config.protection_tip,
                 mev_protect: this.bot_config.mev_protect,
                 funding: this.bot_config.funding,
+                quote_mint: this.bot_config.quote_mint,
+                quote_valuation: balances.quote_valuation,
                 transaction_relay: global.TRANSACTION_RELAY,
                 transaction_version: global.TRANSACTION_VERSION,
                 rpc_rate_limit_state: this.rpc_rate_limit_state
@@ -551,11 +662,17 @@ export abstract class SniperBase implements ISniper {
             });
 
             let started: () => void;
-            const started_promise = new Promise<void>((resolve) => (started = resolve));
+            let startup_failed: (reason: unknown) => void;
+            let is_started = false;
+            const started_promise = new Promise<void>((resolve, reject) => {
+                started = resolve;
+                startup_failed = reject;
+            });
 
             const job = new Promise<void>((resolve, reject) => {
                 worker.on('message', async (msg) => {
                     if (msg.command === 'started') {
+                        is_started = true;
                         started();
                         common.log(msg.data);
                         return;
@@ -564,19 +681,29 @@ export abstract class SniperBase implements ISniper {
                 });
                 worker.on('error', (err) => {
                     common.error(common.red(`[Worker ${wallet.id}] Encountered error: ${err}`));
-                    reject();
+                    startup_failed(err);
+                    reject(err);
                 });
                 worker.on('exit', (code) => {
+                    if (!is_started)
+                        startup_failed(new Error(`[Worker ${wallet.id}] Exited before startup with code ${code}`));
                     if (code !== 0) reject(new Error(`[Worker ${wallet.id}] Stopped with exit code ${code} `));
                     else resolve();
                 });
             });
+            void job.catch(() => {});
 
             started_promises.push(started_promise);
             this.workers.push({ worker: worker, index: wallet.id, job: job });
         }
 
-        await Promise.all(started_promises);
+        try {
+            await Promise.all(started_promises);
+        } catch (error) {
+            await Promise.all(this.workers.map(({ worker }) => worker.terminate()));
+            await Promise.allSettled(this.workers.map(({ job }) => job));
+            throw error;
+        }
         common.log('[Main Worker] All workers have started');
     }
 
@@ -706,18 +833,18 @@ export abstract class SniperBase implements ISniper {
             priority_level,
             protection_tip,
             mev_protect,
-            funding
+            funding,
+            quote_mint
         } = json;
+        if (quote_mint !== undefined && (typeof quote_mint !== 'string' || !common.is_valid_pubkey(quote_mint)))
+            throw new Error('Invalid quote_mint public key.');
         if (mint === undefined && token_name === undefined && token_ticker === undefined) {
             throw new Error('Missing mint or token name and token ticker.');
         }
         if (mint !== undefined) {
             if (token_name !== undefined || token_ticker !== undefined)
                 throw new Error('Mint and token name/token ticker are mutually exclusive. Choose one.');
-            if (
-                !common.is_valid_pubkey(mint) ||
-                (await this.provider.get_mint_meta(new PublicKey(mint))) === undefined
-            ) {
+            if (!common.is_valid_pubkey(mint)) {
                 throw new Error('Invalid mint public key.');
             }
             json.mint = new PublicKey(json.mint);
@@ -972,7 +1099,7 @@ export abstract class SniperBase implements ISniper {
                     type: 'list',
                     name: 'type',
                     message: 'Choose the type of the sniping:',
-                    choices: ['Wait for the token to drop', 'Snipe an existing token'],
+                    choices: ['Wait for the token to drop', 'Snipe by mint (existing or upcoming)'],
                     default: 0,
                     filter: (input: string) =>
                         input.toLowerCase().includes(MethodStrings[Method.Wait].toLocaleLowerCase())
@@ -1001,10 +1128,8 @@ export abstract class SniperBase implements ISniper {
                         type: 'input',
                         name: 'mint',
                         message: 'Enter the mint public key:',
-                        validate: async (value: string) => {
+                        validate: (value: string) => {
                             if (!common.is_valid_pubkey(value)) return 'Please enter a valid public key.';
-                            if ((await this.provider.get_mint_meta(new PublicKey(value))) === undefined)
-                                return 'Mint not found. Please enter a valid mint public key.';
                             return true;
                         },
                         filter: (value: string) => new PublicKey(value)
@@ -1032,38 +1157,39 @@ export abstract class SniperBase implements ISniper {
 
     private log_bot_config(bot_config: BotConfig) {
         const to_print = {
-            ...bot_config,
-            mcap_threshold:
+            Workers: bot_config.thread_cnt,
+            'Buy amount (min)': `${bot_config.min_buy} SOL`,
+            'Buy amount (max)': bot_config.max_buy === undefined ? 'N/A' : `${bot_config.max_buy} SOL`,
+            'Buy once': bot_config.is_buy_once ? 'Yes' : 'No',
+            'Token name': bot_config.token_name || 'N/A',
+            'Token ticker': bot_config.token_ticker || 'N/A',
+            'Quote mint': bot_config.quote_mint ?? 'Auto',
+            'Buy slippage': `${bot_config.buy_slippage * 100}%`,
+            'Sell slippage': `${bot_config.sell_slippage * 100}%`,
+            'Protection tip': bot_config.protection_tip ? `${bot_config.protection_tip} SOL` : 'N/A',
+            Priority: bot_config.priority_level.toString(),
+            'Start interval': bot_config.start_interval !== 0 ? `${bot_config.start_interval} secs` : 'N/A',
+            'MEV protection': bot_config.mev_protect ? 'Yes' : 'No',
+            Funding: bot_config.funding ? 'Yes' : 'No',
+            'Trade interval': bot_config.trade_interval !== 0 ? `${bot_config.trade_interval} secs` : 'N/A',
+            'Market cap threshold':
                 bot_config.mcap_threshold === Infinity
                     ? 'N/A'
                     : `$${common.format_currency(bot_config.mcap_threshold)}`,
-            start_interval: bot_config.start_interval !== 0 ? `${bot_config.start_interval} secs` : 'N/A',
-            trade_interval: bot_config.trade_interval !== 0 ? `${bot_config.trade_interval} secs` : 'N/A',
-            mint: bot_config.mint ? bot_config.mint.toString() : 'N/A',
-            token_name: bot_config.token_name ? bot_config.token_name : 'N/A',
-            token_ticker: bot_config.token_ticker ? bot_config.token_ticker : 'N/A',
-            is_buy_once: bot_config.is_buy_once ? 'Yes' : 'No',
-            priority_level: bot_config.priority_level.toString(),
-            protection_tip: bot_config.protection_tip ? `${bot_config.protection_tip} SOL` : 'N/A',
-            mev_protect: bot_config.mev_protect ? 'Yes' : 'No',
-            funding: bot_config.funding ? 'Yes' : 'No',
-            spend_limit: bot_config.spend_limit === Infinity ? 'N/A' : `${bot_config.spend_limit} SOL`,
-            min_buy: bot_config.min_buy ? `${bot_config.min_buy} SOL` : 'N/A',
-            max_buy: bot_config.max_buy ? `${bot_config.max_buy} SOL` : 'N/A',
-            buy_slippage: bot_config.buy_slippage ? `${bot_config.buy_slippage * 100}%` : 'N/A',
-            sell_slippage: bot_config.sell_slippage ? `${bot_config.sell_slippage * 100}%` : 'N/A'
+            'Spend limit': bot_config.spend_limit === Infinity ? 'N/A' : `${bot_config.spend_limit} SOL`,
+            Mint: bot_config.mint ? bot_config.mint.toString() : 'N/A'
         };
 
         const max_length = Math.max(...Object.values(to_print).map((value) => value.toString().length));
 
         common.print_header([
-            { title: 'Parameter', width: common.COLUMN_WIDTHS.parameter, align: 'center' },
-            { title: 'Value', width: max_length, align: 'center' }
+            { title: 'Parameter', width: common.COLUMN_WIDTHS.parameter },
+            { title: 'Value', width: max_length }
         ]);
 
         for (const [key, value] of Object.entries(to_print)) {
             common.print_row([
-                { content: key, width: common.COLUMN_WIDTHS.parameter, align: 'center' },
+                { content: key, width: common.COLUMN_WIDTHS.parameter },
                 { content: value.toString(), width: max_length, align: 'left' }
             ]);
         }

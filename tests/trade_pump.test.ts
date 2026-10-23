@@ -105,7 +105,8 @@ describe('Pump offline trade behavior', () => {
         const metadata = trader.deserialize_mint_meta(
             pump_metadata({
                 amm_pool: amm ? address(23) : null,
-                quote_mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+                quote_mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+                is_cashback: false
             })
         );
         const output = await trader.sell_token_instructions(amount(100_000n, 6), wallet, metadata, 0.07);
@@ -117,6 +118,25 @@ describe('Pump offline trade behavior', () => {
         const paired = await trader.buy_sell_instructions(amount(10_000n, 6), wallet, metadata, 0.07);
         const paired_sell = paired.sell.find((ix) => ix.programId.equals(program))!;
         expect(paired.minimum_quote_output.amount).toBe(Buffer.from(paired_sell.data).readBigUInt64LE(16).toString());
+    });
+
+    test.each([false, true])('rejects cashback coins in current trade paths for AMM=%s', async (amm) => {
+        spyOn(trade, 'get_ltas').mockResolvedValue([]);
+        const metadata = trader.deserialize_mint_meta(
+            pump_metadata({
+                amm_pool: amm ? address(23) : null,
+                quote_mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+            })
+        );
+        await expect(trader.buy_token_instructions(amount(10_000n, 6), wallet, metadata, 0.07)).rejects.toThrow(
+            'do not support cashback coins'
+        );
+        await expect(trader.sell_token_instructions(amount(100_000n, 6), wallet, metadata, 0.07)).rejects.toThrow(
+            'do not support cashback coins'
+        );
+        await expect(trader.buy_sell_instructions(amount(10_000n, 6), wallet, metadata, 0.07)).rejects.toThrow(
+            'do not support cashback coins'
+        );
     });
 
     test('round-trips serialized metadata and restores bigint fields', () => {
@@ -224,8 +244,7 @@ describe('Pump creation and metadata transitions', () => {
     test.each([1, 2])('creates version %s with matching token program and UTF-8 metadata', async (version) => {
         global.TRANSACTION_VERSION = 1;
         const result = await provider.create_token_instructions(create_mint, wallet, 'Tökén', 'TOK', 'cid', {
-            version,
-            is_cashback: true
+            version
         });
         expect(result.instructions).toHaveLength(2);
         const create = result.instructions[0]!;
@@ -242,7 +261,18 @@ describe('Pump creation and metadata transitions', () => {
         ]);
         expect(result.mint_meta.token_name).toBe('Tökén');
         expect(result.ltas).toEqual([]);
-        if (version === 2) expect([...create.data.slice(-2)]).toEqual([0, 1]);
+        if (version === 2) {
+            const options = Buffer.from(create.data).subarray(-11);
+            expect([...options.subarray(0, 2)]).toEqual([0, 0]);
+            expect(options.readBigUInt64LE(2)).toBe(75n);
+            expect(options[10]).toBe(0);
+        }
+    });
+
+    test.each([false, true])('rejects the deprecated is_cashback creation option (%s)', async (is_cashback) => {
+        await expect(
+            provider.create_token_instructions(create_mint, wallet, 'Token', 'TOK', 'cid', { is_cashback })
+        ).rejects.toThrow('is_cashback is deprecated');
     });
 
     test('uses configured non-SOL reserves and quote accounts at creation', async () => {
@@ -297,9 +327,33 @@ describe('Pump creation and metadata transitions', () => {
         }
     );
 
-    test('switches a completed curve to AMM reserves and vaults', async () => {
+    test('refreshes reserves from a full current curve account', async () => {
         const initial = await provider.default_mint_meta(create_mint.publicKey, { creator: wallet.publicKey });
-        const data = Buffer.alloc(261);
+        const data = Buffer.alloc(166);
+        curve_data().copy(data);
+        global.CONNECTION = {
+            getAccountInfo: async () => ({ data, owner: PUMP_PROGRAM_ID })
+        } as unknown as Connection;
+        const updated = await provider.update_mint_meta(initial);
+        expect(updated.quote_mint_pubkey).toEqual(usdc);
+        expect(updated.sol_reserves).toBe(2_000_000n);
+        expect(updated.token_reserves).toBe(1_000_000n);
+        expect(updated.token_quote_mc).toBe(20);
+    });
+
+    test.each([84, 114, 116, 165])('rejects a partially truncated curve account of %s bytes', async (size) => {
+        const initial = await provider.default_mint_meta(create_mint.publicKey, { creator: wallet.publicKey });
+        const data = Buffer.alloc(size);
+        curve_data().copy(data);
+        global.CONNECTION = {
+            getAccountInfo: async () => ({ data, owner: PUMP_PROGRAM_ID })
+        } as unknown as Connection;
+        await expect(provider.update_mint_meta(initial)).rejects.toThrow('Buffer overflow');
+    });
+
+    test.each([261, 287])('switches a completed curve to AMM reserves and vaults (%s bytes)', async (size) => {
+        const initial = await provider.default_mint_meta(create_mint.publicKey, { creator: wallet.publicKey });
+        const data = Buffer.alloc(size);
         Buffer.from(constants.PUMP_AMM_STATE_HEADER).copy(data);
         Buffer.from(create_mint.publicKey.toBytes()).copy(data, 43);
         Buffer.from(usdc.toBytes()).copy(data, 75);
@@ -326,5 +380,14 @@ describe('Pump creation and metadata transitions', () => {
         expect(migrated.sol_reserves).toBe(2100n);
         expect(migrated.token_reserves).toBe(1000n);
         expect(migrated.quote_mint_pubkey).toEqual(usdc);
+    });
+
+    test.each([246, 260, 262, 286])('rejects a partially truncated AMM account of %s bytes', async (size) => {
+        const data = Buffer.alloc(size);
+        Buffer.from(constants.PUMP_AMM_STATE_HEADER).copy(data);
+        global.CONNECTION = {
+            getAccountInfo: async () => ({ data, owner: PUMP_AMM_PROGRAM_ID })
+        } as unknown as Connection;
+        await expect(provider.get_amm_state(create_mint.publicKey)).rejects.toThrow('Buffer overflow');
     });
 });

@@ -7,10 +7,11 @@ import {
     PUBLIC_IPFS,
     IPFS_API,
     IPFS_JWT,
-    PUMP_API_URL,
     WALLETS_FILE_HEADERS,
     WALLETS_RESCUE_DIR_PATH,
-    IPFS_GATEWAY
+    IPFS_GATEWAY,
+    JUPITER_API_URL,
+    SOL_MINT
 } from '../constants';
 import base58 from 'bs58';
 import path, { basename } from 'path';
@@ -101,24 +102,39 @@ export function json_bigint(_key: string, value: unknown): unknown {
 }
 
 export function log(message: string): void {
-    clearLine(process.stdout, 0);
-    cursorTo(process.stdout, 0);
+    if (process.stdout.isTTY) {
+        clearLine(process.stdout, 0);
+        cursorTo(process.stdout, 0);
+    }
     console.log(message);
     if (global.RL !== undefined) global.RL.prompt(true);
 }
 
 export function error(message: string): void {
-    clearLine(process.stdout, 0);
-    cursorTo(process.stdout, 0);
+    if (process.stdout.isTTY) {
+        clearLine(process.stdout, 0);
+        cursorTo(process.stdout, 0);
+    }
     console.error(message);
     if (global.RL !== undefined) global.RL.prompt(true);
 }
 
 export function warn(message: string): void {
-    clearLine(process.stdout, 0);
-    cursorTo(process.stdout, 0);
+    if (process.stdout.isTTY) {
+        clearLine(process.stdout, 0);
+        cursorTo(process.stdout, 0);
+    }
     console.warn(message);
     if (global.RL !== undefined) global.RL.prompt(true);
+}
+
+export function print_summary(title: string, entries: [string, string | number][] = []): void {
+    const width = Math.max(0, ...entries.map(([label]) => label.length));
+    const indent = ' '.repeat(width + 4);
+    const rows = entries.map(
+        ([label, value]) => `  ${label.padEnd(width)}  ${String(value).replace(/\n/g, `\n${indent}`)}`
+    );
+    log([bold(title), ...rows, ''].join('\n'));
 }
 
 export function check_reserve_exists(keys: Wallet[]): boolean {
@@ -225,6 +241,7 @@ export function chunks<T>(array: readonly T[], chunk_size = 10): T[][] {
 }
 
 export async function clear_lines_up(lines: number): Promise<void> {
+    if (!process.stdout.isTTY) return;
     process.stdout.moveCursor(0, -lines);
     process.stdout.clearScreenDown();
 }
@@ -334,11 +351,24 @@ export function round_two(num: number): number {
 }
 
 export const fetch_sol_price = async (): Promise<number> => {
-    return fetch(`${PUMP_API_URL}/sol-price`)
+    const api_key = process.env.JUPITER_API_KEY;
+    if (!api_key) {
+        warn('JUPITER_API_KEY is required to fetch SOL price.');
+        return 0.0;
+    }
+
+    const sol_mint = SOL_MINT.toBase58();
+    return fetch(`${JUPITER_API_URL}/price/v3?ids=${sol_mint}`, {
+        method: 'GET',
+        headers: {
+            'x-api-key': api_key,
+            'Content-Type': 'application/json'
+        }
+    })
         .then((response) => response.json())
         .then((data) => {
-            if (!data || data.statusCode !== undefined) return 0.0;
-            return data.solPrice;
+            if (!data || data[sol_mint] === undefined) return 0.0;
+            return data[sol_mint].usdPrice || 0.0;
         })
         .catch((err) => {
             error(red(`Failed fetching the SOL price: ${err}`));
@@ -372,7 +402,7 @@ export const COLUMN_WIDTHS = {
     allocation: 10,
     tokenBalance: 20,
     parameter: 20,
-    entryMcap: 10
+    entryMcap: 16
 };
 
 const BORDER_CHARS = {
@@ -460,10 +490,10 @@ export function zip<T, A>(arr_1: readonly T[], arr_2: readonly A[]): [T, A][] {
     return arr_1.map((e, i) => [e, arr_2[i]]) as [T, A][];
 }
 
-export function read_pubkeys(address_file_path: string): PublicKey[] {
+export function read_pubkeys(path: string): PublicKey[] {
     const pubkeys: PublicKey[] = [];
     try {
-        const content = readFileSync(address_file_path, 'utf-8');
+        const content = readFileSync(path, 'utf-8');
         const lines = content.split('\n').filter((line) => line.trim() !== '');
         for (const line of lines) {
             const address = line.trim();
@@ -474,9 +504,23 @@ export function read_pubkeys(address_file_path: string): PublicKey[] {
             }
         }
     } catch (error) {
-        throw new Error(`Failed to read addresses from ${address_file_path}: ${error}`);
+        throw new Error(`Failed to read addresses from ${path}: ${error}`);
     }
     return pubkeys;
+}
+
+export async function read_keypair(path: string): Promise<Keypair> {
+    if (!existsSync(path)) throw new Error('Key file does not exist.');
+    const json = read_json(path);
+    if (!json) throw new Error('Invalid JSON format.');
+    if (!Array.isArray(json) || json.length !== 64 || !json.every((n) => typeof n === 'number'))
+        throw new Error('Invalid private key format. Must be an array of 64 numbers.');
+
+    try {
+        return await Keypair.fromSecretKey(Uint8Array.from(json));
+    } catch (error) {
+        throw new Error(`Failed to read secret key from ${path}: ${error}`);
+    }
 }
 
 async function upload_ipfs(file: File): Promise<IPFSResponse> {
@@ -502,14 +546,19 @@ async function upload_ipfs(file: File): Promise<IPFSResponse> {
     }
 }
 
-export async function upload_metadata_ipfs(meta: IPFSMetadata, image_path: string) {
+export async function upload_metadata_ipfs(meta: IPFSMetadata, image_path: string | undefined) {
     try {
         const uuid = crypto.randomUUID();
-        const image_file = new File([readFileSync(image_path)], `${uuid}-${basename(image_path)}`, {
-            type: 'image/png'
-        });
-        const image_resp = await upload_ipfs(image_file);
-        meta.image = `${PUBLIC_IPFS}/ipfs/${image_resp.cid}`;
+
+        if (image_path === undefined) {
+            if (meta.image === undefined) throw new Error('Image path is required when meta.image is not set.');
+        } else {
+            const image_file = new File([readFileSync(image_path)], `${uuid}-${basename(image_path)}`, {
+                type: 'image/png'
+            });
+            const image_resp = await upload_ipfs(image_file);
+            meta.image = `${PUBLIC_IPFS}/ipfs/${image_resp.cid}`;
+        }
 
         const json = JSON.stringify(meta);
         const json_blob = new Blob([json]);

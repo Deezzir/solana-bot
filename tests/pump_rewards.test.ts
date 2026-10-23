@@ -11,6 +11,7 @@ const {
     PUMP_AMM_PROGRAM_ID,
     PUMP_EVENT_AUTHORITY_ACCOUNT,
     PUMP_AMM_EVENT_AUTHORITY_ACCOUNT,
+    PUMP_AMM_CREATOR_VAULT_SEED,
     SOL_MINT,
     SYSTEM_PROGRAM_ID
 } = await import('../src/constants');
@@ -24,6 +25,10 @@ const original_connection = global.CONNECTION;
 const [creator_vault] = await PublicKey.findProgramAddress(
     [Buffer.from('creator-vault'), wallet.publicKey.toBytes()],
     PUMP_PROGRAM_ID
+);
+const [amm_creator_vault] = await PublicKey.findProgramAddress(
+    [PUMP_AMM_CREATOR_VAULT_SEED, wallet.publicKey.toBytes()],
+    PUMP_AMM_PROGRAM_ID
 );
 const accumulators = await Promise.all(
     [PUMP_PROGRAM_ID, PUMP_AMM_PROGRAM_ID].map(
@@ -50,7 +55,7 @@ async function token_account(vault: PublicKey, mint: PublicKey, program: PublicK
     return { pubkey: await trade.calc_ata(vault, mint, program), account: account(data, program) };
 }
 
-async function install_rewards(invalid_accumulator = false) {
+async function install_rewards(invalid_accumulator = false, invalid_sol_program = false) {
     const mint_data = Buffer.alloc(82);
     mint_data[44] = 8;
     mint_data[45] = 1;
@@ -79,8 +84,10 @@ async function install_rewards(invalid_accumulator = false) {
             const empty = await token_account(owner, mint, programId, 0n);
             const noncanonical = { ...valid, pubkey: PublicKey.default };
             const wrong_owner = await token_account(wallet.publicKey, mint, programId);
-            const sol = await token_account(owner, SOL_MINT, programId);
-            return { context: { slot: 1 }, value: [valid, empty, noncanonical, wrong_owner, sol] };
+            const value = [valid, empty, noncanonical, wrong_owner];
+            if (programId.equals(TOKEN_PROGRAM_ID) || invalid_sol_program)
+                value.push(await token_account(owner, SOL_MINT, programId));
+            return { context: { slot: 1 }, value };
         }
     } as unknown as Connection;
     spyOn(trade, 'get_program_accounts_v2').mockResolvedValue([]);
@@ -104,8 +111,8 @@ describe('Pump quote reward discovery', () => {
         const owners = await install_rewards();
         const assets = await provider.get_rewards(wallet);
         const non_sol = assets.filter((asset) => !asset.mint.equals(SOL_MINT));
-        expect(non_sol).toHaveLength(6);
-        for (const vault of [creator_vault, ...accumulators]) {
+        expect(non_sol).toHaveLength(8);
+        for (const vault of [creator_vault, amm_creator_vault, ...accumulators]) {
             expect(owners.filter((owner) => owner.equals(vault))).toHaveLength(2);
             const rewards = non_sol.filter((asset) => asset.vault.equals(vault));
             expect(
@@ -116,6 +123,7 @@ describe('Pump quote reward discovery', () => {
             ]);
         }
         expect(assets.filter((asset) => asset.mint.equals(SOL_MINT)).map((asset) => asset.raw_amount)).toEqual([
+            111n,
             5n,
             5n
         ]);
@@ -124,8 +132,13 @@ describe('Pump quote reward discovery', () => {
     test('ignores accumulators owned by an unrelated program', async () => {
         await install_rewards(true);
         const assets = await provider.get_rewards(wallet);
-        expect(assets).toHaveLength(2);
+        expect(assets).toHaveLength(5);
         expect(assets.every((asset) => asset.source === 'creator_reward')).toBeTrue();
+    });
+
+    test('rejects vault accounts whose token program disagrees with the quote mint', async () => {
+        await install_rewards(false, true);
+        await expect(provider.get_rewards(wallet)).rejects.toThrow(`Invalid quote token program: ${SOL_MINT}`);
     });
 });
 

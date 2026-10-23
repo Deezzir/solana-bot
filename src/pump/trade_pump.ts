@@ -698,13 +698,15 @@ export class Provider implements trade.IProgramProvider {
     }
 
     public async get_mint_meta(mint: PublicKey): Promise<PumpMintMeta | undefined> {
+        let token_meta: trade.MintAsset;
         try {
-            let mint_meta = await this.default_mint_meta(mint);
-            mint_meta = await this.update_mint_meta(mint_meta);
-            return mint_meta;
+            token_meta = await trade.get_token_meta(mint);
         } catch (error) {
-            return undefined;
+            if (error instanceof trade.MintNotFoundError) return undefined;
+            throw error;
         }
+        const mint_meta = await this.default_mint_meta(mint, undefined, token_meta);
+        return this.update_mint_meta(mint_meta);
     }
 
     public async get_random_mints(count: number): Promise<PumpMintMeta[]> {
@@ -778,20 +780,6 @@ export class Provider implements trade.IProgramProvider {
             creator_fee_bps: creator_fee_bps
         });
 
-        if (!quote_mint.equals(SOL_MINT)) {
-            const initial = await this.get_initial_quote_reserves(quote_mint);
-            mint_meta.sol_reserves = initial.quote_reserves;
-            mint_meta.token_reserves = initial.token_reserves;
-            mint_meta.total_supply = initial.supply;
-            const quote = await get_quote_info(quote_mint);
-            mint_meta.market_cap = quote_metrics(
-                Number(initial.quote_reserves) / Number(initial.token_reserves),
-                initial.supply,
-                quote.decimals,
-                PUMP_TOKEN_DECIMALS
-            ).mcap_quote;
-        }
-
         const create_instructions = await this.get_create_token_instructions(
             creator,
             token_name,
@@ -808,41 +796,46 @@ export class Provider implements trade.IProgramProvider {
         return { instructions: create_instructions, mint_meta, ltas };
     }
 
-    public async default_mint_meta(mint: PublicKey, data?: object): Promise<PumpMintMeta> {
+    public async default_mint_meta(
+        mint: PublicKey,
+        data?: object,
+        token_meta?: trade.MintAsset
+    ): Promise<PumpMintMeta> {
         const decoded = data as Record<string, unknown> | undefined;
         const meta = decoded
             ? {
-                token_name: typeof decoded.name === 'string' && decoded.name ? decoded.name : 'Unknown',
-                token_symbol: typeof decoded.symbol === 'string' && decoded.symbol ? decoded.symbol : 'Unknown',
-                creator:
-                    decoded.creator instanceof PublicKey
-                        ? decoded.creator
-                        : typeof decoded.creator === 'string' && decoded.creator
+                  token_name: typeof decoded.name === 'string' && decoded.name ? decoded.name : 'Unknown',
+                  token_symbol: typeof decoded.symbol === 'string' && decoded.symbol ? decoded.symbol : 'Unknown',
+                  creator:
+                      decoded.creator instanceof PublicKey
+                          ? decoded.creator
+                          : typeof decoded.creator === 'string' && decoded.creator
                             ? new PublicKey(decoded.creator)
                             : undefined,
-                token_program:
-                    decoded.token_program instanceof PublicKey
-                        ? decoded.token_program
-                        : typeof decoded.token_program === 'string' && decoded.token_program
+                  token_program:
+                      decoded.token_program instanceof PublicKey
+                          ? decoded.token_program
+                          : typeof decoded.token_program === 'string' && decoded.token_program
                             ? new PublicKey(decoded.token_program)
                             : TOKEN_PROGRAM_ID,
-                is_mayhem: decoded.is_mayhem === true,
-                is_cashback: decoded.is_cashback === true,
-                is_holder_reward: decoded.is_holder_reward === true,
-                creator_fee_bps: typeof decoded.creator_fee_bps === 'number' ? decoded.creator_fee_bps : 0
-            }
+                  is_mayhem: decoded.is_mayhem === true,
+                  is_cashback: decoded.is_cashback === true,
+                  is_holder_reward: decoded.is_holder_reward === true,
+                  creator_fee_bps: typeof decoded.creator_fee_bps === 'number' ? decoded.creator_fee_bps : 0
+              }
             : {
-                ...(await trade.get_token_meta(mint).catch(() => ({
-                    token_name: 'Unknown',
-                    token_symbol: 'Unknown',
-                    creator: undefined,
-                    token_program: TOKEN_PROGRAM_ID
-                }))),
-                is_mayhem: false,
-                is_cashback: false,
-                is_holder_reward: false,
-                creator_fee_bps: 0
-            };
+                  ...(token_meta ??
+                      (await trade.get_token_meta(mint).catch(() => ({
+                          token_name: 'Unknown',
+                          token_symbol: 'Unknown',
+                          creator: undefined,
+                          token_program: TOKEN_PROGRAM_ID
+                      })))),
+                  is_mayhem: false,
+                  is_cashback: false,
+                  is_holder_reward: false,
+                  creator_fee_bps: 0
+              };
 
         const quote_mint = new PublicKey((decoded?.quote_mint as string | undefined) ?? SOL_MINT);
         let creator_vault: PublicKey | undefined;
@@ -857,7 +850,7 @@ export class Provider implements trade.IProgramProvider {
             );
         }
 
-        return new PumpMintMeta({
+        const mint_meta = new PumpMintMeta({
             mint: mint.toString(),
             quote_mint: quote_mint.toBase58(),
             symbol: meta.token_symbol,
@@ -876,6 +869,20 @@ export class Provider implements trade.IProgramProvider {
             is_holder_reward: meta.is_holder_reward,
             creator_fee_bps: meta.creator_fee_bps
         });
+        if (!quote_mint.equals(SOL_MINT)) {
+            const initial = await this.get_initial_quote_reserves(quote_mint);
+            const quote = await get_quote_info(quote_mint);
+            mint_meta.sol_reserves = initial.quote_reserves;
+            mint_meta.token_reserves = initial.token_reserves;
+            mint_meta.total_supply = initial.supply;
+            mint_meta.market_cap = quote_metrics(
+                Number(initial.quote_reserves) / Number(initial.token_reserves),
+                initial.supply,
+                quote.decimals,
+                PUMP_TOKEN_DECIMALS
+            ).mcap_quote;
+        }
+        return mint_meta;
     }
 
     public update_mint_meta_reserves(mint_meta: PumpMintMeta, amount: TokenAmount, op: trade.TradeOp): PumpMintMeta {
@@ -993,7 +1000,7 @@ export class Provider implements trade.IProgramProvider {
         };
 
         const unsubscribe = (id: number | undefined) => {
-            if (id !== undefined) global.CONNECTION.removeAccountChangeListener(id).catch(() => { });
+            if (id !== undefined) global.CONNECTION.removeAccountChangeListener(id).catch(() => {});
         };
 
         const publish_amm = async (slot: bigint = 0n) => {
@@ -1046,12 +1053,12 @@ export class Provider implements trade.IProgramProvider {
             vaults_started = true;
             base_vault_sub_id = global.CONNECTION.onAccountChange(
                 state.base_vault,
-                (_info, context) => void publish_amm(context.slot).catch(() => { }),
+                (_info, context) => void publish_amm(context.slot).catch(() => {}),
                 { commitment }
             );
             quote_vault_sub_id = global.CONNECTION.onAccountChange(
                 state.quote_vault,
-                (_info, context) => void publish_amm(context.slot).catch(() => { }),
+                (_info, context) => void publish_amm(context.slot).catch(() => {}),
                 { commitment }
             );
         };
@@ -1067,7 +1074,7 @@ export class Provider implements trade.IProgramProvider {
             amm_pool_address = amm.toBase58();
             amm_state_sub_id = global.CONNECTION.onAccountChange(
                 amm,
-                (info, context) => void process_amm_update(info, context.slot).catch(() => { }),
+                (info, context) => void process_amm_update(info, context.slot).catch(() => {}),
                 { commitment }
             );
             const response = await global.CONNECTION.getAccountInfoAndContext(amm, commitment);
@@ -1130,7 +1137,7 @@ export class Provider implements trade.IProgramProvider {
             bonding_sub_id = global.CONNECTION.onAccountChange(
                 bonding_curve,
                 (info, context) => {
-                    void process_bonding_update(info, context.slot).catch(() => { });
+                    void process_bonding_update(info, context.slot).catch(() => {});
                 },
                 { commitment }
             );
@@ -1345,21 +1352,21 @@ export class Provider implements trade.IProgramProvider {
             createAssociatedTokenAccountIdempotentInstruction(buyer, token_ata, buyer.publicKey, mint, token_program),
             ...(!quote_mint.equals(SOL_MINT)
                 ? [
-                    createAssociatedTokenAccountIdempotentInstruction(
-                        buyer,
-                        quote_ata,
-                        buyer.publicKey,
-                        quote_mint,
-                        quote.token_program
-                    ),
-                    createAssociatedTokenAccountIdempotentInstruction(
-                        buyer,
-                        buyback_ata,
-                        buyback_wallet,
-                        quote_mint,
-                        quote.token_program
-                    )
-                ]
+                      createAssociatedTokenAccountIdempotentInstruction(
+                          buyer,
+                          quote_ata,
+                          buyer.publicKey,
+                          quote_mint,
+                          quote.token_program
+                      ),
+                      createAssociatedTokenAccountIdempotentInstruction(
+                          buyer,
+                          buyback_ata,
+                          buyback_wallet,
+                          quote_mint,
+                          quote.token_program
+                      )
+                  ]
                 : []),
             new TransactionInstruction({
                 programId: PUMP_PROGRAM_ID,
@@ -1430,21 +1437,21 @@ export class Provider implements trade.IProgramProvider {
         const instructions = [
             ...(!quote_mint.equals(SOL_MINT)
                 ? [
-                    createAssociatedTokenAccountIdempotentInstruction(
-                        seller,
-                        quote_ata,
-                        seller.publicKey,
-                        quote_mint,
-                        quote.token_program
-                    ),
-                    createAssociatedTokenAccountIdempotentInstruction(
-                        seller,
-                        buyback_ata,
-                        buyback_wallet,
-                        quote_mint,
-                        quote.token_program
-                    )
-                ]
+                      createAssociatedTokenAccountIdempotentInstruction(
+                          seller,
+                          quote_ata,
+                          seller.publicKey,
+                          quote_mint,
+                          quote.token_program
+                      ),
+                      createAssociatedTokenAccountIdempotentInstruction(
+                          seller,
+                          buyback_ata,
+                          buyback_wallet,
+                          quote_mint,
+                          quote.token_program
+                      )
+                  ]
                 : []),
             new TransactionInstruction({
                 programId: PUMP_PROGRAM_ID,
@@ -1787,11 +1794,11 @@ export class Provider implements trade.IProgramProvider {
                     { pubkey: PUMP_PROGRAM_ID, isSigner: false, isWritable: false },
                     ...(!quote_mint.equals(SOL_MINT)
                         ? [
-                            { pubkey: quote_mint, isSigner: false, isWritable: false },
-                            { pubkey: quote_vault, isSigner: false, isWritable: true },
-                            { pubkey: quote.token_program, isSigner: false, isWritable: false },
-                            { pubkey: quote_control, isSigner: false, isWritable: false }
-                        ]
+                              { pubkey: quote_mint, isSigner: false, isWritable: false },
+                              { pubkey: quote_vault, isSigner: false, isWritable: true },
+                              { pubkey: quote.token_program, isSigner: false, isWritable: false },
+                              { pubkey: quote_control, isSigner: false, isWritable: false }
+                          ]
                         : [])
                 ],
                 programId: PUMP_PROGRAM_ID,
@@ -1855,16 +1862,30 @@ export class Provider implements trade.IProgramProvider {
         return [bonding_curve, bonding_curve_ata];
     }
 
-    private async get_initial_quote_reserves(quote_mint: PublicKey) {
+    private async fetch_initial_quote_accounts(): Promise<(AccountInfo<Uint8Array> | null)[]> {
         const control = await this.calc_quote_control();
-        const [global_info, control_info] = await global.CONNECTION.getMultipleAccountsInfo(
-            [PUMP_GLOBAL_ACCOUNT, control],
-            COMMITMENT
-        );
+        const accounts = await global.CONNECTION.getMultipleAccountsInfo([PUMP_GLOBAL_ACCOUNT, control], COMMITMENT);
+        const [global_info, control_info] = accounts;
         if (!global_info?.owner.equals(PUMP_PROGRAM_ID)) throw new Error('Invalid Pump global account');
         const data = Buffer.from(global_info.data);
         if (data.length < 1045 || !data.subarray(0, 8).equals(Buffer.from(PUMP_GLOBAL_HEADER)))
             throw new Error('Invalid Pump global layout');
+        if (control_info) {
+            const quotes = Buffer.from(control_info.data);
+            if (
+                !control_info.owner.equals(PUMP_PROGRAM_ID) ||
+                quotes.length < 108 ||
+                !quotes.subarray(0, 8).equals(Buffer.from(PUMP_QUOTE_CONTROL_HEADER))
+            )
+                throw new Error('Invalid Pump quote control layout');
+            if (108 + quotes.readUInt32LE(104) * 40 > quotes.length) throw new Error('Truncated Pump quote control');
+        }
+        return accounts;
+    }
+
+    private async get_initial_quote_reserves(quote_mint: PublicKey) {
+        const [global_info, control_info] = await this.fetch_initial_quote_accounts();
+        const data = Buffer.from(global_info!.data);
         let quote_reserves: bigint | undefined;
         if (quote_mint.equals(SOL_MINT)) quote_reserves = data.readBigUInt64LE(81);
         else if (new PublicKey(data.subarray(1013, 1045)).equals(quote_mint))
@@ -1943,7 +1964,10 @@ export class Provider implements trade.IProgramProvider {
 
     private decode_state(data: Uint8Array): State {
         const input =
-            data.byteLength === StateStruct.get_offset('quote_mint') ? Buffer.concat([data, SOL_MINT.toBytes()]) : data;
+            data.byteLength === StateStruct.get_offset('quote_mint') ||
+            data.byteLength === StateStruct.get_offset('creator_fee_bps')
+                ? Buffer.concat([data, Buffer.alloc(StateStruct.get_size() - data.byteLength)])
+                : data;
         const state = StateStruct.decode(input);
         if (state.quote_mint.equals(PublicKey.default)) state.quote_mint = SOL_MINT;
         return state;
@@ -1962,8 +1986,9 @@ export class Provider implements trade.IProgramProvider {
 
     private decode_amm_state(data: Uint8Array): ReturnType<typeof AMMStateStruct.decode> {
         const input =
-            data.byteLength >= AMMStateStruct.get_offset('is_mayhem') &&
-                data.byteLength <= AMMStateStruct.get_offset('virtual_quote_reserves')
+            (data.byteLength >= AMMStateStruct.get_offset('is_mayhem') &&
+                data.byteLength <= AMMStateStruct.get_offset('virtual_quote_reserves')) ||
+            data.byteLength === AMMStateStruct.get_offset('creator_fee_bps')
                 ? Buffer.concat([data, Buffer.alloc(AMMStateStruct.get_size() - data.byteLength)])
                 : data;
         return AMMStateStruct.decode(input);
@@ -2324,9 +2349,9 @@ export class Provider implements trade.IProgramProvider {
                     { pubkey: PUMP_FEE_PROGRAM_ID, isSigner: false, isWritable: false },
                     ...(mint_meta.is_cashback
                         ? [
-                            { pubkey: quote_user_accumulator_ata, isSigner: false, isWritable: true },
-                            { pubkey: user_volume_accumulator, isSigner: false, isWritable: true }
-                        ]
+                              { pubkey: quote_user_accumulator_ata, isSigner: false, isWritable: true },
+                              { pubkey: user_volume_accumulator, isSigner: false, isWritable: true }
+                          ]
                         : []),
                     { pubkey: pool_v2, isSigner: false, isWritable: false },
                     { pubkey: buyback_fee_recipient, isSigner: false, isWritable: true },
@@ -2343,7 +2368,7 @@ export class Provider implements trade.IProgramProvider {
         };
     }
 
-    public async create_token_metadata(meta: common.IPFSMetadata, image_path: string): Promise<string> {
+    public async create_token_metadata(meta: common.IPFSMetadata, image_path: string | undefined): Promise<string> {
         return common.upload_metadata_ipfs(meta, image_path);
     }
 
@@ -2360,9 +2385,20 @@ export class Provider implements trade.IProgramProvider {
             url.searchParams.set('sort', 'last_trade_timestamp');
             url.searchParams.set('order', 'DESC');
             url.searchParams.set('includeNsfw', 'false');
-            const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
+            const response = await fetch(url, {
+                headers: {
+                    Host: url.host,
+                    'User-Agent':
+                        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+                    Accept: 'application/json',
+                    Origin: 'https://pump.fun',
+                    Referer: 'https://pump.fun/'
+                },
+                signal: AbortSignal.timeout(15000)
+            });
+            if (!response.ok) throw new Error(`Pump API returned HTTP ${response.status}`);
             const data = await response.json();
-            if (!response.ok || !Array.isArray(data)) return [];
+            if (!Array.isArray(data)) return [];
             return trade.resolve_random_mints(
                 data.map((item: { mint: string }) => item.mint),
                 count,
