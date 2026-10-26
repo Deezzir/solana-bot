@@ -27,13 +27,15 @@ export class RaydiumRunner extends snipe.SniperBase {
         if (!symbol) return null;
         const uri = read_borsh_string(data, symbol[1]);
         if (!uri) return null;
-        if (accounts.length < 10) return null;
+        if (accounts.length < 14) return null;
         return {
             name: name[0],
             symbol: symbol[0],
             misc: {
                 uri: uri[0],
-                decimals: data[8],
+                token_decimals: data[8],
+                global_config: accounts[2].toBase58(),
+                quote_mint: accounts[7].toBase58(),
                 creator: accounts[1].toBase58(),
                 config: accounts[3].toBase58(),
                 pool: accounts[5].toBase58(),

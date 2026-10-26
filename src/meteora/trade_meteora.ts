@@ -47,6 +47,9 @@ import {
     createSyncNativeInstruction,
     decode_token_account,
     decode_mint_account,
+    calculate_transfer_fee,
+    get_epoch_transfer_fee,
+    get_mint_transfer_fee,
     TOKEN_2022_PROGRAM_ID,
     TOKEN_PROGRAM_ID
 } from '../common/token';
@@ -67,6 +70,7 @@ import {
     ONE_Q128,
     quote_exact_in,
     damm_fee_numerator,
+    damm_rate_limiter_active,
     TradeDirection,
     CollectFeeMode,
     damm_u256_le
@@ -333,7 +337,12 @@ const DBCConfigStruct = define_decoder_struct({
     dynamic_reduction_factor: u16(),
     dynamic_fee_padding_2: skip(8),
     bin_step_u128: u128(),
-    liquidity_vesting_padding: skip(48),
+    liquidity_vesting_padding: skip(32),
+    transfer_fee_basis_points: u16(),
+    transfer_fee_withheld_authority: skip(1),
+    migrated_transfer_fee_authority_option: skip(1),
+    transfer_fee_flag: u8(),
+    transfer_fee_padding: skip(11),
     collect_fee_mode: u8(),
     migration_option: u8(),
     activation_type: u8(),
@@ -760,6 +769,12 @@ export class Provider implements trade.IProgramProvider {
             throw new Error('DBC quote token program does not match its config.');
         if (config_data.token_type !== 0 && config_data.token_type !== 1)
             throw new Error('Unsupported DBC token type.');
+        if (
+            config_data.transfer_fee_flag > 1 ||
+            config_data.transfer_fee_basis_points > 1000 ||
+            (config_data.transfer_fee_flag === 1 && config_data.token_type !== 1)
+        )
+            throw new Error('Unsupported DBC transfer-fee configuration.');
         if (config_data.base_fee_mode !== 0 && config_data.base_fee_mode !== 1)
             throw new Error('New DBC pools require a linear or exponential fee scheduler.');
         if (config_data.migration_option !== 1) throw new Error('New DBC pools require DAMM v2 migration.');
@@ -866,7 +881,12 @@ export class Provider implements trade.IProgramProvider {
             const process_dbc = async (account: AccountInfo<Uint8Array>, slot: bigint = 0n) => {
                 if (stopped || damm_started || (slot && slot < latest_slot)) return;
                 const state = DBCStateStruct.decode(account.data);
-                const quote_state = this.dbc_quote_state(state, current_mint_meta.dbc_data!.quote.config, slot);
+                const previous_quote = current_mint_meta.dbc_data!.quote;
+                const quote_state = {
+                    ...this.dbc_quote_state(state, previous_quote.config, slot),
+                    base_transfer_fee: previous_quote.base_transfer_fee,
+                    quote_transfer_fee: previous_quote.quote_transfer_fee
+                };
                 const metrics = quote_metrics(
                     this.calc_token_price(common.read_biguint_le(state.sqrt_price, 0, 16)),
                     current_mint_meta.total_supply,
@@ -953,6 +973,12 @@ export class Provider implements trade.IProgramProvider {
                     token_reserves: state.base_reserve,
                     total_supply: state.total_supply,
                     token_decimal: state.token_decimals,
+                    token_program_id: (state.quote.config.token_type === undefined
+                        ? mint_meta.token_program
+                        : state.quote.config.token_type === 1
+                          ? TOKEN_2022_PROGRAM_ID
+                          : TOKEN_PROGRAM_ID
+                    ).toBase58(),
                     pool: state.pool.toString(),
                     quote_mint: state.quote_mint.toString(),
                     complete: state.is_migrated || state.quote_reserve >= state.quote.config.migration_quote_threshold,
@@ -1120,7 +1146,9 @@ export class Provider implements trade.IProgramProvider {
             output_mint,
             input_program: input_info.token_program,
             output_program: output_info.token_program,
-            output_amount: quote.output_amount - this.get_damm_v2_transfer_fee(output_info, quote.output_amount, epoch)
+            output_amount: quote.output_amount - this.get_damm_v2_transfer_fee(output_info, quote.output_amount, epoch),
+            rate_limiter_active: quote.rate_limiter_active,
+            current_point: quote.current_point
         };
     }
 
@@ -1456,6 +1484,10 @@ export class Provider implements trade.IProgramProvider {
             quote_decimals,
             config_data.token_decimal
         );
+        const quote_transfer_fee = await get_mint_transfer_fee(
+            config_data.quote_mint,
+            config_data.quote_token_flag === 1 ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID
+        );
         return new MeteoraMintMeta({
             mint: mint.toBase58(),
             quote_mint: config_data.quote_mint.toBase58(),
@@ -1485,7 +1517,12 @@ export class Provider implements trade.IProgramProvider {
                     last_update_timestamp: 0n,
                     volatility_accumulator: 0n,
                     volatility_reference: 0n,
-                    sqrt_price_reference: config_data.sqrt_start_price
+                    sqrt_price_reference: config_data.sqrt_start_price,
+                    base_transfer_fee:
+                        config_data.transfer_fee_flag === 1
+                            ? { basis_points: config_data.transfer_fee_basis_points, maximum_fee: (1n << 64n) - 1n }
+                            : undefined,
+                    quote_transfer_fee
                 }
             }
         });
@@ -1518,7 +1555,23 @@ export class Provider implements trade.IProgramProvider {
                   pre_migration_token_supply: cached.total_supply
               }
             : DBCConfigStruct.decode(config_info!.data);
+        if (config_state.token_type !== undefined && config_state.token_type !== 0 && config_state.token_type !== 1)
+            throw new Error('Unsupported DBC token type.');
 
+        const [base_transfer_fee, quote_transfer_fee] = await Promise.all([
+            get_mint_transfer_fee(
+                mint,
+                config_state.token_type === undefined
+                    ? mint_meta!.token_program
+                    : config_state.token_type === 1
+                      ? TOKEN_2022_PROGRAM_ID
+                      : TOKEN_PROGRAM_ID
+            ),
+            get_mint_transfer_fee(
+                config_state.quote_mint,
+                (await get_quote_info(config_state.quote_mint)).token_program
+            )
+        ]);
         return {
             pool: pool.pubkey,
             base_mint: mint,
@@ -1533,7 +1586,7 @@ export class Provider implements trade.IProgramProvider {
             sqrt_price: common.read_biguint_le(pool_state.sqrt_price, 0, 16),
             is_migrated: pool_state.is_migrated === 1,
             creator: pool_state.creator,
-            quote: this.dbc_quote_state(pool_state, config_state, slot)
+            quote: { ...this.dbc_quote_state(pool_state, config_state, slot), base_transfer_fee, quote_transfer_fee }
         };
     }
 
@@ -1709,28 +1762,16 @@ export class Provider implements trade.IProgramProvider {
         const current_point =
             state.activation_type === 0 ? BigInt(slot) : BigInt((await global.CONNECTION.getBlockTime(slot)) ?? 0);
         if (current_point < state.activation_point) throw new Error('DAMM v2 pool is not active.');
-        return quote_exact_in(
-            state,
-            amount_in,
-            input_is_token_a ? TradeDirection.AtoB : TradeDirection.BtoA,
+        const direction = input_is_token_a ? TradeDirection.AtoB : TradeDirection.BtoA;
+        return {
+            ...quote_exact_in(state, amount_in, direction, current_point),
+            rate_limiter_active: damm_rate_limiter_active(state, direction, current_point),
             current_point
-        );
+        };
     }
 
     private get_damm_v2_transfer_fee(mint_info: MintInfo, amount: bigint, epoch: bigint): bigint {
-        if (amount === 0n) return 0n;
-        const { extensions } = mint_info;
-        const transfer_fee_config =
-            extensions.__option === 'Some'
-                ? extensions.value.find((extension) => extension.__kind === 'TransferFeeConfig')
-                : undefined;
-        if (!transfer_fee_config) return 0n;
-        const fee =
-            epoch >= transfer_fee_config.newerTransferFee.epoch
-                ? transfer_fee_config.newerTransferFee
-                : transfer_fee_config.olderTransferFee;
-        const calculated = (amount * BigInt(fee.transferFeeBasisPoints) + 9999n) / 10000n;
-        return calculated > fee.maximumFee ? fee.maximumFee : calculated;
+        return calculate_transfer_fee(amount, get_epoch_transfer_fee(mint_info.extensions, epoch));
     }
 
     private damm_v2_swap_data(amount_in: bigint, minimum_amount_out: bigint): Buffer {
@@ -1938,8 +1979,21 @@ export class Provider implements trade.IProgramProvider {
         slippage: number,
         exact_out: boolean = false
     ): Promise<{ instructions: TransactionInstruction[]; output_amount: bigint; minimum_output: bigint }> {
-        const { pool, state, input_mint, output_mint, input_program, output_program, output_amount } =
-            await this.get_damm_v2_quote(amount_in, mint_meta, op);
+        const {
+            pool,
+            state,
+            input_mint,
+            output_mint,
+            input_program,
+            output_program,
+            output_amount,
+            rate_limiter_active,
+            current_point
+        } = await this.get_damm_v2_quote(amount_in, mint_meta, op);
+        if (exact_out && damm_rate_limiter_active(state, TradeDirection.BtoA, current_point))
+            throw new Error(
+                'DAMM v2 rate-limited pools do not allow atomic buy/sell cycles while the limiter is active.'
+            );
         const input_ata = await trade.calc_ata(trader.publicKey, input_mint, input_program);
         const output_ata = await trade.calc_ata(trader.publicKey, output_mint, output_program);
         const minimum_amount_out = trade.apply_slippage_down(output_amount, slippage);
@@ -2002,7 +2056,10 @@ export class Provider implements trade.IProgramProvider {
                     },
                     { pubkey: METEORA_DAMM_V2_PROGRAM_ID, isSigner: false, isWritable: true },
                     { pubkey: event_authority, isSigner: false, isWritable: false },
-                    { pubkey: METEORA_DAMM_V2_PROGRAM_ID, isSigner: false, isWritable: false }
+                    { pubkey: METEORA_DAMM_V2_PROGRAM_ID, isSigner: false, isWritable: false },
+                    ...(rate_limiter_active
+                        ? [{ pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false }]
+                        : [])
                 ],
                 programId: METEORA_DAMM_V2_PROGRAM_ID,
                 data: exact_out

@@ -1,5 +1,7 @@
 import { afterAll, afterEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { Keypair, PublicKey, type Connection, type TokenAmount } from '@solana/web3.js';
+import { createHash } from 'crypto';
+import type { IMintMeta } from '../src/common/trade_common';
 
 const original_helius_key = process.env.HELIUS_API_KEY;
 const original_pinata_jwt = process.env.PINATA_IPFS_JWT;
@@ -85,6 +87,87 @@ function raydium_metadata(overrides: Partial<InstanceType<typeof RaydiumMintMeta
 
 describe('Raydium offline trade behavior', () => {
     const trader = new RaydiumProvider();
+
+    test('quotes directional CPMM creator fees and retains the LP share in optimistic reserves', async () => {
+        const metadata = trader.deserialize_mint_meta({
+            ...raydium_metadata({ observation_state: address(25), complete: true }).serialize(),
+            cpmm_fees: {
+                trade_fee_rate: 10_000n,
+                creator_fee_rate: 20_000n,
+                protocol_fee_rate: 200_000n,
+                fund_fee_rate: 100_000n,
+                creator_fee_on: 1,
+                base_is_token_0: true
+            }
+        });
+        const buy = await trader.estimate_buy_output(metadata, amount(100_000n, 6), 0);
+        // Quote is token 1: 1% input trading fee, then 2% output creator fee.
+        const gross = (1_000_000n * 99_000n) / 1_099_000n;
+        expect(buy.expected.amount).toBe((gross - (gross * 20_000n + 999_999n) / 1_000_000n).toString());
+        trader.update_mint_meta_reserves(metadata, amount(100_000n, 6), 'buy');
+        expect(metadata.sol_reserves).toBe(1_099_700n);
+        expect(metadata.token_reserves).toBe(1_000_000n - gross);
+        expect(trader.deserialize_mint_meta(metadata.serialize()).serialize()).toEqual(metadata.serialize());
+    });
+
+    test('rounds combined CPMM input fees before splitting the creator share', async () => {
+        const metadata = raydium_metadata({
+            complete: true,
+            observation_state: address(25),
+            cpmm_fees: {
+                trade_fee_rate: 10_000n,
+                creator_fee_rate: 20_000n,
+                protocol_fee_rate: 200_000n,
+                fund_fee_rate: 100_000n,
+                creator_fee_on: 0,
+                base_is_token_0: true
+            }
+        });
+        const estimate = await trader.estimate_buy_output(metadata, amount(1001n, 6), 0);
+        expect(estimate.expected.amount).toBe('969');
+        trader.update_mint_meta_reserves(metadata, amount(1001n, 6), 'buy');
+        expect(metadata.sol_reserves).toBe(1_000_978n);
+        expect(metadata.token_reserves).toBe(999_031n);
+    });
+
+    test.each([0, 1, 2])('matches CPMM fee-on=%s in both mint orders and trade directions', async (creator_fee_on) => {
+        for (const base_is_token_0 of [false, true]) {
+            for (const buy of [false, true]) {
+                const metadata = raydium_metadata({
+                    complete: true,
+                    observation_state: address(25),
+                    cpmm_fees: {
+                        trade_fee_rate: 10_000n,
+                        creator_fee_rate: 20_000n,
+                        protocol_fee_rate: 200_000n,
+                        fund_fee_rate: 100_000n,
+                        creator_fee_on,
+                        base_is_token_0
+                    },
+                    base_transfer_fee: { basis_points: 100, maximum_fee: 2000n },
+                    quote_transfer_fee: { basis_points: 200, maximum_fee: 1000n }
+                });
+                const input_fee = buy ? metadata.quote_transfer_fee! : metadata.base_transfer_fee!;
+                const output_fee = buy ? metadata.base_transfer_fee! : metadata.quote_transfer_fee!;
+                const raw_input = 100_001n;
+                const input_tax = (raw_input * BigInt(input_fee.basis_points) + 9999n) / 10000n;
+                const net = raw_input - (input_tax > input_fee.maximum_fee ? input_fee.maximum_fee : input_tax);
+                const input_is_0 = buy ? !base_is_token_0 : base_is_token_0;
+                const on_input = creator_fee_on === 0 || creator_fee_on === (input_is_0 ? 1 : 2);
+                const total_input_fee = (net * (on_input ? 30_000n : 10_000n) + 999_999n) / 1_000_000n;
+                const curve_input = net - total_input_fee;
+                const gross = (1_000_000n * curve_input) / (1_000_000n + curve_input);
+                const before_tax = gross - (on_input ? 0n : (gross + 49n) / 50n);
+                const output_tax = (before_tax * BigInt(output_fee.basis_points) + 9999n) / 10000n;
+                const expected =
+                    before_tax - (output_tax > output_fee.maximum_fee ? output_fee.maximum_fee : output_tax);
+                const estimate = buy
+                    ? await trader.estimate_buy_output(metadata, amount(raw_input, 6), 0)
+                    : await trader.estimate_sell_output(metadata, amount(raw_input, 8), 0);
+                expect(estimate.expected.amount).toBe(expected.toString());
+            }
+        }
+    });
 
     test.each([false, true])('returns the encoded sell minimum for CPMM=%s', async (complete) => {
         spyOn(trade, 'get_ltas').mockResolvedValue([]);
@@ -229,6 +312,7 @@ describe('LaunchLab creation and CPMM migration', () => {
         Buffer.from(constants.RAYDIUM_CPMM_POOL_STATE_HEADER).copy(data);
         for (const [offset, key] of [
             [8, address(41)],
+            [40, wallet.publicKey.toBase58()],
             [72, address(42)],
             [104, address(43)],
             [168, reverse ? USDC_MINT : address(6)],
@@ -243,6 +327,56 @@ describe('LaunchLab creation and CPMM migration', () => {
         for (const offset of [341, 349, 357, 365, 397, 405]) data.writeBigUInt64LE(10n, offset);
         return { data, owner: RAYDIUM_CPMM_PROGRAM_ID, executable: false, lamports: 1n, rentEpoch: 0n };
     }
+
+    function cpmm_config(share_rate = 200_000n) {
+        const data = Buffer.alloc(236);
+        createHash('sha256').update('account:AmmConfig').digest().subarray(0, 8).copy(data);
+        data.writeBigUInt64LE(3000n, 12);
+        data.writeBigUInt64LE(share_rate, 116);
+        return { data, owner: RAYDIUM_CPMM_PROGRAM_ID, executable: false, lamports: 1n, rentEpoch: 0n };
+    }
+
+    function launch_configs() {
+        const config = Buffer.alloc(115);
+        config.writeBigUInt64LE(1500n, 27);
+        const platform = Buffer.alloc(834);
+        platform.writeBigUInt64LE(1000n, 104);
+        platform.writeBigUInt64LE(500n, 720);
+        return [config, platform].map((data) => ({ data, owner: RAYDIUM_LAUNCHPAD_PROGRAM_ID }));
+    }
+
+    test.each([undefined, 400_000n])(
+        'reports net creator fees using share override=%s and includes its PDA',
+        async (override) => {
+            const state = cpmm_state();
+            state.data.writeBigUInt64LE(1000n, 397);
+            state.data.writeBigUInt64LE(9n, 405);
+            const share_data = Buffer.alloc(145);
+            createHash('sha256').update('account:CreatorFeeShare').digest().subarray(0, 8).copy(share_data);
+            Buffer.from(wallet.publicKey.toBytes()).copy(share_data, 9);
+            Buffer.from(new PublicKey(address(41)).toBytes()).copy(share_data, 41);
+            share_data.writeBigUInt64LE(override ?? 0n, 73);
+            global.CONNECTION = {
+                getProgramAccounts: async () => [{ pubkey: new PublicKey(address(45)), account: state }],
+                getAccountInfo: async (key: PublicKey) =>
+                    key.toBase58() === address(41)
+                        ? cpmm_config()
+                        : override === undefined
+                          ? null
+                          : { data: share_data, owner: RAYDIUM_CPMM_PROGRAM_ID }
+            } as unknown as Connection;
+            const assets = await provider.get_rewards(wallet);
+            expect(assets.map((asset) => asset.raw_amount)).toEqual(override === undefined ? [800n, 8n] : [600n, 6n]);
+            const instructions = await provider.claim_rewards_instructions(wallet, assets);
+            const claim = instructions.find((ix) => ix.programId.equals(RAYDIUM_CPMM_PROGRAM_ID))!;
+            const [share] = await PublicKey.findProgramAddress(
+                [Buffer.from('creator_fee_share'), wallet.publicKey.toBytes(), new PublicKey(address(41)).toBytes()],
+                RAYDIUM_CPMM_PROGRAM_ID
+            );
+            expect(claim.keys).toHaveLength(15);
+            expect(claim.keys[14]!.pubkey).toEqual(share);
+        }
+    );
 
     test('creates a non-SOL curve from config fees, fundraising and required platform accounts', async () => {
         global.TRANSACTION_VERSION = 1;
@@ -282,7 +416,10 @@ describe('LaunchLab creation and CPMM migration', () => {
     });
 
     test('replaces provisional reserves and quote units from LaunchLab state', async () => {
-        global.CONNECTION = { getAccountInfo: async () => launch_state() } as unknown as Connection;
+        global.CONNECTION = {
+            getAccountInfo: async () => launch_state(),
+            getMultipleAccountsInfo: async () => launch_configs()
+        } as unknown as Connection;
         const initial = raydium_metadata({ quote_mint: SOL_MINT });
         const updated = await provider.update_mint_meta(initial);
         expect(updated.sol_reserves).toBe(2500n);
@@ -291,6 +428,7 @@ describe('LaunchLab creation and CPMM migration', () => {
         expect(updated.token_decimals).toBe(8);
         expect(updated.base_vault).toBe(address(42));
         expect(updated.migrated).toBeFalse();
+        expect(updated.fee).toBe(0.003);
         expect(initial.quote_mint_pubkey).toEqual(new PublicKey(SOL_MINT));
     });
 
@@ -298,7 +436,10 @@ describe('LaunchLab creation and CPMM migration', () => {
         'migrates into CPMM with fee-adjusted reserves in either mint order (reversed=%s)',
         async (reverse) => {
             const state = cpmm_state(reverse);
-            global.CONNECTION = { getAccountInfo: async () => launch_state(1) } as unknown as Connection;
+            global.CONNECTION = {
+                getAccountInfo: async (key: PublicKey) =>
+                    key.toBase58() === address(41) ? cpmm_config() : launch_state(1)
+            } as unknown as Connection;
             spyOn(trade, 'get_program_accounts_v2').mockResolvedValue([
                 { pubkey: new PublicKey(address(45)), account: state }
             ]);
@@ -314,6 +455,8 @@ describe('LaunchLab creation and CPMM migration', () => {
             expect(updated.token_reserves).toBe(reverse ? 1970n : 970n);
             expect(updated.sol_reserves).toBe(reverse ? 970n : 1970n);
             expect(updated.observation_state).toBe(address(44));
+            expect(updated.fee).toBe(0.003);
+            expect(updated.cpmm_fees?.trade_fee_rate).toBe(3000n);
         }
     );
 
@@ -321,6 +464,11 @@ describe('LaunchLab creation and CPMM migration', () => {
         type Callback = (info: { data: Buffer; owner: PublicKey }, context: { slot: bigint }) => void;
         const listeners = new Map<string, Callback>();
         const state = cpmm_state();
+        const snapshot = cpmm_state();
+        snapshot.data[389] = 1;
+        snapshot.data[390] = 1;
+        const config = cpmm_config();
+        config.data.writeBigUInt64LE(20_000n, 108);
         const vault = (amount: bigint) => {
             const data = Buffer.alloc(165);
             data.writeBigUInt64LE(amount, 64);
@@ -334,32 +482,36 @@ describe('LaunchLab creation and CPMM migration', () => {
                 return listeners.size;
             },
             removeAccountChangeListener: remove,
+            getAccountInfo: async () => config,
             getAccountInfoAndContext: async () => ({ value: state, context: { slot: 10n } }),
             getMultipleAccountsInfoAndContext: async () => ({
-                value: [state, vault(1000n), vault(2000n)],
-                context: { slot: 10n }
+                value: [snapshot, vault(1000n), vault(2000n)],
+                context: { slot: 11n }
             })
         } as unknown as Connection;
-        const publish = mock(() => undefined);
+        const publish = mock((_meta: IMintMeta) => undefined);
         const stop = await provider.subscribe_mint_meta(
             raydium_metadata({ complete: true, observation_state: address(44) }),
             publish
         );
+        expect(publish.mock.calls.at(-1)?.[0]).toMatchObject({
+            cpmm_fees: { creator_fee_on: 1, creator_fee_rate: 20_000n }
+        });
         publish.mockClear();
-        listeners.get(address(42))!(vault(1100n), { slot: 11n });
-        listeners.get(address(43))!(vault(2100n), { slot: 11n });
+        listeners.get(address(42))!(vault(1100n), { slot: 12n });
+        listeners.get(address(43))!(vault(2100n), { slot: 12n });
         expect(publish).not.toHaveBeenCalled();
         const update = new Promise<void>((resolve) =>
             publish.mockImplementation(() => {
                 resolve();
             })
         );
-        listeners.get(address(9))!(state, { slot: 11n });
+        listeners.get(address(9))!(state, { slot: 12n });
         await update;
         expect(publish).toHaveBeenCalledTimes(1);
         stop();
         expect(remove).toHaveBeenCalledTimes(3);
-        listeners.get(address(42))!(vault(1200n), { slot: 12n });
+        listeners.get(address(42))!(vault(1200n), { slot: 13n });
         expect(publish).toHaveBeenCalledTimes(1);
     });
 });

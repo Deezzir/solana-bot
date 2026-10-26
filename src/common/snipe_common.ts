@@ -12,6 +12,7 @@ import {
     SNIPE_MIN_MCAP,
     SNIPE_SELL_SLIPPAGE,
     SNIPE_SUB_COMMITMENT,
+    SNIPE_RETRIES,
     SOL_MINT,
     TransactionRelay,
     TRADE_MAX_SLIPPAGE
@@ -226,6 +227,29 @@ export abstract class SniperBase implements ISniper {
     ): { name: string; symbol: string; misc?: object } | null;
     protected abstract is_create_tx(logs: string[]): boolean;
 
+    protected async get_initial_mint_meta(result: MintDetection): Promise<IMintMeta> {
+        if (result.mint_meta) return result.mint_meta;
+        const program = this.provider.get_name();
+        if (program !== common.Program.Raydium && program !== common.Program.Bonk && program !== common.Program.Meteora)
+            return this.provider.default_mint_meta(result.mint, result.misc);
+        let stopped = false;
+        this.wait_stop_func = () => {
+            stopped = true;
+        };
+        try {
+            for (let attempt = 0; attempt < SNIPE_RETRIES; attempt++) {
+                if (stopped) throw new Error('User stopped mint initialization.');
+                const meta = await this.provider.get_mint_meta(result.mint);
+                if (stopped) throw new Error('User stopped mint initialization.');
+                if (meta) return meta;
+                if (attempt + 1 < SNIPE_RETRIES) await common.sleep(SNIPE_META_POLL_INTERVAL_MS);
+            }
+            throw new Error(`Detected mint ${result.mint} is not available at ${COMMITMENT} commitment.`);
+        } finally {
+            this.wait_stop_func = null;
+        }
+    }
+
     private get_worker_path(): URL {
         return new URL('./snipe_worker.ts', import.meta.url);
     }
@@ -409,8 +433,7 @@ export abstract class SniperBase implements ISniper {
             this.bot_config.mint = result.mint;
             common.log(`[Main Worker] Token detected: ${this.bot_config.mint.toString()}`);
 
-            let mint_meta =
-                result.mint_meta ?? (await this.provider.default_mint_meta(this.bot_config.mint, result.misc));
+            let mint_meta = await this.get_initial_mint_meta(result);
             if (
                 this.bot_config.quote_mint &&
                 !mint_meta.quote_mint_pubkey.equals(new PublicKey(this.bot_config.quote_mint))

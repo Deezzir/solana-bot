@@ -670,6 +670,20 @@ function decode_pod_aligned_fee_rate_limiter(data: Buffer): PodAlignedFeeRateLim
     };
 }
 
+export function damm_rate_limiter_active(pool: DAMMV2QuotePool, dir: TradeDirection, current_point: bigint): boolean {
+    if (pool.base_fee_data.readUInt8(8) !== BaseFeeMode.RateLimiter) return false;
+    const fee = decode_pod_aligned_fee_rate_limiter(pool.base_fee_data);
+    return is_rate_limiter_applied(
+        fee.reference_amount,
+        fee.max_limiter_duration,
+        fee.max_fee_bps,
+        fee.fee_increment_bps,
+        current_point,
+        pool.activation_point,
+        dir
+    );
+}
+
 function decode_pod_aligned_fee_market_cap_scheduler(data: Buffer): PodAlignedFeeMarketCapScheduler {
     if (data.byteLength < 32) throw new Error('Invalid DAMM v2 market-cap fee data.');
     return {

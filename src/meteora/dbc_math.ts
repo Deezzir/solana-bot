@@ -1,6 +1,7 @@
 import { TradeOp } from '../common/trade_common';
 import { METEORA_DBC_PARAMS } from '../constants';
 import { BASIS_POINT_MAX, FEE_DENOMINATOR, ONE_Q64, ONE_Q128, pow_q64, DYNAMIC_FEE_SCALING_FACTOR } from './damm_math';
+import { calculate_transfer_fee, type TransferFee } from '../common/token';
 
 type DBCQuoteConfig = {
     cliff_fee_numerator: bigint;
@@ -10,6 +11,8 @@ type DBCQuoteConfig = {
     base_fee_mode: number;
     activation_type: number;
     collect_fee_mode: number;
+    token_type?: number;
+    quote_token_flag?: number;
     dynamic_fee_initialized: number;
     variable_fee_control: number;
     max_volatility_accumulator: number;
@@ -35,6 +38,8 @@ export type DBCQuoteState = {
     volatility_accumulator: bigint;
     volatility_reference: bigint;
     first_swap_with_min_fee: boolean;
+    base_transfer_fee?: TransferFee;
+    quote_transfer_fee?: TransferFee;
 };
 
 const min = (a: bigint, b: bigint) => (a < b ? a : b);
@@ -113,10 +118,14 @@ export function quote_dbc_exact_in(state: DBCQuoteState, amount: bigint, op: Tra
         }
     }
     const buy = op === 'buy';
-    const fee_numerator = dbc_fee_numerator(state, amount, op);
+    const input_fee = buy ? state.quote_transfer_fee : state.base_transfer_fee;
+    const output_fee = buy ? state.base_transfer_fee : state.quote_transfer_fee;
+    const transferred_input = amount - calculate_transfer_fee(amount, input_fee);
+    if (transferred_input <= 0n) throw new Error('DBC transfer fee consumes the entire input.');
+    const fee_numerator = dbc_fee_numerator(state, transferred_input, op);
     const fee_on_input = buy && config.collect_fee_mode === 0;
     const fee = (value: bigint) => ceil_div(value * fee_numerator, FEE_DENOMINATOR);
-    const input_amount = fee_on_input ? amount - fee(amount) : amount;
+    const input_amount = fee_on_input ? transferred_input - fee(transferred_input) : transferred_input;
     let remaining = input_amount;
     let output = 0n;
     let price = state.sqrt_price;
@@ -147,7 +156,8 @@ export function quote_dbc_exact_in(state: DBCQuoteState, amount: bigint, op: Tra
     }
 
     if (remaining > 0n) throw new Error('DBC swap exceeds the remaining curve liquidity.');
-    const output_amount = fee_on_input ? output : output - fee(output);
+    const transferred_output = fee_on_input ? output : output - fee(output);
+    const output_amount = transferred_output - calculate_transfer_fee(transferred_output, output_fee);
     if (output_amount <= 0n) throw new Error('DBC swap produces no output.');
     if (config.dynamic_fee_initialized) {
         next.volatility_accumulator = min(

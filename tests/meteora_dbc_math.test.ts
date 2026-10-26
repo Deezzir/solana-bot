@@ -52,6 +52,24 @@ function dbc_state(
 }
 
 describe('DBC base fees', () => {
+    test('deducts transfer fees on both sides without adding withheld tokens to curve reserves', () => {
+        const state = {
+            ...dbc_state(),
+            base_transfer_fee: { basis_points: 1000, maximum_fee: 100n },
+            quote_transfer_fee: { basis_points: 1000, maximum_fee: 100n }
+        };
+        // 100 quote sends 90 to the curve; floor(1000 * 90 / 1090) = 82 base,
+        // of which 9 are withheld by Token-2022.
+        const buy = quote_dbc_exact_in(state, 100n, 'buy');
+        expect(buy.output_amount).toBe(73n);
+        expect(buy.base_amount).toBe(82n);
+        expect(buy.quote_amount).toBe(90n);
+        const sell = quote_dbc_exact_in({ ...state, sqrt_price: 2n * ONE_Q64 }, 100n, 'sell');
+        const untaxed = quote_dbc_exact_in(dbc_state({ sqrt_price: 2n * ONE_Q64 }), 90n, 'sell');
+        expect(sell.output_amount).toBe(untaxed.output_amount - (untaxed.output_amount + 9n) / 10n);
+        expect(sell.base_amount).toBe(90n);
+    });
+
     test('linear schedules decrease at period boundaries and stop after the configured periods', () => {
         const state = dbc_state(
             {},

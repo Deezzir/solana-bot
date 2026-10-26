@@ -165,6 +165,38 @@ export function decode_mint_account(info: Pick<AccountInfo<Uint8Array>, 'data' |
     return { ...getMintDecoder().decode(info.data), extensions: { __option: 'None' as const } };
 }
 
+export type TransferFee = { basis_points: number; maximum_fee: bigint };
+
+export function get_epoch_transfer_fee(
+    extensions: ReturnType<typeof decode_mint_account>['extensions'],
+    epoch: bigint
+): TransferFee | undefined {
+    const config =
+        extensions.__option === 'Some'
+            ? extensions.value.find((extension) => extension.__kind === 'TransferFeeConfig')
+            : undefined;
+    if (!config) return undefined;
+    const fee = epoch >= config.newerTransferFee.epoch ? config.newerTransferFee : config.olderTransferFee;
+    return { basis_points: fee.transferFeeBasisPoints, maximum_fee: fee.maximumFee };
+}
+
+export function calculate_transfer_fee(amount: bigint, fee?: TransferFee): bigint {
+    if (!fee || amount === 0n) return 0n;
+    const calculated = (amount * BigInt(fee.basis_points) + 9999n) / 10000n;
+    return calculated > fee.maximum_fee ? fee.maximum_fee : calculated;
+}
+
+export async function get_mint_transfer_fee(mint: PublicKey, program: PublicKey): Promise<TransferFee | undefined> {
+    if (program.equals(TOKEN_PROGRAM_ID)) return undefined;
+    const [info, epoch] = await Promise.all([
+        getMint(global.CONNECTION, mint, 'confirmed', program),
+        global.CONNECTION.getEpochInfo('confirmed')
+    ]);
+    if (info.extensions.__option === 'Some' && info.extensions.value.some((item) => item.__kind === 'TransferHook'))
+        throw new Error(`Transfer-hook tokens are not supported: ${mint}`);
+    return get_epoch_transfer_fee(info.extensions, epoch.epoch);
+}
+
 export async function getMint(
     connection: Connection,
     mint: PublicKey,

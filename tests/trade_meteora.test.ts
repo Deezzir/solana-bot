@@ -1,7 +1,14 @@
 import { afterAll, afterEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { getMintEncoder } from '@solana-program/token-2022';
 import type { Address } from '@solana/kit';
-import { Keypair, PublicKey, type AccountInfo, type Connection, type TokenAmount } from '@solana/web3.js';
+import {
+    Keypair,
+    PublicKey,
+    SYSVAR_INSTRUCTIONS_PUBKEY,
+    type AccountInfo,
+    type Connection,
+    type TokenAmount
+} from '@solana/web3.js';
 import type { SerializedMintMeta } from '../src/common/trade_common';
 import type { DBCQuoteState } from '../src/meteora/dbc_math';
 
@@ -338,6 +345,26 @@ describe('Meteora creation and migration', () => {
         }
     );
 
+    test('initializes Token-2022 transfer-fee quotes from the creation config before the mint exists', async () => {
+        global.TRANSACTION_VERSION = 1;
+        const data = config_data(USDC_MINT, 1);
+        data.writeUInt16LE(1000, 216);
+        data[220] = 1;
+        global.CONNECTION = {
+            getAccountInfo: async () => account(data, METEORA_DBC_PROGRAM_ID)
+        } as unknown as Connection;
+        const result = await provider.create_token_instructions(create_mint, wallet, 'Token', 'TOK', 'cid', {
+            config: config_key.toBase58()
+        });
+        const metadata = provider.deserialize_mint_meta(result.mint_meta.serialize());
+        expect(metadata.dbc_data!.quote.base_transfer_fee).toEqual({
+            basis_points: 1000,
+            maximum_fee: (1n << 64n) - 1n
+        });
+        const quote = await provider.estimate_buy_output(metadata, amount(100n, 6), 0);
+        expect(quote.expected.amount).toBe('81');
+    });
+
     test.each([
         [238, 1, 'quote token program'],
         [237, 2, 'Unsupported DBC token type'],
@@ -559,6 +586,34 @@ describe('Meteora DAMM-v2 offline trade behavior', () => {
     const token_mint = address(11);
     const pool_key = address(12);
     const pool = damm_pool();
+
+    test('supplies the instructions sysvar for an active DAMM rate limiter and rejects atomic cycles', async () => {
+        spyOn(trade, 'get_ltas').mockResolvedValue([]);
+        const rate_limited = { ...pool, base_fee_data: Buffer.alloc(32), collect_fee_mode: CollectFeeMode.OnlyB };
+        rate_limited.base_fee_data.writeBigUInt64LE(10_000_000n, 0);
+        rate_limited.base_fee_data[8] = 2;
+        rate_limited.base_fee_data.writeUInt16LE(100, 14);
+        rate_limited.base_fee_data.writeUInt32LE(60, 16);
+        rate_limited.base_fee_data.writeUInt32LE(5000, 20);
+        rate_limited.base_fee_data.writeBigUInt64LE(1000n, 24);
+        install_damm_accounts(pool_key, token_mint, rate_limited, false);
+        const [instructions] = await trader.buy_token_instructions(amount(10_000n, 9), wallet, metadata(), 0.05);
+        const swap = instructions.find((ix) => ix.programId.equals(METEORA_DAMM_V2_PROGRAM_ID))!;
+        expect(swap.keys.at(-1)?.pubkey).toEqual(SYSVAR_INSTRUCTIONS_PUBKEY);
+        await expect(trader.buy_sell_instructions(amount(10_000n, 9), wallet, metadata(), 0.05)).rejects.toThrow(
+            'rate-limited'
+        );
+        const reversed = damm_state_data(rate_limited, token_mint);
+        Buffer.from(SOL_MINT.toBytes()).copy(reversed, 168);
+        Buffer.from(token_mint.toBytes()).copy(reversed, 200);
+        spyOn(global.CONNECTION, 'getAccountInfoAndContext').mockResolvedValue({
+            context: { slot: 100n },
+            value: { ...account(reversed, METEORA_DAMM_V2_PROGRAM_ID), space: BigInt(reversed.length) }
+        });
+        await expect(trader.buy_sell_instructions(amount(10_000n, 9), wallet, metadata(), 0.05)).rejects.toThrow(
+            'rate-limited'
+        );
+    });
 
     test('returns the encoded DAMM minimum after pool and transfer fees', async () => {
         spyOn(trade, 'get_ltas').mockResolvedValue([]);

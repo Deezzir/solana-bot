@@ -49,9 +49,14 @@ import {
     decode_token_account,
     createAssociatedTokenAccountIdempotentInstruction,
     createCloseAccountInstruction,
+    calculate_transfer_fee,
+    get_mint_transfer_fee,
+    type TransferFee,
+    TOKEN_2022_PROGRAM_ID,
     TOKEN_PROGRAM_ID
 } from '../common/token';
 import base58 from 'bs58';
+import { createHash } from 'crypto';
 import { define_decoder_struct, skip, u8, u16, u64, discriminator, pubkey } from '../common/struct_decoder';
 
 type CreateOptions = {
@@ -64,6 +69,15 @@ type CPMMState = ReturnType<typeof CPMMStateStruct.decode> & {
     token_0_reserves: bigint;
     token_1_reserves: bigint;
     supply: bigint;
+};
+
+type CPMMFees = {
+    trade_fee_rate: bigint;
+    protocol_fee_rate: bigint;
+    fund_fee_rate: bigint;
+    creator_fee_rate: bigint;
+    creator_fee_on: number;
+    base_is_token_0: boolean;
 };
 
 type RaydiumClaimableAsset = trade.ClaimableAsset & {
@@ -114,7 +128,31 @@ const StateStruct = define_decoder_struct({
     base_vault: pubkey(),
     quote_vault: pubkey(),
     creator: pubkey(),
-    padding: skip(8 * u64().size)
+    mint_program_flag: u8(),
+    cpmm_creator_fee_on: skip(1),
+    padding: skip(62)
+});
+
+const CPMMConfigStruct = define_decoder_struct({
+    discriminator: discriminator(createHash('sha256').update('account:AmmConfig').digest().subarray(0, 8)),
+    header: skip(4),
+    trade_fee_rate: u64(),
+    protocol_fee_rate: u64(),
+    fund_fee_rate: u64(),
+    create_pool_fee: skip(8),
+    owners: skip(64),
+    creator_fee_rate: u64(),
+    creator_fee_share_rate: u64(),
+    padding: skip(112)
+});
+
+const CreatorFeeShareStruct = define_decoder_struct({
+    discriminator: discriminator(createHash('sha256').update('account:CreatorFeeShare').digest().subarray(0, 8)),
+    bump: skip(1),
+    creator: pubkey(),
+    amm_config: pubkey(),
+    share_rate: u64(),
+    padding: skip(64)
 });
 
 const CPMMStateStruct = define_decoder_struct({
@@ -141,8 +179,8 @@ const CPMMStateStruct = define_decoder_struct({
     fund_fees_token_1: u64(),
     open_time: skip(u64().size),
     recent_epoch: skip(u64().size),
-    creator_fee_on: skip(u8().size),
-    enable_creator_fee: skip(u8().size),
+    creator_fee_on: u8(),
+    enable_creator_fee: u8(),
     padding1: skip(6),
     creator_fees_token_0: u64(),
     creator_fees_token_1: u64(),
@@ -169,6 +207,9 @@ export class RaydiumMintMeta implements trade.IMintMeta {
     fee: number = 0.0125;
     token_program_id!: string;
     token_decimals: number = TRADE_DEFAULT_TOKEN_DECIMALS;
+    cpmm_fees?: CPMMFees;
+    base_transfer_fee?: TransferFee;
+    quote_transfer_fee?: TransferFee;
 
     constructor(data: Partial<RaydiumMintMeta> = {}) {
         Object.assign(this, data);
@@ -240,7 +281,10 @@ export class RaydiumMintMeta implements trade.IMintMeta {
             observation_state: this.observation_state,
             fee: this.fee,
             token_decimals: this.token_decimals,
-            token_program_id: this.token_program_id
+            token_program_id: this.token_program_id,
+            cpmm_fees: this.cpmm_fees,
+            base_transfer_fee: this.base_transfer_fee,
+            quote_transfer_fee: this.quote_transfer_fee
         };
     }
 
@@ -264,7 +308,10 @@ export class RaydiumMintMeta implements trade.IMintMeta {
             observation_state: data.observation_state as string | null,
             fee: data.fee as number,
             token_decimals: (data.token_decimals as number | undefined) ?? TRADE_DEFAULT_TOKEN_DECIMALS,
-            token_program_id: data.token_program_id as string
+            token_program_id: data.token_program_id as string,
+            cpmm_fees: data.cpmm_fees as CPMMFees | undefined,
+            base_transfer_fee: data.base_transfer_fee as TransferFee | undefined,
+            quote_transfer_fee: data.quote_transfer_fee as TransferFee | undefined
         });
     }
 }
@@ -297,29 +344,36 @@ export class RaydiumProvider implements trade.IProgramProvider {
                 { memcmp: { offset: 0, bytes: base58.encode(RAYDIUM_CPMM_POOL_STATE_HEADER) } }
             ]
         });
-        const assets = pools.map(({ pubkey, account }) => {
-            const state = CPMMStateStruct.decode(account.data);
-            const claimable: RaydiumClaimableAsset[] = [];
-            if (state.creator_fees_token_0 > 0n)
-                claimable.push({
-                    mint: state.token_0_mint,
-                    raw_amount: state.creator_fees_token_0,
-                    decimals: state.mint_0_decimals,
-                    source: 'creator_reward' as const,
-                    state,
-                    pool: pubkey
-                });
-            if (state.creator_fees_token_1 > 0n)
-                claimable.push({
-                    mint: state.token_1_mint,
-                    raw_amount: state.creator_fees_token_1,
-                    decimals: state.mint_1_decimals,
-                    source: 'creator_reward' as const,
-                    state,
-                    pool: pubkey
-                });
-            return claimable;
-        });
+        const assets = await Promise.all(
+            pools.map(async ({ pubkey, account }) => {
+                const state = CPMMStateStruct.decode(account.data);
+                const share_rate = await this.get_creator_fee_share(state);
+                const claimable: RaydiumClaimableAsset[] = [];
+                const creator_fee_0 =
+                    state.creator_fees_token_0 - (state.creator_fees_token_0 * share_rate) / 1_000_000n;
+                const creator_fee_1 =
+                    state.creator_fees_token_1 - (state.creator_fees_token_1 * share_rate) / 1_000_000n;
+                if (creator_fee_0 > 0n)
+                    claimable.push({
+                        mint: state.token_0_mint,
+                        raw_amount: creator_fee_0,
+                        decimals: state.mint_0_decimals,
+                        source: 'creator_reward' as const,
+                        state,
+                        pool: pubkey
+                    });
+                if (creator_fee_1 > 0n)
+                    claimable.push({
+                        mint: state.token_1_mint,
+                        raw_amount: creator_fee_1,
+                        decimals: state.mint_1_decimals,
+                        source: 'creator_reward' as const,
+                        state,
+                        pool: pubkey
+                    });
+                return claimable;
+            })
+        );
         return assets.flat();
     }
 
@@ -336,6 +390,7 @@ export class RaydiumProvider implements trade.IProgramProvider {
             if (claimed_pools.has(asset.pool.toBase58())) continue;
             claimed_pools.add(asset.pool.toBase58());
             const state = asset.state;
+            const creator_fee_share = await this.calc_creator_fee_share(state.pool_creator, state.amm_config);
             if (state.creator_fees_token_0 === 0n && state.creator_fees_token_1 === 0n) continue;
             const creator_token_0 = await trade.calc_ata(trader.publicKey, state.token_0_mint, state.token_0_program);
             const creator_token_1 = await trade.calc_ata(trader.publicKey, state.token_1_mint, state.token_1_program);
@@ -377,7 +432,8 @@ export class RaydiumProvider implements trade.IProgramProvider {
                             isSigner: false,
                             isWritable: false
                         },
-                        { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false }
+                        { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
+                        { pubkey: creator_fee_share, isSigner: false, isWritable: false }
                     ]
                 })
             );
@@ -444,7 +500,7 @@ export class RaydiumProvider implements trade.IProgramProvider {
                 decimals: TRADE_DEFAULT_TOKEN_DECIMALS
             },
             trader,
-            mint_meta,
+            this.update_mint_meta_reserves(new RaydiumMintMeta({ ...mint_meta }), amount, 'buy'),
             slippage
         );
         return { buy: buy_instructions, sell, ltas, minimum_quote_output };
@@ -552,10 +608,13 @@ export class RaydiumProvider implements trade.IProgramProvider {
             let token_0_slot = 0n;
             let token_1_slot = 0n;
             let vaults_started = false;
+            let cpmm_fees: CPMMFees | undefined;
+            let transfer_fees: Pick<RaydiumMintMeta, 'base_transfer_fee' | 'quote_transfer_fee'> = {};
 
             const publish_cpmm = (slot: bigint = 0n) => {
                 if (
                     !state ||
+                    !cpmm_fees ||
                     token_0_balance === null ||
                     token_1_balance === null ||
                     state_slot !== token_0_slot ||
@@ -581,7 +640,10 @@ export class RaydiumProvider implements trade.IProgramProvider {
                         complete: true,
                         config: state.amm_config.toBase58(),
                         observation_state: state.observation_key.toBase58(),
-                        market_cap: metrics.mcap_quote
+                        market_cap: metrics.mcap_quote,
+                        cpmm_fees,
+                        fee: Number(cpmm_fees.trade_fee_rate + cpmm_fees.creator_fee_rate) / 1_000_000,
+                        ...transfer_fees
                     }),
                     slot
                 );
@@ -617,8 +679,13 @@ export class RaydiumProvider implements trade.IProgramProvider {
                 );
                 const [state_info, token_0_info, token_1_info] = response.value;
                 if (state_info && response.context.slot >= state_slot) {
-                    state = CPMMStateStruct.decode(state_info.data);
-                    state_slot = response.context.slot;
+                    const snapshot_state = CPMMStateStruct.decode(state_info.data);
+                    const snapshot_fees = await this.get_cpmm_fees(snapshot_state, current_mint_meta.mint_pubkey);
+                    if (response.context.slot >= state_slot) {
+                        state = snapshot_state;
+                        cpmm_fees = snapshot_fees;
+                        state_slot = response.context.slot;
+                    }
                 }
                 if (token_0_info && response.context.slot >= token_0_slot) {
                     token_0_balance = decode_token_account(token_0_info).amount;
@@ -632,80 +699,121 @@ export class RaydiumProvider implements trade.IProgramProvider {
             };
 
             const process = async (info: AccountInfo<Uint8Array>, slot: bigint = 0n) => {
-                if (stopped || (slot && slot < latest_slot)) return;
-                state = CPMMStateStruct.decode(info.data);
+                if (stopped || (slot && (slot < latest_slot || slot < state_slot))) return;
+                const next_state = CPMMStateStruct.decode(info.data);
+                const base_is_0 = next_state.token_0_mint.equals(current_mint_meta.mint_pubkey);
+                const [next_fees, next_transfer_fees] = await Promise.all([
+                    this.get_cpmm_fees(next_state, current_mint_meta.mint_pubkey),
+                    this.get_transfer_fees(
+                        current_mint_meta.mint_pubkey,
+                        base_is_0 ? next_state.token_0_program : next_state.token_1_program,
+                        base_is_0 ? next_state.token_1_mint : next_state.token_0_mint
+                    )
+                ]);
+                if (stopped || (slot && (slot < latest_slot || slot < state_slot))) return;
+                state = next_state;
+                cpmm_fees = next_fees;
+                transfer_fees = next_transfer_fees;
                 state_slot = slot;
                 await subscribe_accounts();
                 publish_cpmm(slot);
             };
 
             cpmm_subs.push(
-                global.CONNECTION.onAccountChange(pool, (info, context) => void process(info, context.slot), {
-                    commitment
-                })
+                global.CONNECTION.onAccountChange(
+                    pool,
+                    (info, context) => {
+                        void process(info, context.slot).catch((error) =>
+                            common.warn(`Failed to update CPMM metadata: ${error}`)
+                        );
+                    },
+                    {
+                        commitment
+                    }
+                )
             );
             const response = await global.CONNECTION.getAccountInfoAndContext(pool, commitment);
             if (response.value) await process(response.value, response.context.slot);
         };
 
-        const cpmm = mint_meta.migrated
-            ? { pubkey: new PublicKey(mint_meta.pool) }
-            : mint_meta.creator && !mint_meta.complete
-              ? null
-              : await this.get_cpmm_from_mint(
-                    mint_meta.mint_pubkey,
-                    mint_meta.creator ? mint_meta.quote_mint_pubkey : undefined
-                );
-        if (cpmm) {
-            await subscribe_cpmm(cpmm.pubkey);
-        } else {
-            const pool = mint_meta.creator
-                ? new PublicKey(mint_meta.pool)
-                : (await this.get_launch_pool(mint_meta.mint_pubkey, new PublicKey(mint_meta.pool))).pubkey;
-            const process_launchpad = async (info: AccountInfo<Uint8Array>, slot: bigint = 0n) => {
-                if (stopped || (slot && slot < latest_slot)) return;
-                const state = StateStruct.decode(info.data);
-                const metrics = this.get_token_metrics(
-                    state.real_quote + state.virtual_quote,
-                    state.virtual_base - state.real_base,
-                    state.supply,
-                    state.quote_decimals,
-                    state.base_decimals
-                );
-                publish(
-                    new RaydiumMintMeta({
-                        ...current_mint_meta,
-                        sol_reserves: state.real_quote + state.virtual_quote,
-                        token_reserves: state.virtual_base - state.real_base,
-                        total_supply: state.supply,
-                        pool: pool.toBase58(),
-                        quote_mint: state.quote_mint.toBase58(),
-                        token_decimals: state.base_decimals,
-                        global_config: state.global_config.toBase58(),
-                        base_vault: state.base_vault.toBase58(),
-                        quote_vault: state.quote_vault.toBase58(),
-                        complete: state.status !== 0,
-                        config: state.platform_config.toBase58(),
-                        creator: state.creator.toBase58(),
-                        market_cap: metrics.mcap_quote
-                    }),
-                    slot
-                );
-                if (state.status === 0 || cpmm_started) return;
-                const migrated = await this.get_cpmm_from_mint(mint_meta.mint_pubkey, state.quote_mint);
-                if (!migrated || (slot && slot < latest_slot)) return;
-                unsubscribe(launchpad_sub);
-                launchpad_sub = undefined;
-                await subscribe_cpmm(migrated.pubkey);
-            };
+        try {
+            const cpmm = mint_meta.migrated
+                ? { pubkey: new PublicKey(mint_meta.pool) }
+                : mint_meta.creator && !mint_meta.complete
+                  ? null
+                  : await this.get_cpmm_from_mint(
+                        mint_meta.mint_pubkey,
+                        mint_meta.creator ? mint_meta.quote_mint_pubkey : undefined
+                    );
+            if (cpmm) {
+                await subscribe_cpmm(cpmm.pubkey);
+            } else {
+                const pool = mint_meta.creator
+                    ? new PublicKey(mint_meta.pool)
+                    : (await this.get_launch_pool(mint_meta.mint_pubkey, new PublicKey(mint_meta.pool))).pubkey;
+                const process_launchpad = async (info: AccountInfo<Uint8Array>, slot: bigint = 0n) => {
+                    if (stopped || (slot && slot < latest_slot)) return;
+                    const state = StateStruct.decode(info.data);
+                    const token_program = state.mint_program_flag === 1 ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+                    const [fee, transfer_fees] = await Promise.all([
+                        this.get_launch_fee(state.global_config, state.platform_config),
+                        this.get_transfer_fees(mint_meta.mint_pubkey, token_program, state.quote_mint)
+                    ]);
+                    if (stopped || (slot && slot < latest_slot)) return;
+                    const metrics = this.get_token_metrics(
+                        state.real_quote + state.virtual_quote,
+                        state.virtual_base - state.real_base,
+                        state.supply,
+                        state.quote_decimals,
+                        state.base_decimals
+                    );
+                    publish(
+                        new RaydiumMintMeta({
+                            ...current_mint_meta,
+                            sol_reserves: state.real_quote + state.virtual_quote,
+                            token_reserves: state.virtual_base - state.real_base,
+                            total_supply: state.supply,
+                            pool: pool.toBase58(),
+                            quote_mint: state.quote_mint.toBase58(),
+                            token_decimals: state.base_decimals,
+                            global_config: state.global_config.toBase58(),
+                            base_vault: state.base_vault.toBase58(),
+                            quote_vault: state.quote_vault.toBase58(),
+                            complete: state.status !== 0,
+                            config: state.platform_config.toBase58(),
+                            creator: state.creator.toBase58(),
+                            market_cap: metrics.mcap_quote,
+                            fee,
+                            token_program_id: token_program.toBase58(),
+                            ...transfer_fees
+                        }),
+                        slot
+                    );
+                    if (state.status === 0 || cpmm_started) return;
+                    const migrated = await this.get_cpmm_from_mint(mint_meta.mint_pubkey, state.quote_mint);
+                    if (!migrated || (slot && slot < latest_slot)) return;
+                    unsubscribe(launchpad_sub);
+                    launchpad_sub = undefined;
+                    await subscribe_cpmm(migrated.pubkey);
+                };
 
-            launchpad_sub = global.CONNECTION.onAccountChange(
-                pool,
-                (info, context) => void process_launchpad(info, context.slot),
-                { commitment }
-            );
-            const response = await global.CONNECTION.getAccountInfoAndContext(pool, commitment);
-            if (response.value) await process_launchpad(response.value, response.context.slot);
+                launchpad_sub = global.CONNECTION.onAccountChange(
+                    pool,
+                    (info, context) => {
+                        void process_launchpad(info, context.slot).catch((error) =>
+                            common.warn(`Failed to update LaunchLab metadata: ${error}`)
+                        );
+                    },
+                    { commitment }
+                );
+                const response = await global.CONNECTION.getAccountInfoAndContext(pool, commitment);
+                if (response.value) await process_launchpad(response.value, response.context.slot);
+            }
+        } catch (error) {
+            stopped = true;
+            unsubscribe(launchpad_sub);
+            cpmm_subs.forEach(unsubscribe);
+            throw error;
         }
         return () => {
             stopped = true;
@@ -731,6 +839,11 @@ export class RaydiumProvider implements trade.IProgramProvider {
                 const pool =
                     launch_pool ?? (await this.get_launch_pool(mint_meta.mint_pubkey, new PublicKey(mint_meta.pool)));
                 const state = launch_state ?? StateStruct.decode(pool.account.data);
+                const token_program = state.mint_program_flag === 1 ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+                const [fee, transfer_fees] = await Promise.all([
+                    this.get_launch_fee(state.global_config, state.platform_config),
+                    this.get_transfer_fees(mint_meta.mint_pubkey, token_program, state.quote_mint)
+                ]);
                 const metrics = this.get_token_metrics(
                     state.real_quote + state.virtual_quote,
                     state.virtual_base - state.real_base,
@@ -752,13 +865,25 @@ export class RaydiumProvider implements trade.IProgramProvider {
                     total_supply: state.supply,
                     complete: state.status !== 0,
                     config: state.platform_config.toString(),
-                    creator: state.creator.toString()
+                    creator: state.creator.toString(),
+                    token_program_id: token_program.toBase58(),
+                    fee,
+                    cpmm_fees: undefined,
+                    ...transfer_fees
                 });
             }
 
             if (cpmm_pool) {
                 const state = await this.get_cpmm_state(cpmm_pool.pubkey, mint_meta.mint_pubkey, cpmm_pool.account);
                 const fields = this.cpmm_mint_fields(state, mint_meta.mint_pubkey);
+                const [cpmm_fees, transfer_fees] = await Promise.all([
+                    this.get_cpmm_fees(state, mint_meta.mint_pubkey),
+                    this.get_transfer_fees(
+                        mint_meta.mint_pubkey,
+                        new PublicKey(fields.token_program_id),
+                        new PublicKey(fields.quote_mint)
+                    )
+                ]);
                 const metrics = this.get_token_metrics(
                     fields.sol_reserves,
                     fields.token_reserves,
@@ -774,7 +899,10 @@ export class RaydiumProvider implements trade.IProgramProvider {
                     total_supply: state.supply,
                     complete: true,
                     observation_state: state.observation_key.toString(),
-                    config: state.amm_config.toString()
+                    config: state.amm_config.toString(),
+                    cpmm_fees,
+                    fee: Number(cpmm_fees.trade_fee_rate + cpmm_fees.creator_fee_rate) / 1_000_000,
+                    ...transfer_fees
                 });
             }
 
@@ -955,15 +1083,7 @@ export class RaydiumProvider implements trade.IProgramProvider {
     private async get_create_settings(options: CreateOptions = {}) {
         const global_config = await this.calc_global_config(options);
         const platform = this.get_create_platform();
-        const [config_info, platform_info] = await global.CONNECTION.getMultipleAccountsInfo(
-            [global_config, platform],
-            COMMITMENT
-        );
-        if (!config_info?.owner.equals(RAYDIUM_LAUNCHPAD_PROGRAM_ID))
-            throw new Error('Invalid LaunchLab global config');
-        if (!platform_info?.owner.equals(RAYDIUM_LAUNCHPAD_PROGRAM_ID))
-            throw new Error('Invalid LaunchLab platform config');
-        const settings = LaunchConfigStruct.decode(config_info.data);
+        const { settings, platform_data, fee } = await this.get_launch_settings(global_config, platform);
         if (settings.curve_type !== 0) throw new Error('Only constant-product LaunchLab curves are supported');
         const quote_mint = settings.quote_mint;
         if (options.quote_mint && !new PublicKey(options.quote_mint).equals(quote_mint))
@@ -973,18 +1093,95 @@ export class RaydiumProvider implements trade.IProgramProvider {
         const fundraising = BigInt(options.fundraising ?? RAYDIUM_LAUNCHPAD_CREATE_PARAMS.fundraising);
         if (fundraising < settings.min_fundraising || fundraising <= settings.migrate_fee)
             throw new Error('Invalid LaunchLab fundraising amount (raw quote units)');
-        const platform_data = Buffer.from(platform_info.data);
         return {
             global_config,
             quote_mint,
             fundraising,
-            fee:
-                Number(
-                    settings.trade_fee_rate + platform_data.readBigUInt64LE(104) + platform_data.readBigUInt64LE(720)
-                ) / 1_000_000,
+            fee,
             reserves: this.calc_initial_reserves(fundraising, settings.migrate_fee),
             remaining_accounts: await this.calc_create_remaining_accounts(platform, global_config, platform_data)
         };
+    }
+
+    private async get_launch_settings(global_config: PublicKey, platform: PublicKey) {
+        const [config_info, platform_info] = await global.CONNECTION.getMultipleAccountsInfo(
+            [global_config, platform],
+            COMMITMENT
+        );
+        if (!config_info?.owner.equals(RAYDIUM_LAUNCHPAD_PROGRAM_ID))
+            throw new Error('Invalid LaunchLab global config');
+        if (!platform_info?.owner.equals(RAYDIUM_LAUNCHPAD_PROGRAM_ID) || platform_info.data.length < 728)
+            throw new Error('Invalid LaunchLab platform config');
+        const settings = LaunchConfigStruct.decode(config_info.data);
+        if (settings.curve_type !== 0) throw new Error('Only constant-product LaunchLab curves are supported');
+        const platform_data = Buffer.from(platform_info.data);
+        const rate = settings.trade_fee_rate + platform_data.readBigUInt64LE(104) + platform_data.readBigUInt64LE(720);
+        if (rate >= 1_000_000n) throw new Error('Invalid LaunchLab trading fee rate');
+        return { settings, platform_data, fee: Number(rate) / 1_000_000 };
+    }
+
+    private async get_launch_fee(global_config: PublicKey, platform: PublicKey): Promise<number> {
+        return (await this.get_launch_settings(global_config, platform)).fee;
+    }
+
+    private async get_cpmm_config(config: PublicKey) {
+        const info = await global.CONNECTION.getAccountInfo(config, COMMITMENT);
+        if (!info?.owner.equals(RAYDIUM_CPMM_PROGRAM_ID)) throw new Error('Invalid CPMM config account');
+        return CPMMConfigStruct.decode(info.data);
+    }
+
+    private async get_cpmm_fees(state: ReturnType<typeof CPMMStateStruct.decode>, mint: PublicKey): Promise<CPMMFees> {
+        const config = await this.get_cpmm_config(state.amm_config);
+        const creator_fee_rate = state.enable_creator_fee === 1 ? config.creator_fee_rate : 0n;
+        if (
+            state.enable_creator_fee > 1 ||
+            state.creator_fee_on > 2 ||
+            config.trade_fee_rate + creator_fee_rate >= 1_000_000n ||
+            config.protocol_fee_rate + config.fund_fee_rate > 1_000_000n
+        )
+            throw new Error('Invalid CPMM fee configuration');
+        return {
+            trade_fee_rate: config.trade_fee_rate,
+            protocol_fee_rate: config.protocol_fee_rate,
+            fund_fee_rate: config.fund_fee_rate,
+            creator_fee_rate,
+            creator_fee_on: state.creator_fee_on,
+            base_is_token_0: state.token_0_mint.equals(mint)
+        };
+    }
+
+    private async get_transfer_fees(mint: PublicKey, token_program: PublicKey, quote_mint: PublicKey) {
+        const quote = await get_quote_info(quote_mint);
+        const [base_transfer_fee, quote_transfer_fee] = await Promise.all([
+            get_mint_transfer_fee(mint, token_program),
+            get_mint_transfer_fee(quote_mint, quote.token_program)
+        ]);
+        return { base_transfer_fee, quote_transfer_fee };
+    }
+
+    private async calc_creator_fee_share(creator: PublicKey, config: PublicKey): Promise<PublicKey> {
+        const [address] = await PublicKey.findProgramAddress(
+            [Buffer.from('creator_fee_share'), creator.toBytes(), config.toBytes()],
+            RAYDIUM_CPMM_PROGRAM_ID
+        );
+        return address;
+    }
+
+    private async get_creator_fee_share(state: ReturnType<typeof CPMMStateStruct.decode>): Promise<bigint> {
+        const address = await this.calc_creator_fee_share(state.pool_creator, state.amm_config);
+        const [config, info] = await Promise.all([
+            this.get_cpmm_config(state.amm_config),
+            global.CONNECTION.getAccountInfo(address, COMMITMENT)
+        ]);
+        let rate = config.creator_fee_share_rate;
+        if (info && info.data.length && info.owner.equals(RAYDIUM_CPMM_PROGRAM_ID)) {
+            const share = CreatorFeeShareStruct.decode(info.data);
+            if (!share.creator.equals(state.pool_creator) || !share.amm_config.equals(state.amm_config))
+                throw new Error('CPMM creator-fee share does not match its pool');
+            rate = share.share_rate;
+        }
+        if (rate > 1_000_000n) throw new Error('Invalid CPMM creator-fee share rate');
+        return rate;
     }
 
     private calc_initial_reserves(fundraising: bigint, migrate_fee: bigint) {
@@ -1113,21 +1310,61 @@ export class RaydiumProvider implements trade.IProgramProvider {
     private calc_swap_amounts(amount: bigint, token: Partial<RaydiumMintMeta>, op: trade.TradeOp) {
         if (!token.sol_reserves || !token.token_reserves || token.fee === undefined || amount <= 0n)
             return { output_amount: 0n, base_delta: 0n, quote_delta: 0n };
-        if (op === 'buy') {
-            const quote_delta = amount - this.calc_fee(amount, token.fee);
+        const buy = op === 'buy';
+        const input_amount =
+            amount - calculate_transfer_fee(amount, buy ? token.quote_transfer_fee : token.base_transfer_fee);
+        if (input_amount <= 0n) throw new Error('Raydium transfer fee consumes the entire input.');
+        if (token.cpmm_fees) {
+            const fees = token.cpmm_fees;
+            const fee = (value: bigint, rate: bigint) => (value * rate + 999_999n) / 1_000_000n;
+            const input_is_0 = buy ? !fees.base_is_token_0 : fees.base_is_token_0;
+            const creator_on_input = fees.creator_fee_on === 0 || fees.creator_fee_on === (input_is_0 ? 1 : 2);
+            const input_fee_rate = fees.trade_fee_rate + (creator_on_input ? fees.creator_fee_rate : 0n);
+            const total_input_fee = fee(input_amount, input_fee_rate);
+            const creator_input_fee =
+                creator_on_input && input_fee_rate > 0n
+                    ? (total_input_fee * fees.creator_fee_rate) / input_fee_rate
+                    : 0n;
+            const trade_fee = total_input_fee - creator_input_fee;
+            const swap_input = input_amount - total_input_fee;
+            if (swap_input <= 0n) throw new Error('CPMM fees consume the entire input.');
+            const input_reserves = buy ? token.sol_reserves : token.token_reserves;
+            const output_reserves = buy ? token.token_reserves : token.sol_reserves;
+            const gross_output = (output_reserves * swap_input) / (input_reserves + swap_input);
+            const output = gross_output - (creator_on_input ? 0n : fee(gross_output, fees.creator_fee_rate));
+            const output_amount =
+                output - calculate_transfer_fee(output, buy ? token.base_transfer_fee : token.quote_transfer_fee);
+            const retained_input =
+                input_amount -
+                creator_input_fee -
+                (trade_fee * fees.protocol_fee_rate) / 1_000_000n -
+                (trade_fee * fees.fund_fee_rate) / 1_000_000n;
+            return {
+                output_amount,
+                base_delta: buy ? -gross_output : retained_input,
+                quote_delta: buy ? retained_input : -gross_output
+            };
+        }
+        if (buy) {
+            const quote_delta = input_amount - this.calc_fee(input_amount, token.fee);
             if (quote_delta <= 0n) return { output_amount: 0n, base_delta: 0n, quote_delta: 0n };
             const output_amount =
                 token.token_reserves -
                 (token.sol_reserves * token.token_reserves) / (token.sol_reserves + quote_delta) -
                 1n;
-            return { output_amount, base_delta: -output_amount, quote_delta };
+            return {
+                output_amount: output_amount - calculate_transfer_fee(output_amount, token.base_transfer_fee),
+                base_delta: -output_amount,
+                quote_delta
+            };
         }
         // CPMM charges input fees; LaunchLab charges fees from gross quote output.
         const cpmm = Boolean(token.observation_state);
-        const base_delta = cpmm ? amount - this.calc_fee(amount, token.fee) : amount;
+        const base_delta = cpmm ? input_amount - this.calc_fee(input_amount, token.fee) : input_amount;
         const gross_output = (base_delta * token.sol_reserves) / (token.token_reserves + base_delta);
+        const output = cpmm ? gross_output : gross_output - this.calc_fee(gross_output, token.fee);
         return {
-            output_amount: cpmm ? gross_output : gross_output - this.calc_fee(gross_output, token.fee),
+            output_amount: output - calculate_transfer_fee(output, token.quote_transfer_fee),
             base_delta,
             quote_delta: -gross_output
         };
@@ -1548,8 +1785,12 @@ export class RaydiumProvider implements trade.IProgramProvider {
         base_mint: PublicKey,
         account?: trade.ProgramAccount['account']
     ): Promise<CPMMState> {
-        const info = account ?? (await global.CONNECTION.getAccountInfo(cpmm_pool, COMMITMENT));
-        if (!info || !info.data) throw new Error('Unexpected CPMM state');
+        let info = account;
+        if (!info) {
+            const fetched = await global.CONNECTION.getAccountInfo(cpmm_pool, COMMITMENT);
+            if (!fetched?.owner.equals(RAYDIUM_CPMM_PROGRAM_ID)) throw new Error('Unexpected CPMM state owner');
+            info = fetched;
+        }
 
         const state = CPMMStateStruct.decode(info.data);
         const [token_0_reserves, token_1_reserves, supply] = await Promise.all([
